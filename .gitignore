@@ -1,0 +1,41 @@
+# Secrets & local env
+.env
+.env.local
+.env.*.local
+
+# Telegram MTProto session files (parser service)
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Media / local data
+data/
+media/
+tmp/
+*.log

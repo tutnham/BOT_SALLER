@@ -1,0 +1,31 @@
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = ["app/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+# B008: FastAPI Depends() in defaults is the framework-idiomatic pattern.
+# UP042: SQLAlchemy/enum migration to StrEnum is out of scope for this change.
+ignore = ["E501", "B008", "UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+plugins = []
+exclude = ["app/migrations"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

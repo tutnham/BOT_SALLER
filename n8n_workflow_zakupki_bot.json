@@ -1,0 +1,320 @@
+{
+  "name": "Zakupki-Bot | Router + Cron",
+  "id": "f0713098-0255-48a1-a625-80654e8f37b1",
+  "active": false,
+  "settings": {
+    "timezone": "Europe/Moscow",
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "description": "n8n = слой оркестрации. Вся бизнес-логика (whitelist, разбор, LLM, запись в БД, отправка сообщений в Telegram) находится в backend (FastAPI). n8n только пересылает Telegram-обновления в backend и запускает cron-задачи по расписанию. /jobs/morning-price (см. TECHNICAL_DOCUMENTATION.md §9.5.1) внутри backend теперь также забирает новые посты из Telegram-каналов поставщиков через отдельный сервис-парсер (TG_CHANNEL_PARSER_DOCUMENTATION.md) — n8n об этом вызове не знает, он выполняется целиком внутри backend; n8n только запускает крон и алертит админа, если задача завершилась ошибкой."
+  },
+  "nodes": [
+    {
+      "id": "dc40805a-03ff-47d0-ad13-ee499dc3fb4d",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "Получает ВСЕ обновления бота: message, edited_message. Требует один webhook на токен бота — эта нода единственная точка приёма от Telegram.",
+      "parameters": {
+        "updates": ["message", "edited_message"],
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_TELEGRAM_CREDENTIAL_ID",
+          "name": "Zakupki Bot Token"
+        }
+      }
+    },
+    {
+      "id": "03e1f2b6-802a-415f-aed6-135323190089",
+      "name": "Forward To Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 300],
+      "notes": "Пересылает сырой Telegram update в backend. Backend сам решает: сотрудник/поставщик/владелец, whitelist, парсинг, LLM, отправка ответа в Telegram.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/telegram/webhook",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "2b2f638d-9599-400f-98a3-e6617b883f12",
+      "name": "IF: Backend Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 300],
+      "notes": "Если backend вернул не 200 — алерт админу. Если 200 — пусто (backend уже сам отправил все нужные сообщения в Telegram).",
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-status",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": { "type": "number", "operation": "notEquals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f3f6a79e-657d-4a2d-83eb-837d58bdefd9",
+      "name": "Alert Admin (Telegram API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 200],
+      "notes": "Прямой вызов Bot API sendMessage (без n8n Telegram credential), чтобы алерт не зависел от того же credential/канала, который мог вызвать сбой.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": $env.ADMIN_ALERT_CHAT_ID, \"text\": \"⚠️ Backend webhook error\\nStatus: \" + $json.statusCode + \"\\nUpdate ID: \" + ($('Telegram Trigger').item.json.update_id || 'n/a') } }}",
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "3a7a5375-0244-42fd-b14e-0b32192c3f3d",
+      "name": "No Operation, do nothing",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [780, 400],
+      "parameters": {}
+    },
+    {
+      "id": "00476265-3391-440c-b6fd-cc019fe5e981",
+      "name": "Schedule: Morning Price 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 640],
+      "notes": "Ежедневный запуск сбора и формирования прайса (п.1-2 ТЗ). Время в TZ workflow settings (Europe/Moscow). С версии с парсером каналов (TECHNICAL_DOCUMENTATION.md §9.5.1) этот вызов внутри backend сначала обращается к сервису-парсеру за новыми постами каналов с purpose='supplier_price_source', потом собирает ручные сообщения от остальных поставщиков и строит единый итоговый прайс. Гарантий отката при недоступности сервиса-парсера определяет backend, а не n8n.",
+      "parameters": {
+        "rule": {
+          "interval": [ { "field": "cronExpression", "expression": "0 8 * * *" } ]
+        }
+      }
+    },
+    {
+      "id": "1bfef175-e83f-4b0a-8058-16dbb85c2982",
+      "name": "POST /jobs/morning-price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 640],
+      "notes": "Возврат fullResponse:true добавлен только чтобы следующий IF-узел мог сравнить $json.statusCode — сама логика сбора цен/каналов не в n8n, а в backend.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/jobs/morning-price",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {} }}",
+        "options": { "timeout": 60000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "a1c3d9e2-5f7a-4b8e-9c1d-2e6f8b0a4d7c",
+      "name": "IF: Morning Price Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 640],
+      "notes": "Проверяет код ответа backend на /jobs/morning-price. Не 200 может значить как сбой в самом backend, так и сбой/таймаут при обращении к сервису-парсеру каналов (точную причину n8n не различает — смотреть логи backend).",
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-morning-price-status",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": { "type": "number", "operation": "notEquals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b2d4e0f3-6a8b-4c9f-ad2e-3f7a9c1b5e8d",
+      "name": "Alert Admin: Morning Price Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 560],
+      "notes": "Прямой вызов Bot API sendMessage — если утренний прайс не сформировался, это могло быть связано с недоступностью сервиса-парсера каналов — нужно проверить оба сервиса вручную.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": $env.ADMIN_ALERT_CHAT_ID, \"text\": \"\u26a0\ufe0f \u0423\u0442\u0440\u0435\u043d\u043d\u0438\u0439 \u043f\u0440\u0430\u0439\u0441 \u043d\u0435 \u0441\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d (/jobs/morning-price)\\n\u0421\u0442\u0430\u0442\u0443\u0441: \" + $json.statusCode + \"\\n\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043b\u043e\u0433\u0438 backend \u0438 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0441\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441\u0430-\u043f\u0430\u0440\u0441\u0435\u0440\u0430 \u043a\u0430\u043d\u0430\u043b\u043e\u0432 (PARSER_API_URL).\" } }}",
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "c3e5f1a4-7b9c-4d0a-be3f-4a8b0d2c6f9e",
+      "name": "No Operation, do nothing (Morning Price OK)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [780, 720],
+      "parameters": {}
+    },
+    {
+      "id": "ca90372e-2b2f-4c21-beeb-a47786d5fa0f",
+      "name": "Schedule: Recheck Poller (15 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 780],
+      "notes": "Проверяет заявки со статусом needs_recheck, у которых наступило время recheck_at (окно 2-5 часов из п.6 ТЗ), и просит backend отправить поставщику запрос об актуальности цены.",
+      "parameters": {
+        "rule": {
+          "interval": [ { "field": "cronExpression", "expression": "*/15 * * * *" } ]
+        }
+      }
+    },
+    {
+      "id": "e07b10a8-2ab1-4047-a142-43f2957b70e1",
+      "name": "POST /jobs/recheck-due",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 780],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/jobs/recheck-due",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {} }}",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      }
+    },
+    {
+      "id": "02fd0014-2066-4f4e-8d44-a7ef187e5940",
+      "name": "Schedule: Daily Report 21:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 920],
+      "notes": "Ежедневная аналитика владельцу/в analytics-чат (п.7 ТЗ).",
+      "parameters": {
+        "rule": {
+          "interval": [ { "field": "cronExpression", "expression": "0 21 * * *" } ]
+        }
+      }
+    },
+    {
+      "id": "39974312-6b40-4fac-958d-683661590ec4",
+      "name": "POST /jobs/daily-report (day)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 920],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/jobs/daily-report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"period\": \"day\" } }}",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      }
+    },
+    {
+      "id": "4c8699dd-8fad-49d9-a430-759a11f2450f",
+      "name": "Schedule: Weekly Report Mon 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 1060],
+      "parameters": {
+        "rule": {
+          "interval": [ { "field": "cronExpression", "expression": "0 9 * * 1" } ]
+        }
+      }
+    },
+    {
+      "id": "f9f6b7f9-9527-4f5a-8718-1a00994874f9",
+      "name": "POST /jobs/daily-report (week)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 1060],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/jobs/daily-report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [ { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" } ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"period\": \"week\" } }}",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [ [ { "node": "Forward To Backend", "type": "main", "index": 0 } ] ]
+    },
+    "Forward To Backend": {
+      "main": [ [ { "node": "IF: Backend Error", "type": "main", "index": 0 } ] ]
+    },
+    "IF: Backend Error": {
+      "main": [
+        [ { "node": "Alert Admin (Telegram API)", "type": "main", "index": 0 } ],
+        [ { "node": "No Operation, do nothing", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Schedule: Morning Price 08:00": {
+      "main": [ [ { "node": "POST /jobs/morning-price", "type": "main", "index": 0 } ] ]
+    },
+    "POST /jobs/morning-price": {
+      "main": [ [ { "node": "IF: Morning Price Error", "type": "main", "index": 0 } ] ]
+    },
+    "IF: Morning Price Error": {
+      "main": [
+        [ { "node": "Alert Admin: Morning Price Failed", "type": "main", "index": 0 } ],
+        [ { "node": "No Operation, do nothing (Morning Price OK)", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Schedule: Recheck Poller (15 min)": {
+      "main": [ [ { "node": "POST /jobs/recheck-due", "type": "main", "index": 0 } ] ]
+    },
+    "Schedule: Daily Report 21:00": {
+      "main": [ [ { "node": "POST /jobs/daily-report (day)", "type": "main", "index": 0 } ] ]
+    },
+    "Schedule: Weekly Report Mon 09:00": {
+      "main": [ [ { "node": "POST /jobs/daily-report (week)", "type": "main", "index": 0 } ] ]
+    }
+  }
+}
