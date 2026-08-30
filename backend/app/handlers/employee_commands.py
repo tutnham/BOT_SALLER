@@ -39,7 +39,7 @@ from app.services.recheck_service import (
 )
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
-from app.templates.messages_ru import render_template
+from app.templates.messages_ru import format_supplier_label, render_template
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import get_employee_by_telegram_id
 
@@ -120,7 +120,9 @@ def _format_quotes_block(quotes: list[Quote]) -> str:
         return "—"
     lines: list[str] = []
     for quote in quotes:
-        supplier_name = quote.supplier.name if quote.supplier else f"#{quote.supplier_id}"
+        supplier_label = format_supplier_label(
+            quote.supplier.name if quote.supplier else None, quote.supplier_id
+        )
         price = quote.price_initial
         price_text = f"{price} ₽" if price is not None else "—"
         qty_text = str(quote.qty) if quote.qty is not None else "—"
@@ -131,7 +133,7 @@ def _format_quotes_block(quotes: list[Quote]) -> str:
         else:
             avail_text = "—"
         lines.append(
-            f"- {supplier_name}: {price_text}, кол-во {qty_text}, наличие: {avail_text}"
+            f"- {supplier_label}: {price_text}, кол-во {qty_text}, наличие: {avail_text}"
         )
     return "\n".join(lines)
 
@@ -139,14 +141,13 @@ def _format_quotes_block(quotes: list[Quote]) -> str:
 def _format_deal_block(deal: Deal | None) -> str:
     if deal is None:
         return ""
-    supplier_name = (
-        deal.chosen_supplier.name
-        if deal.chosen_supplier
-        else f"#{deal.chosen_supplier_id}"
+    supplier_label = format_supplier_label(
+        deal.chosen_supplier.name if deal.chosen_supplier else None,
+        deal.chosen_supplier_id,
     )
     final_price = deal.final_price
     price_text = f"{final_price} ₽" if final_price is not None else "—"
-    return f"\nСделка: {supplier_name}, итог {price_text}"
+    return f"\nСделка: {supplier_label}, итог {price_text}"
 
 
 def _format_due_at(dt: datetime) -> str:
@@ -235,14 +236,14 @@ async def _run_bargain(
         return "ok"
 
     supplier = await session.get(Supplier, outbound.supplier_id)
-    supplier_name = supplier.name if supplier else f"#{outbound.supplier_id}"
     await telegram.send_message(
         chat_id,
         render_template(
             "bargain_sent",
             request_id=request_id,
             target_price=target_price,
-            supplier_name=supplier_name,
+            supplier_name=supplier.name if supplier else None,
+            supplier_id=outbound.supplier_id,
         ),
     )
     return "ok"
@@ -517,6 +518,7 @@ async def _handle_setprice(
             "setprice_ok",
             request_id=request_id,
             supplier_name=supplier.name,
+            supplier_id=supplier_id,
             price=price,
         ),
     )
@@ -581,13 +583,13 @@ async def _run_deal(
         return "ok"
 
     supplier = await session.get(Supplier, deal.chosen_supplier_id)
-    supplier_name = supplier.name if supplier else f"#{supplier_id}"
     await telegram.send_message(
         chat_id,
         render_template(
             "deal_closed",
             request_id=request_id,
-            supplier_name=supplier_name,
+            supplier_name=supplier.name if supplier else None,
+            supplier_id=deal.chosen_supplier_id,
             final_price=final_price,
         ),
     )

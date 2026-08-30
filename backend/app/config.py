@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
 
     # Morning price (Phase 4)
+    # Legacy single-chat setting; kept for backward compatibility with existing deployments.
     price_approval_chat_id: int | None = None
+    # Preferred: CSV of chat ids so multiple people can approve price drafts.
+    price_approval_chat_ids: str | None = None
     price_publish_chat_ids: str | None = None
     default_markup: Decimal = Decimal("500")
 
@@ -69,10 +72,9 @@ class Settings(BaseSettings):
     webhook_max_body_bytes: int = 262_144
     max_message_text_len: int = 4000
 
-    @property
-    def price_publish_chat_id_list(self) -> list[int]:
-        """Parse CSV of chat ids for approved price list publication."""
-        raw = (self.price_publish_chat_ids or "").strip()
+    @staticmethod
+    def _parse_csv_chat_ids(raw: str | None) -> list[int]:
+        raw = (raw or "").strip()
         if not raw:
             return []
         result: list[int] = []
@@ -82,6 +84,28 @@ class Settings(BaseSettings):
                 continue
             result.append(int(part))
         return result
+
+    @property
+    def price_publish_chat_id_list(self) -> list[int]:
+        """Parse CSV of chat ids for approved price list publication."""
+        return self._parse_csv_chat_ids(self.price_publish_chat_ids)
+
+    @property
+    def price_approval_chat_id_list(self) -> list[int]:
+        """Chats notified for price draft approval.
+
+        Prefers ``PRICE_APPROVAL_CHAT_IDS`` (CSV, supports several approvers);
+        falls back to the legacy single ``PRICE_APPROVAL_CHAT_ID``, then to
+        ``ADMIN_ALERT_CHAT_ID`` if neither is set.
+        """
+        csv_ids = self._parse_csv_chat_ids(self.price_approval_chat_ids)
+        if csv_ids:
+            return csv_ids
+        if self.price_approval_chat_id is not None:
+            return [self.price_approval_chat_id]
+        if self.admin_alert_chat_id is not None:
+            return [self.admin_alert_chat_id]
+        return []
 
     @field_validator("default_markup", mode="before")
     @classmethod

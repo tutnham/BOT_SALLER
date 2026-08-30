@@ -11,17 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.session import get_db
+from app.handlers.admin_menu import handle_admin_callback, handle_admin_message
+from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.start_handler import handle_start, is_start_command
 from app.handlers.supplier_messages import handle_reply
 from app.services.alert_service import send_admin_alert
+from app.services.routing_service import chat_role
 from app.telegram.client import get_telegram_client
 from app.telegram.deps import verify_telegram_secret_token
 from app.utils.idempotency import is_duplicate_update, mark_update_processed
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import (
-    is_client_group_active,
     is_employee,
     is_owner,
     is_supplier,
@@ -30,7 +32,6 @@ from app.utils.whitelist import (
 _PRICE_COMMAND_PREFIXES = ("/approve_price", "/reject_price")
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
-
 _GROUP_TYPES = frozenset({"group", "supergroup"})
 
 
@@ -40,6 +41,8 @@ class TelegramWebhookUpdate(BaseModel):
     model_config = ConfigDict(extra="allow")
     update_id: int | None = None
     message: dict[str, Any] | None = None
+    callback_query: dict[str, Any] | None = None
+    my_chat_member: dict[str, Any] | None = None
 
 
 def _get_message(update: dict[str, Any]) -> dict[str, Any] | None:
@@ -91,20 +94,15 @@ def _is_nl_gated_group_message(message: dict[str, Any]) -> bool:
     return _is_reply_to_bot(message) or _mentions_bot(message)
 
 
-async def _route_update(
+async def _route_message(
     session: AsyncSession,
-    update: dict[str, Any],
+    message: dict[str, Any],
 ) -> str:
-    message = _get_message(update)
-    if message is None:
-        return "ignored"
-
     chat = message.get("chat") or {}
     chat_type = chat.get("chat_type") or chat.get("type")
     text = _message_text(message)
     from_user = message.get("from") or {}
     from_id = from_user.get("id")
-
     if from_id is None:
         return "ignored"
 
@@ -114,10 +112,17 @@ async def _route_update(
         chat_id = chat.get("id")
         if chat_id is None:
             return "ignored"
-        if not await is_client_group_active(session, int(chat_id)):
+        role = await chat_role(session, int(chat_id))
+        if role == "client_group":
+            if text.startswith("/") or _is_nl_gated_group_message(message):
+                return await handle_employee_message(session, message, telegram=telegram)
             return "ignored"
-        if text.startswith("/") or _is_nl_gated_group_message(message):
-            return await handle_employee_message(session, message, telegram=telegram)
+        if role == "supplier_chat":
+            return await handle_reply(session, message, telegram=telegram)
+        # Unknown group: allow owner to bind it via pending flow, otherwise ignore.
+        if await is_owner(session, int(from_id)) and text.startswith("/"):
+            return await handle_admin_message(session, message, telegram=telegram)
+        return "ignored"
 
     if chat_type == "private":
         if is_start_command(message):
@@ -127,8 +132,13 @@ async def _route_update(
             return await handle_reply(session, message, telegram=telegram)
 
         if await is_owner(session, int(from_id)):
+            if text.startswith("/menu") or text.startswith("/admin"):
+                return await handle_admin_message(session, message, telegram=telegram)
             if text.startswith("/report") or text.startswith("/stats"):
                 return await handle_owner_message(session, message, telegram=telegram)
+            if text.startswith("/"):
+                # any unrecognized slash command from owner also falls back to admin
+                return await handle_admin_message(session, message, telegram=telegram)
 
         # D5: employees may approve/reject price drafts in DM (§11)
         if text.startswith(_PRICE_COMMAND_PREFIXES) and await is_employee(
@@ -136,6 +146,39 @@ async def _route_update(
         ):
             return await handle_employee_message(session, message, telegram=telegram)
 
+    return "ignored"
+
+
+async def _route_callback(
+    session: AsyncSession,
+    callback_query: dict[str, Any],
+) -> str:
+    from_user = callback_query.get("from") or {}
+    from_id = from_user.get("id")
+    if from_id is None or not await is_owner(session, int(from_id)):
+        return "ignored"
+    return await handle_admin_callback(session, callback_query)
+
+
+async def _route_my_chat_member(
+    session: AsyncSession,
+    my_chat_member: dict[str, Any],
+) -> str:
+    return await handle_my_chat_member(session, my_chat_member)
+
+
+async def _route_update(
+    session: AsyncSession,
+    update: dict[str, Any],
+) -> str:
+    if update.get("callback_query") is not None:
+        return await _route_callback(session, update["callback_query"])
+    if update.get("my_chat_member") is not None:
+        return await _route_my_chat_member(session, update["my_chat_member"])
+
+    message = _get_message(update)
+    if message is not None:
+        return await _route_message(session, message)
     return "ignored"
 
 

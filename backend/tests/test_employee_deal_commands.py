@@ -92,6 +92,7 @@ async def test_setprice_creates_manual_quote(
 
     group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("зафиксирована" in txt for txt in group_sends)
+    assert any(f"(#{supplier.id})" in txt for txt in group_sends)
 
 
 @pytest.mark.asyncio
@@ -162,6 +163,7 @@ async def test_deal_closes_request(
 
     group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("закрыта" in txt for txt in group_sends)
+    assert any(f"(#{supplier.id})" in txt for txt in group_sends)
 
 
 @pytest.mark.asyncio
@@ -291,6 +293,7 @@ async def test_status_shows_quotes_and_deal(
     summary = group_sends[0]
     assert f"Заявка #{request.id}" in summary
     assert supplier.name in summary
+    assert f"(#{supplier.id})" in summary
     assert "85000" in summary
     assert "Сделка" in summary
 

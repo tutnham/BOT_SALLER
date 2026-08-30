@@ -117,12 +117,85 @@ class Supplier(Base):
     active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("true")
     )
+    rfq_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
     dm_ok: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("false")
     )
     price_channel_id: Mapped[int | None] = mapped_column(BigInteger)
     price_channel_username: Mapped[str | None] = mapped_column(Text)
     last_price_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    chats: Mapped[list["SupplierChat"]] = relationship(
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
+
+
+class SupplierChatType(str, enum.Enum):
+    private = "private"
+    group = "group"
+    supergroup = "supergroup"
+
+
+class SupplierChat(Base):
+    __tablename__ = "supplier_chats"
+    __table_args__ = (
+        UniqueConstraint("supplier_id", "is_default", name="uq_supplier_default_chat"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id"), nullable=False
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    chat_type: Mapped[SupplierChatType] = mapped_column(
+        _pg_enum(SupplierChatType, "supplier_chat_type"),
+        nullable=False,
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("false")
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
+    bound_by_owner_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    supplier: Mapped[Supplier] = relationship(back_populates="chats")
+
+
+class PendingChat(Base):
+    __tablename__ = "pending_chats"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_type: Mapped[SupplierChatType] = mapped_column(
+        _pg_enum(SupplierChatType, "supplier_chat_type"),
+        nullable=False,
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    invited_by_tg_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AdminDialog(Base):
+    __tablename__ = "admin_dialogs"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -137,6 +210,7 @@ class ClientGroup(Base):
     active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("true")
     )
+    bound_by_owner_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class Request(Base):

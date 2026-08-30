@@ -26,23 +26,23 @@ TEMPLATES: dict[str, str] = {
         "Пожалуйста, ответьте на сообщение с номером заявки (#N)"
     ),
     "supplier_quote_parsed": (
-        "От: {supplier_name} · Заявка #{request_id}\n"
+        "От: {supplier_label} · Заявка #{request_id}\n"
         "Наличие: {available_text}\n"
         "Цена: {price_text}\n"
         "Кол-во: {qty_text}\n"
         "{raw_text}"
     ),
     "supplier_low_confidence": (
-        "От: {supplier_name} · Заявка #{request_id}\n"
+        "От: {supplier_label} · Заявка #{request_id}\n"
         "[распознавание неуверенное]\n"
         "{raw_text}"
     ),
     "deal_closed": (
-        "Заявка #{request_id} закрыта. Поставщик: {supplier_name}. "
+        "Заявка #{request_id} закрыта. Поставщик: {supplier_label}. "
         "Цена: {final_price} ₽"
     ),
     "setprice_ok": (
-        "Цена зафиксирована: заявка #{request_id}, поставщик {supplier_name}, "
+        "Цена зафиксирована: заявка #{request_id}, поставщик {supplier_label}, "
         "{price} ₽"
     ),
     "status_summary": (
@@ -60,7 +60,7 @@ TEMPLATES: dict[str, str] = {
     "invalid_command": "Неверный формат команды",
     "bargain_sent": (
         "Торг по заявке #{request_id}: запрошена цена {target_price} ₽ "
-        "у поставщика {supplier_name}"
+        "у поставщика {supplier_label}"
     ),
     "bargain_not_allowed": (
         "Заявка #{request_id}: торг недоступен в статусе {status}"
@@ -140,9 +140,64 @@ TEMPLATES: dict[str, str] = {
         "/cancel {id} — отменить заявку\n"
         "/approve_price {draft_id} — утвердить черновик прайса\n"
         "/reject_price {draft_id} — отклонить черновик прайса\n"
+        "/menu — управление поставщиками, беседами и каналами (owner)\n"
         "/help — эта справка"
     ),
+    # Owner admin menu
+    "admin_main_menu": (
+        "Администрирование бота\n\n"
+        "Выбирайте раздел:"
+    ),
+    "admin_supplier_list": "Список поставщиков:",
+    "admin_supplier_detail": (
+        "Поставщик #{supplier_id} {supplier_name}\n"
+        "Активен: {active}\n"
+        "RFQ включён: {rfq_enabled}"
+    ),
+    "admin_supplier_chats": "Чаты поставщика #{supplier_id} (всего {count}):",
+    "admin_client_groups": "Клиентские беседы:",
+    "admin_pending_chats": "Новые чаты, куда добавили бота:",
+    "admin_bind_supplier": "Выберите поставщика для этой беседы:",
+    "admin_price_channels": "Каналы прайсов поставщиков:",
+    "admin_price_channels_error": "Не удалось загрузить каналы: {detail}",
+    "admin_await_supplier_name": "Введите название нового поставщика:",
+    "admin_await_rename": "Введите новое название поставщика:",
+    "admin_await_channel_handle": (
+        "Введите username или ID канала с прайсами:\n"
+        "Пример: @supplier_prices или -1001234567890"
+    ),
+    "admin_need_name": "Название не может быть пустым. Введите ещё раз:",
+    "admin_need_channel": "Канал не может быть пустым. Введите ещё раз:",
+    "admin_channel_add_error": "Не удалось добавить канал: {detail}",
+    "admin_dialog_expired": "Сессия устарела. Начните сначала через /menu.",
+    "admin_unknown_command": "Неизвестная команда. Используйте /menu",
+    "admin_error": "Ошибка: {detail}",
+    "admin_chat_added": "Беседа добавлена как «{role}». Можно поменять в /menu → Новые чаты.",
+    "admin_chat_conflict": "Чат уже привязан как {role}. Сначала отвяжите в /menu.",
+    "admin_chat_bot_removed": "Бота удалили из беседы {chat_id}. Она деактивирована.",
+    "admin_chat_classify_prompt": (
+        "Бота добавили в беседу «{title}».\n"
+        "Как её использовать?"
+    ),
 }
+
+
+_SUPPLIER_LABEL_TEMPLATES = frozenset(
+    {
+        "supplier_quote_parsed",
+        "supplier_low_confidence",
+        "deal_closed",
+        "setprice_ok",
+        "bargain_sent",
+    }
+)
+
+
+def format_supplier_label(name: str | None, supplier_id: int) -> str:
+    """Format the unified supplier label: ``{name} (#{id})`` or ``#{id}`` if no name."""
+    if name:
+        return f"{name} (#{supplier_id})"
+    return f"#{supplier_id}"
 
 
 def _format_field(value: Any) -> str:
@@ -177,6 +232,11 @@ def render_template(name: str, **kwargs: Any) -> str:
         raise KeyError(f"Unknown template: {name}")
 
     normalized = kwargs.pop("normalized_json", None) or {}
+    if name in _SUPPLIER_LABEL_TEMPLATES:
+        supplier_name = kwargs.pop("supplier_name", None)
+        supplier_id = kwargs.pop("supplier_id")
+        kwargs["supplier_label"] = format_supplier_label(supplier_name, supplier_id)
+
     if name == "ask":
         kwargs.setdefault("request_id", kwargs.get("request_id", ""))
         for field in ("model", "storage", "color", "region", "sim"):

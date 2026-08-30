@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MessageKind, MessageOut, Request, RequestStatus, Supplier
 from app.services.deal_service import RequestNotFoundError, SupplierNotFoundError
 from app.services.quote_service import select_best_quote
+from app.services.routing_service import resolve_target_chat
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -64,11 +65,11 @@ async def start_bargain(
             raise NoEligibleQuoteError(request_id)
         supplier = best.supplier
 
-    if (
-        supplier.telegram_id is None
-        or not supplier.dm_ok
-        or not supplier.active
-    ):
+    if not supplier.active:
+        raise SupplierUnavailableError(supplier.id)
+
+    chat_id = await resolve_target_chat(session, supplier.id)
+    if chat_id is None:
         raise SupplierUnavailableError(supplier.id)
 
     # Template must never include competitor prices (TECH DOC §9.3 / ТЗ §5).
@@ -78,7 +79,7 @@ async def start_bargain(
         target_price=target_price,
     )
     try:
-        message_id = await telegram.send_message(supplier.telegram_id, text)
+        message_id = await telegram.send_message(chat_id, text)
     except TelegramSendError as exc:
         raise SupplierUnavailableError(supplier.id) from exc
 
@@ -86,7 +87,7 @@ async def start_bargain(
         request_id=request.id,
         supplier_id=supplier.id,
         tg_message_id=message_id,
-        chat_id=supplier.telegram_id,
+        chat_id=chat_id,
         text=text,
         kind=MessageKind.bargain,
     )

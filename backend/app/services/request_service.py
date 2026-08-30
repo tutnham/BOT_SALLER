@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageKind, MessageOut, Request, RequestStatus, Supplier
+from app.db.models import MessageKind, MessageOut, Request, RequestStatus
 from app.llm.client import (
     LLMProviderError,
     get_llm_client,
@@ -17,6 +16,7 @@ from app.llm.client import (
 )
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.request_normalizer import parse_request_text
+from app.services.routing_service import RfqTarget, resolve_rfq_targets
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -118,16 +118,9 @@ async def build_normalized_json(
     return _build_fallback_normalized(source_text, deterministic)
 
 
-async def get_eligible_suppliers(session: AsyncSession) -> list[Supplier]:
-    """Suppliers that can receive Bot API DM (active + telegram_id + dm_ok)."""
-    result = await session.execute(
-        select(Supplier).where(
-            Supplier.active.is_(True),
-            Supplier.telegram_id.is_not(None),
-            Supplier.dm_ok.is_(True),
-        )
-    )
-    return list(result.scalars().all())
+async def get_eligible_suppliers(session: AsyncSession) -> list[RfqTarget]:
+    """Suppliers that can receive an RFQ and their resolved target chat."""
+    return await resolve_rfq_targets(session)
 
 
 async def create_request(
@@ -155,22 +148,24 @@ async def create_request(
     session.add(request)
     await session.flush()
 
-    suppliers = await get_eligible_suppliers(session)
+    targets = await get_eligible_suppliers(session)
     sent_count = 0
 
-    for supplier in suppliers:
-        assert supplier.telegram_id is not None
+    for target in targets:
+        supplier = target.supplier
+        chat_id = target.chat_id
         text = render_template(
             "ask",
             request_id=request.id,
             normalized_json=normalized_json,
         )
         try:
-            message_id = await telegram.send_message(supplier.telegram_id, text)
+            message_id = await telegram.send_message(chat_id, text)
         except TelegramSendError as exc:
             logger.warning(
-                "Failed to send ask to supplier_id={}: {}",
+                "Failed to send ask to supplier_id={} chat_id={}: {}",
                 supplier.id,
+                chat_id,
                 exc,
             )
             continue
@@ -180,7 +175,7 @@ async def create_request(
                 request_id=request.id,
                 supplier_id=supplier.id,
                 tg_message_id=message_id,
-                chat_id=supplier.telegram_id,
+                chat_id=chat_id,
                 text=text,
                 kind=MessageKind.ask,
             )

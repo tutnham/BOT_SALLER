@@ -49,8 +49,11 @@ class MockTelegramClient:
     """Records outbound messages; returns monotonic fake message ids."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[int, str]] = []
+        self.sent: list[tuple[int, str, dict[str, Any] | None]] = []
         self.parse_modes: list[str | None] = []
+        self.answer_callbacks: list[tuple[str, str | None, bool]] = []
+        self.edited: list[tuple[int, int, str, dict[str, Any] | None]] = []
+        self.chats: dict[int, dict[str, Any]] = {}
         self._next_id = 9000
 
     async def send_message(
@@ -59,11 +62,38 @@ class MockTelegramClient:
         text: str,
         *,
         parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> int:
         self._next_id += 1
-        self.sent.append((chat_id, text))
+        self.sent.append((chat_id, text, reply_markup))
         self.parse_modes.append(parse_mode)
         return self._next_id
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str | None = None,
+        show_alert: bool = False,
+    ) -> None:
+        self.answer_callbacks.append((callback_query_id, text, show_alert))
+
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        self.edited.append((chat_id, message_id, text, reply_markup))
+
+    def set_chat(self, chat_id: int, info: dict[str, Any]) -> None:
+        self.chats[chat_id] = info
+
+    async def get_chat(self, chat_id: int) -> dict[str, Any] | None:
+        return self.chats.get(chat_id)
 
 
 class MockLLMClient:

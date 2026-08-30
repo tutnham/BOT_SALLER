@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MessageKind, MessageOut, Request, RequestStatus
 from app.services.deal_service import RequestNotFoundError, RequestNotOpenError
 from app.services.quote_service import select_best_quote
+from app.services.routing_service import resolve_target_chat
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -82,12 +83,7 @@ async def send_due_rechecks(
                 session, request.id, prefer_bargain=True
             )
             supplier = best.supplier if best is not None else None
-            if (
-                supplier is None
-                or supplier.telegram_id is None
-                or not supplier.dm_ok
-                or not supplier.active
-            ):
+            if supplier is None or not supplier.active:
                 logger.warning(
                     "Recheck skip request_id={}: no eligible supplier",
                     request.id,
@@ -110,14 +106,24 @@ async def send_due_rechecks(
                     )
                 skipped += 1
             else:
+                chat_id = await resolve_target_chat(session, supplier.id)
+                if chat_id is None:
+                    logger.warning(
+                        "Recheck skip request_id={}: no chat for supplier_id={}",
+                        request.id,
+                        supplier.id,
+                    )
+                    request.recheck_at = None
+                    skipped += 1
+                    continue
                 text = render_template("recheck", request_id=request.id)
-                message_id = await telegram.send_message(supplier.telegram_id, text)
+                message_id = await telegram.send_message(chat_id, text)
                 session.add(
                     MessageOut(
                         request_id=request.id,
                         supplier_id=supplier.id,
                         tg_message_id=message_id,
-                        chat_id=supplier.telegram_id,
+                        chat_id=chat_id,
                         text=text,
                         kind=MessageKind.recheck,
                     )

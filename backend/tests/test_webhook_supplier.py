@@ -79,6 +79,7 @@ async def test_supplier_reply_with_hash_n_forwards_to_group(
     ]
     assert len(group_sends) == 1
     assert supplier.name in group_sends[0]
+    assert f"(#{supplier.id})" in group_sends[0]
     assert f"Заявка #{request.id}" in group_sends[0]
     assert "85000" in group_sends[0]
 

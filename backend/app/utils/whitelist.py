@@ -82,6 +82,12 @@ async def get_owner_by_telegram_id(
     return result.scalar_one_or_none()
 
 
+async def list_owner_telegram_ids(session: AsyncSession) -> list[int]:
+    """Return all owner telegram ids for admin notifications."""
+    result = await session.execute(select(Owner.telegram_id))
+    return [int(row) for row in result.scalars().all()]
+
+
 async def get_supplier_by_telegram_id(
     session: AsyncSession,
     telegram_id: int,

@@ -27,6 +27,7 @@ from app.parsers.cache import get_cached, set_cached
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import upsert_quote
+from app.services.routing_service import resolve_supplier_by_chat
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
 from app.utils.whitelist import get_supplier_by_telegram_id
@@ -131,15 +132,22 @@ async def handle_reply(
     """
     from_user = message.get("from") or {}
     telegram_id = from_user.get("id")
-    if telegram_id is None:
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
         return "ignored"
 
-    supplier = await get_supplier_by_telegram_id(session, int(telegram_id))
+    chat_type = chat.get("type")
+    if chat_type == "private":
+        if telegram_id is None:
+            return "ignored"
+        supplier = await get_supplier_by_telegram_id(session, int(telegram_id))
+    else:
+        supplier = await resolve_supplier_by_chat(session, int(chat_id))
+
     if supplier is None:
         return "ignored"
 
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
     message_id = message.get("message_id")
     max_len = get_settings().max_message_text_len
     raw_text = (message.get("text") or message.get("caption") or "")[:max_len]
@@ -254,6 +262,7 @@ async def handle_reply(
         forward_text = render_template(
             "supplier_quote_parsed",
             supplier_name=supplier.name,
+            supplier_id=supplier.id,
             request_id=request.id,
             available=parsed.available,
             price=parsed.price,
@@ -264,6 +273,7 @@ async def handle_reply(
         forward_text = render_template(
             "supplier_low_confidence",
             supplier_name=supplier.name,
+            supplier_id=supplier.id,
             request_id=request.id,
             raw_text=raw_text,
         )

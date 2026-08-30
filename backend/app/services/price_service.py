@@ -398,9 +398,8 @@ async def _find_identical_pending_draft(
     return None
 
 
-def _resolve_approval_chat_id() -> int | None:
-    settings = get_settings()
-    return settings.price_approval_chat_id or settings.admin_alert_chat_id
+def _resolve_approval_chat_ids() -> list[int]:
+    return get_settings().price_approval_chat_id_list
 
 
 def format_draft_lines(items: list[dict[str, Any]]) -> str:
@@ -483,10 +482,11 @@ async def notify_morning_price_draft(
     items_block: str,
 ) -> None:
     """Send approval chat message after the draft row is committed."""
-    approval_chat = _resolve_approval_chat_id()
-    if approval_chat is None:
+    approval_chats = _resolve_approval_chat_ids()
+    if not approval_chats:
         logger.warning(
-            "No PRICE_APPROVAL_CHAT_ID / ADMIN_ALERT_CHAT_ID; draft {} not sent",
+            "No PRICE_APPROVAL_CHAT_IDS / PRICE_APPROVAL_CHAT_ID / ADMIN_ALERT_CHAT_ID; "
+            "draft {} not sent",
             draft_id,
         )
         return
@@ -495,7 +495,16 @@ async def notify_morning_price_draft(
         draft_id=draft_id,
         items_block=items_block,
     )
-    await telegram.send_message(int(approval_chat), message)
+    for chat_id in approval_chats:
+        try:
+            await telegram.send_message(int(chat_id), message)
+        except TelegramSendError as exc:
+            logger.warning(
+                "Failed to notify approval chat_id={} for draft_id={}: {}",
+                chat_id,
+                draft_id,
+                exc,
+            )
 
 
 async def approve_price_draft(
