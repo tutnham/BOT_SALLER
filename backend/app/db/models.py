@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -194,7 +195,9 @@ class AdminDialog(Base):
     state: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa_text("now() + interval '15 minutes'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -215,6 +218,7 @@ class ClientGroup(Base):
 
 class Request(Base):
     __tablename__ = "requests"
+    __table_args__ = (Index("ix_requests_employee_id", "employee_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     group_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -248,7 +252,10 @@ class Request(Base):
 
 class MessageOut(Base):
     __tablename__ = "messages_out"
-    __table_args__ = (UniqueConstraint("chat_id", "tg_message_id"),)
+    __table_args__ = (
+        UniqueConstraint("chat_id", "tg_message_id"),
+        Index("ix_messages_out_request_id", "request_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     request_id: Mapped[int | None] = mapped_column(
@@ -271,7 +278,11 @@ class MessageOut(Base):
 
 class MessageIn(Base):
     __tablename__ = "messages_in"
-    __table_args__ = (UniqueConstraint("chat_id", "tg_message_id"),)
+    __table_args__ = (
+        UniqueConstraint("chat_id", "tg_message_id"),
+        Index("ix_messages_in_request_id", "request_id"),
+        Index("ix_messages_in_supplier_id", "supplier_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     request_id: Mapped[int | None] = mapped_column(
@@ -325,6 +336,10 @@ class Quote(Base):
 
 class Deal(Base):
     __tablename__ = "deals"
+    __table_args__ = (
+        Index("ix_deals_request_id", "request_id"),
+        Index("ix_deals_chosen_supplier_id", "chosen_supplier_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     request_id: Mapped[int] = mapped_column(
@@ -343,6 +358,7 @@ class Deal(Base):
 
 class RawPrice(Base):
     __tablename__ = "raw_prices"
+    __table_args__ = (Index("ix_raw_prices_supplier_id", "supplier_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     supplier_id: Mapped[int] = mapped_column(
@@ -365,6 +381,7 @@ class RawPrice(Base):
 
 class ParsedItem(Base):
     __tablename__ = "parsed_items"
+    __table_args__ = (Index("ix_parsed_items_raw_price_id", "raw_price_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     raw_price_id: Mapped[int] = mapped_column(
@@ -451,3 +468,41 @@ class UpdateLog(Base):
     processed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AppSetting(Base):
+    """Runtime-mutable configuration keyed by a lower_snake_case string."""
+
+    __tablename__ = "app_settings"
+    __table_args__ = (Index("ix_app_settings_updated_by", "updated_by"),)
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("owners.id"), nullable=True
+    )
+
+
+class BillingReminder(Base):
+    """Idempotency log for periodic billing reminders by (kind, period_key)."""
+
+    __tablename__ = "billing_reminders"
+    __table_args__ = (
+        Index(
+            "ix_billing_reminders_kind_period_key",
+            "kind",
+            "period_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    period_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    chat_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False)

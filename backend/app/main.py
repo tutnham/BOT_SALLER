@@ -88,10 +88,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info("Zakupki-Bot backend stopped")
 
 
+settings = get_settings()
 app = FastAPI(
     title="Zakupki-Bot",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 app.middleware("http")(rate_limit_webhook_and_jobs)
 

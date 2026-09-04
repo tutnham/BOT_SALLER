@@ -171,7 +171,6 @@ async def get_posts(
 
 
 async def list_channels(
-    session: Any | None = None,  # noqa: ARG001
     http_client: httpx.AsyncClient | None = None,
 ) -> list[ParserChannel]:
     """Return all registered parser channels."""

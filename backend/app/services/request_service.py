@@ -134,6 +134,9 @@ async def create_request(
     """
     Create request, broadcast ``ask`` to eligible suppliers, update status.
 
+    The request row is committed before any Telegram sends so a failure
+    cannot silently roll back an already delivered supplier message.
+
     Returns:
         (request, successful_send_count)
     """
@@ -149,7 +152,11 @@ async def create_request(
     await session.flush()
 
     targets = await get_eligible_suppliers(session)
+    # Commit business state before external side-effects (Telegram sends).
+    await session.commit()
+
     sent_count = 0
+    sent_messages: list[tuple[int, int, int, str]] = []  # (supplier_id, chat_id, message_id, text)
 
     for target in targets:
         supplier = target.supplier
@@ -170,20 +177,22 @@ async def create_request(
             )
             continue
 
+        sent_messages.append((supplier.id, chat_id, message_id, text))
+        sent_count += 1
+
+    if sent_count >= 1:
+        request.status = RequestStatus.awaiting_answers
+
+    for supplier_id, chat_id, message_id, text in sent_messages:
         session.add(
             MessageOut(
                 request_id=request.id,
-                supplier_id=supplier.id,
+                supplier_id=supplier_id,
                 tg_message_id=message_id,
                 chat_id=chat_id,
                 text=text,
                 kind=MessageKind.ask,
             )
         )
-        sent_count += 1
-
-    if sent_count >= 1:
-        request.status = RequestStatus.awaiting_answers
-
     await session.flush()
     return request, sent_count

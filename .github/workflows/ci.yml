@@ -1,17 +1,19 @@
-name: backend-ci
+name: ci
 
 on:
   push:
     paths:
       - "backend/**"
+      - "tg-channel-parser/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "tg-channel-parser/**"
       - ".github/workflows/ci.yml"
 
 jobs:
-  test:
+  backend:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -50,3 +52,28 @@ jobs:
         run: mypy backend/app --config-file backend/pyproject.toml
       - name: Pytest
         run: pytest backend/tests -q --rootdir=backend
+
+  tg-channel-parser:
+    runs-on: ubuntu-latest
+    env:
+      API_AUTH_TOKEN: test-parser-api-token
+      TELEGRAM_API_ID: "12345"
+      TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef"
+      TELEGRAM_SESSION_STRING: "test-session-string-not-real"
+      PYTHONPATH: tg-channel-parser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tg-channel-parser/requirements.txt
+          pip install ruff mypy
+      - name: Ruff
+        run: ruff check --config tg-channel-parser/pyproject.toml tg-channel-parser/app tg-channel-parser/tests
+      - name: Mypy
+        run: mypy tg-channel-parser/app --config-file tg-channel-parser/pyproject.toml
+      - name: Pytest
+        run: pytest tg-channel-parser/tests -q --rootdir=tg-channel-parser

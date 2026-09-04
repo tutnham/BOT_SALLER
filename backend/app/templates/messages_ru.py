@@ -172,6 +172,13 @@ TEMPLATES: dict[str, str] = {
     "admin_dialog_expired": "Сессия устарела. Начните сначала через /menu.",
     "admin_unknown_command": "Неизвестная команда. Используйте /menu",
     "admin_error": "Ошибка: {detail}",
+    "llm_billing_reminder": (
+        "Напоминание: пополните баланс {provider}.\n"
+        "Ориентировочная стоимость: {price_text}.\n"
+        "Оплата: {payment_url}"
+    ),
+    "llm_price_updated": "Цена LLM обновлена:\n{price_text}",
+    "llm_price_usage": "Использование: /set_llm_price <текст цены>\nТекущая: {price_text}",
     "admin_chat_added": "Беседа добавлена как «{role}». Можно поменять в /menu → Новые чаты.",
     "admin_chat_conflict": "Чат уже привязан как {role}. Сначала отвяжите в /menu.",
     "admin_chat_bot_removed": "Бота удалили из беседы {chat_id}. Она деактивирована.",

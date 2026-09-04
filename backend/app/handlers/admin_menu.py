@@ -265,7 +265,7 @@ async def _dispatch_callback(
         return
 
     if action == "price_channel_delete":
-        await parser_client.delete_channel(session, cd.arg)
+        await parser_client.delete_channel(int(cd.arg))
         await _send_price_channels(session, telegram, chat_id, message_id=message_id)
         return
 
@@ -514,7 +514,7 @@ async def _send_price_channels(
     message_id: int | None = None,
 ) -> None:
     try:
-        channels = await parser_client.list_channels(session)
+        channels = await parser_client.list_channels()
     except parser_client.ParserClientError as exc:
         text = render_template("admin_price_channels_error", detail=str(exc))
         await _send_or_edit(
@@ -576,7 +576,7 @@ async def _handle_dialog_text(
             await telegram.send_message(chat_id, render_template("admin_need_channel"))
             return "ok"
         try:
-            await parser_client.add_channel(session, handle)
+            await parser_client.add_channel(handle)
         except parser_client.ParserClientError as exc:
             await telegram.send_message(
                 chat_id,

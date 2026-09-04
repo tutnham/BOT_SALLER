@@ -95,8 +95,9 @@ def _build_request_filters(
 
 
 def _json_ready(value: Any) -> Any:
+    """Serialize Decimals as strings to keep money precision end-to-end."""
     if isinstance(value, Decimal):
-        return float(value)
+        return str(value)
     if isinstance(value, list):
         return [_json_ready(item) for item in value]
     if isinstance(value, dict):

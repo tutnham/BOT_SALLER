@@ -10,6 +10,7 @@ from app.db.models import AdminDialog, Owner, Supplier, SupplierChat, SupplierCh
 from sqlalchemy import select
 from app.db.session import get_db
 from app.main import app
+from app.services import parser_client
 from app.telegram.client import set_telegram_client
 from app.telegram.keyboards import CallbackData, menu_button
 
@@ -186,3 +187,91 @@ async def test_idempotent_callback(
     resp2 = await webhook_client.post("/telegram/webhook", json=payload, headers=webhook_headers)
     assert resp1.json()["status"] == "ok"
     assert resp2.json()["status"] == "duplicate"
+
+
+class _FakeParserChannel:
+    def __init__(self, id: int, channel_id: int, username: str | None, title: str | None, is_active: bool):
+        self.id = id
+        self.channel_id = channel_id
+        self.username = username
+        self.title = title
+        self.is_active = is_active
+
+
+@pytest.mark.asyncio
+async def test_price_channel_delete_callback(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deleted_ids: list[int] = []
+    listed: list[int] = []
+
+    async def _delete(channel_id: int) -> None:
+        deleted_ids.append(channel_id)
+
+    async def _list() -> list[_FakeParserChannel]:
+        listed.append(1)
+        return [_FakeParserChannel(7, -100500, "@prices", "Prices", True)]
+
+    monkeypatch.setattr(parser_client, "delete_channel", _delete)
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    payload = _callback_payload(
+        OWNER_TG_ID,
+        "cb_del",
+        CallbackData(namespace="admin", action="price_channel_delete", arg=7),
+    )
+    resp = await webhook_client.post("/telegram/webhook", json=payload, headers=webhook_headers)
+    assert resp.json()["status"] == "ok"
+    assert deleted_ids == [7]
+    assert listed == [1, 1]  # list before + after delete
+
+
+@pytest.mark.asyncio
+async def test_price_channel_add_dialog(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added: list[str] = []
+
+    async def _list() -> list[_FakeParserChannel]:
+        return []
+
+    async def _add(handle: str) -> object:
+        added.append(handle)
+        return _FakeParserChannel(3, -100300, handle, "New", True)
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "add_channel", _add)
+
+    # Start add dialog
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_add",
+            CallbackData(namespace="admin", action="price_channel_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    # Send channel handle
+    text_payload = {
+        "update_id": 101,
+        "message": {
+            "message_id": 2,
+            "from": {"id": OWNER_TG_ID},
+            "chat": {"id": OWNER_TG_ID, "type": "private"},
+            "text": "@supplier_prices",
+        },
+    }
+    resp = await webhook_client.post(
+        "/telegram/webhook", json=text_payload, headers=webhook_headers
+    )
+    assert resp.json()["status"] == "ok"
+    assert added == ["@supplier_prices"]

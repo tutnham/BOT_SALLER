@@ -8,7 +8,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from app import scheduler as scheduler_mod
 from app.config import get_settings
-from app.scheduler import JOB_SPECS, setup_scheduler
+from app.scheduler import JobSpec, build_job_specs, setup_scheduler
+from app.utils.job_lock import acquire_job_lock, release_job_lock
+
+
+class _LockResult:
+    def scalar_one(self) -> bool:
+        return True
 
 
 class _DummySession:
@@ -17,6 +23,9 @@ class _DummySession:
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+    async def execute(self, *args: object, **kwargs: object) -> _LockResult:
+        return _LockResult()
 
 
 class _DummySessionFactory:
@@ -49,7 +58,8 @@ def test_setup_scheduler_registers_expected_jobs() -> None:
     scheduler = setup_scheduler()
 
     jobs = {job.id: job for job in scheduler.get_jobs()}
-    expected_ids = {spec[0] for spec in JOB_SPECS}
+    specs = build_job_specs(settings)
+    expected_ids = {spec.job_id for spec in specs}
     assert set(jobs) == expected_ids
 
     assert str(jobs["morning_price"].trigger) == (
@@ -64,19 +74,28 @@ def test_setup_scheduler_registers_expected_jobs() -> None:
     assert str(jobs["weekly_report"].trigger) == (
         "cron[month='*', day='*', day_of_week='1', hour='9', minute='0']"
     )
+    assert str(jobs["llm_billing_reminder"].trigger) == (
+        f"cron[month='*', day='{settings.llm_billing_reminder_day}', "
+        "day_of_week='*', hour='9', minute='0']"
+    )
     for job in jobs.values():
         assert job.max_instances == 1
         assert job.coalesce is True
-        assert job.misfire_grace_time == 300
         assert job.trigger.timezone == tz
+
+    assert jobs["llm_billing_reminder"].misfire_grace_time == 3600
+    for job_id in ("morning_price", "recheck_due", "daily_report_day", "weekly_report"):
+        assert jobs[job_id].misfire_grace_time == 300
 
 
 def test_job_specs_timeouts_and_alert_flags() -> None:
-    by_id = {job_id: (timeout, alert) for job_id, _c, _n, timeout, alert in JOB_SPECS}
+    specs = build_job_specs(get_settings())
+    by_id = {spec.job_id: (spec.timeout_seconds, spec.alert_on_failure) for spec in specs}
     assert by_id["morning_price"] == (300.0, True)
     assert by_id["recheck_due"] == (120.0, False)
     assert by_id["daily_report_day"] == (60.0, False)
     assert by_id["weekly_report"] == (60.0, False)
+    assert by_id["llm_billing_reminder"] == (60.0, True)
 
 
 @pytest.mark.asyncio
@@ -85,7 +104,7 @@ async def test_job_morning_price_alerts_on_failure(monkeypatch: pytest.MonkeyPat
     telegram = _DummyTelegram()
     alert = AsyncMock()
 
-    monkeypatch.setattr(scheduler_mod, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(
         scheduler_mod,
@@ -120,7 +139,7 @@ async def test_run_guarded_alerts_after_rollback_failure(
     telegram = _DummyTelegram()
     alert = AsyncMock()
 
-    monkeypatch.setattr(scheduler_mod, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
 
@@ -153,7 +172,7 @@ async def test_non_alerting_jobs_do_not_notify_on_failure(
     telegram = _DummyTelegram()
     alert = AsyncMock()
 
-    monkeypatch.setattr(scheduler_mod, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(
         scheduler_mod,
@@ -170,13 +189,38 @@ async def test_non_alerting_jobs_do_not_notify_on_failure(
 
 
 @pytest.mark.asyncio
+async def test_job_llm_billing_reminder_alerts_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory = _DummySessionFactory()
+    telegram = _DummyTelegram()
+    alert = AsyncMock()
+
+    monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
+    monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
+    monkeypatch.setattr(
+        scheduler_mod,
+        "run_llm_billing_reminder",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+
+    await scheduler_mod.job_llm_billing_reminder()
+
+    assert session_factory.last_session is not None
+    assert session_factory.last_session.rolled_back is True
+    assert alert.await_count == 1
+    assert "llm-billing-reminder" in alert.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_job_recheck_due_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     session_factory = _DummySessionFactory()
     telegram = _DummyTelegram()
     runner = AsyncMock(return_value={"status": "ok"})
     alert = AsyncMock()
 
-    monkeypatch.setattr(scheduler_mod, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(scheduler_mod, "run_recheck_due", runner)
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
@@ -185,3 +229,25 @@ async def test_job_recheck_due_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
 
     runner.assert_awaited_once()
     assert alert.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_job_lock_blocks_concurrent_runs(
+    engine,
+    db_session,
+) -> None:
+    name = "concurrency-test"
+    assert await acquire_job_lock(db_session, name) is True
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async with engine.connect() as conn2:
+        session2 = AsyncSession(bind=conn2, expire_on_commit=False)
+        try:
+            assert await acquire_job_lock(session2, name) is False
+        finally:
+            await session2.close()
+
+    assert await release_job_lock(db_session, name) is True
+    assert await acquire_job_lock(db_session, name) is True
+    await release_job_lock(db_session, name)
