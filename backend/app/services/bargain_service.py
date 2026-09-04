@@ -72,6 +72,12 @@ async def start_bargain(
     if chat_id is None:
         raise SupplierUnavailableError(supplier.id)
 
+    # Commit status change before the external side-effect so a Telegram
+    # failure cannot roll back an already delivered message.
+    request.status = RequestStatus.bargaining
+    await session.flush()
+    await session.commit()
+
     # Template must never include competitor prices (TECH DOC §9.3 / ТЗ §5).
     text = render_template(
         "bargain",
@@ -92,6 +98,5 @@ async def start_bargain(
         kind=MessageKind.bargain,
     )
     session.add(outbound)
-    request.status = RequestStatus.bargaining
     await session.flush()
     return outbound

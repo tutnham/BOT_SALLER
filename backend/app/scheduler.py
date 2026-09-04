@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -12,20 +12,45 @@ from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.db.session import get_session_factory
-from app.jobs import run_daily_report, run_morning_price, run_recheck_due
+from app.config import Settings, get_settings
+from app.db.session import get_scheduler_session_factory
+from app.jobs import (
+    run_daily_report,
+    run_llm_billing_reminder,
+    run_morning_price,
+    run_recheck_due,
+)
 from app.services.alert_service import send_admin_alert
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
+from app.utils.job_lock import acquire_job_lock, release_job_lock
 
-# (job_id, cron, runner_factory_name, timeout_seconds, alert_on_failure)
+
+class JobSpec(NamedTuple):
+    job_id: str
+    cron: str
+    name: str
+    timeout_seconds: float
+    alert_on_failure: bool
+    misfire_grace_time: int
+
+
 # Timeouts are safety nets vs hung I/O; morning-price allows parser+LLM headroom.
-JOB_SPECS: tuple[tuple[str, str, str, float, bool], ...] = (
-    ("morning_price", "0 8 * * *", "morning-price", 300.0, True),
-    ("recheck_due", "*/15 * * * *", "recheck-due", 120.0, False),
-    ("daily_report_day", "0 21 * * *", "daily-report-day", 60.0, False),
-    ("weekly_report", "0 9 * * 1", "weekly-report", 60.0, False),
-)
+# misfire_grace_time is per-job: monthly reminder can tolerate a longer outage.
+def build_job_specs(settings: Settings) -> tuple[JobSpec, ...]:
+    return (
+        JobSpec("morning_price", "0 8 * * *", "morning-price", 300.0, True, 300),
+        JobSpec("recheck_due", "*/15 * * * *", "recheck-due", 120.0, False, 300),
+        JobSpec("daily_report_day", "0 21 * * *", "daily-report-day", 60.0, False, 300),
+        JobSpec("weekly_report", "0 9 * * 1", "weekly-report", 60.0, False, 300),
+        JobSpec(
+            "llm_billing_reminder",
+            f"0 9 {settings.llm_billing_reminder_day} * *",
+            "llm-billing-reminder",
+            60.0,
+            True,
+            3600,
+        ),
+    )
 
 
 async def _run_guarded(
@@ -36,9 +61,13 @@ async def _run_guarded(
     alert_on_failure: bool,
 ) -> None:
     logger.info("Job {} started", job_name)
-    session_factory = get_session_factory()
+    session_factory = get_scheduler_session_factory()
     telegram = get_telegram_client()
     async with session_factory() as session:
+        if not await acquire_job_lock(session, job_name):
+            logger.info("Job {} skipped: already running on another instance", job_name)
+            return
+
         try:
             await asyncio.wait_for(
                 runner(session, telegram),
@@ -50,17 +79,22 @@ async def _run_guarded(
                 await session.rollback()
             except Exception:
                 logger.exception("Job {} rollback failed after error", job_name)
-            err_text = str(exc).strip() or "(no message)"
-            logger.exception("Job {} failed: {}: {}", job_name, type(exc).__name__, err_text)
+            err_type = type(exc).__name__
+            logger.exception("Job {} failed: {}", job_name, err_type)
             if alert_on_failure:
                 await send_admin_alert(
                     (
                         f"⚠️ Job {job_name} failed\n"
-                        f"Error: {type(exc).__name__}: {err_text}\n"
+                        f"Error: {err_type}\n"
                         "Check backend logs and parser availability."
                     ),
                     telegram=telegram,
                 )
+        finally:
+            try:
+                await release_job_lock(session, job_name)
+            except Exception:
+                logger.exception("Job {} advisory unlock failed", job_name)
 
 
 async def job_morning_price() -> None:
@@ -107,11 +141,21 @@ async def job_weekly_report() -> None:
     )
 
 
+async def job_llm_billing_reminder() -> None:
+    await _run_guarded(
+        "llm-billing-reminder",
+        run_llm_billing_reminder,
+        timeout_seconds=60.0,
+        alert_on_failure=True,
+    )
+
+
 _JOB_CALLABLES: dict[str, Callable[[], Awaitable[None]]] = {
     "morning_price": job_morning_price,
     "recheck_due": job_recheck_due,
     "daily_report_day": job_daily_report_day,
     "weekly_report": job_weekly_report,
+    "llm_billing_reminder": job_llm_billing_reminder,
 }
 
 
@@ -119,13 +163,14 @@ def setup_scheduler() -> AsyncIOScheduler:
     settings = get_settings()
     tz = ZoneInfo(settings.tz)
     scheduler = AsyncIOScheduler(timezone=tz)
-    defaults = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 300}
+    defaults = {"max_instances": 1, "coalesce": True}
 
-    for job_id, cron, _name, _timeout, _alert in JOB_SPECS:
+    for spec in build_job_specs(settings):
         scheduler.add_job(
-            _JOB_CALLABLES[job_id],
-            CronTrigger.from_crontab(cron, timezone=tz),
-            id=job_id,
+            _JOB_CALLABLES[spec.job_id],
+            CronTrigger.from_crontab(spec.cron, timezone=tz),
+            id=spec.job_id,
+            misfire_grace_time=spec.misfire_grace_time,
             **defaults,
         )
     return scheduler

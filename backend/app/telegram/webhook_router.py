@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.handlers.admin_menu import handle_admin_callback, handle_admin_message
 from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
+from app.handlers.llm_billing_commands import handle_set_llm_price
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.start_handler import handle_start, is_start_command
 from app.handlers.supplier_messages import handle_reply
@@ -134,6 +135,8 @@ async def _route_message(
         if await is_owner(session, int(from_id)):
             if text.startswith("/menu") or text.startswith("/admin"):
                 return await handle_admin_message(session, message, telegram=telegram)
+            if text.startswith("/set_llm_price"):
+                return await handle_set_llm_price(session, message, telegram=telegram)
             if text.startswith("/report") or text.startswith("/stats"):
                 return await handle_owner_message(session, message, telegram=telegram)
             if text.startswith("/"):

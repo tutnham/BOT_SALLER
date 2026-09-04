@@ -53,8 +53,16 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_provider: str | None = None
 
+    # LLM billing reminder (monthly). Static template; no LLM text generation.
+    llm_provider_name: str = "DeepSeek"
+    # Seed/bootstrap value only; runtime source of truth is app_settings table.
+    llm_topup_price_text: str | None = None
+    llm_topup_payment_url: str | None = None
+    llm_billing_reminder_chat_id: int | None = None
+    llm_billing_reminder_day: int = 1
+
     # Parser microservice (Phase 4)
-    parser_api_url: str = "http://tg-parser-api:8100"
+    parser_api_url: str = "http://tg-parser-api:8000"
     parser_api_token: str | None = None
     parser_timeout_seconds: float = 15.0
     llm_timeout_seconds: float = 30.0
@@ -66,11 +74,16 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=10)
     db_pool_recycle: int = Field(default=1800)
     db_pool_timeout: int = Field(default=30)
+    # Scheduler uses a dedicated small pool so long jobs cannot starve web workers.
+    db_scheduler_pool_size: int = Field(default=2)
+    db_scheduler_max_overflow: int = Field(default=3)
+    db_scheduler_pool_timeout: int = Field(default=30)
 
     # Operational safety
     log_level: str = "INFO"
     webhook_max_body_bytes: int = 262_144
     max_message_text_len: int = 4000
+    docs_enabled: bool = True
 
     @staticmethod
     def _parse_csv_chat_ids(raw: str | None) -> list[int]:
@@ -121,6 +134,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TELEGRAM_WEBHOOK_SECRET_TOKEN must match "
                 r"^[A-Za-z0-9_-]{1,256}$ (Telegram setWebhook secret_token)"
+            )
+        return value
+
+    @field_validator("llm_billing_reminder_day")
+    @classmethod
+    def _validate_llm_billing_reminder_day(cls, value: int) -> int:
+        if not 1 <= value <= 28:
+            raise ValueError(
+                "LLM_BILLING_REMINDER_DAY must be between 1 and 28 inclusive; "
+                "APScheduler does not shift the cron day to the last day of the month."
             )
         return value
 

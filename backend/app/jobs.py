@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from loguru import logger
@@ -10,13 +11,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import Owner
+from app.services.billing_service import (
+    build_llm_billing_reminder_text,
+    period_key_for_datetime,
+    record_reminder_sent,
+    release_reminder,
+    reserve_reminder,
+)
 from app.services.price_service import build_morning_price, notify_morning_price_draft
 from app.services.recheck_service import send_due_rechecks
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 
 
-async def _resolve_report_destinations(session: AsyncSession) -> list[int]:
+async def _resolve_owner_destinations(
+    session: AsyncSession,
+    *,
+    fallback_chat_id: int | None = None,
+) -> list[int]:
+    """Return owners with ``dm_ok=true`` first, then a single fallback chat id."""
     result = await session.execute(
         select(Owner.telegram_id).where(Owner.dm_ok.is_(True))
     )
@@ -24,10 +37,9 @@ async def _resolve_report_destinations(session: AsyncSession) -> list[int]:
     if owner_chat_ids:
         return owner_chat_ids
 
-    analytics_chat_id = get_settings().analytics_chat_id
-    if analytics_chat_id is None:
+    if fallback_chat_id is None:
         return []
-    return [int(analytics_chat_id)]
+    return [int(fallback_chat_id)]
 
 
 async def run_morning_price(
@@ -67,7 +79,10 @@ async def run_daily_report(
     report_text = await build_report(session, period=period)
     await session.commit()
 
-    destinations = await _resolve_report_destinations(session)
+    settings = get_settings()
+    destinations = await _resolve_owner_destinations(
+        session, fallback_chat_id=settings.analytics_chat_id
+    )
     if not destinations:
         logger.warning(
             "Daily report period={} built but no destinations "
@@ -101,6 +116,85 @@ async def run_daily_report(
     return {
         "status": "ok",
         "period": period,
+        "sent": sent,
+        "failed": failed,
+    }
+
+
+async def run_llm_billing_reminder(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+) -> dict[str, Any]:
+    """Send monthly LLM top-up reminder. Static text only — no LLM is invoked."""
+    settings = get_settings()
+
+    reminder_text = await build_llm_billing_reminder_text(session, settings)
+    if reminder_text is None:
+        return {
+            "status": "skipped",
+            "reason": "payment_url_unset",
+        }
+
+    fallback_chat_id = (
+        settings.llm_billing_reminder_chat_id or settings.admin_alert_chat_id
+    )
+    destinations = await _resolve_owner_destinations(
+        session, fallback_chat_id=fallback_chat_id
+    )
+    if not destinations:
+        logger.warning(
+            "LLM billing reminder has no destinations "
+            "(owners with dm_ok, LLM_BILLING_REMINDER_CHAT_ID, or ADMIN_ALERT_CHAT_ID)"
+        )
+        return {
+            "status": "skipped",
+            "reason": "no_destinations",
+        }
+
+    period_key = period_key_for_datetime(datetime.now(timezone.utc), settings)
+    reminder_id = await reserve_reminder(session, period_key)
+    if reminder_id is None:
+        return {
+            "status": "already_sent",
+            "period_key": period_key,
+        }
+
+    # Commit the reservation before sending so a crash cannot double-send.
+    await session.commit()
+
+    sent = 0
+    failed = 0
+    for chat_id in destinations:
+        try:
+            await telegram.send_message(chat_id, reminder_text)
+            sent += 1
+        except TelegramSendError:
+            failed += 1
+
+    if sent == 0:
+        # Release the reservation so a manual retry can recover.
+        await release_reminder(session, reminder_id)
+        await session.commit()
+        return {
+            "status": "degraded",
+            "period_key": period_key,
+            "sent": sent,
+            "failed": failed,
+        }
+
+    await record_reminder_sent(session, reminder_id, destinations)
+    await session.commit()
+
+    if failed > 0:
+        logger.warning(
+            "LLM billing reminder partial failure sent={} failed={}",
+            sent,
+            failed,
+        )
+
+    return {
+        "status": "ok",
+        "period_key": period_key,
         "sent": sent,
         "failed": failed,
     }
