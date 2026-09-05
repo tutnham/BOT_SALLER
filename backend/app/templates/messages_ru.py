@@ -154,10 +154,12 @@ TEMPLATES: dict[str, str] = {
         "/deal {id} {supplier_id} {price} — закрыть сделку\n"
         "«беру #N у поставщика S за ЦЕНА» — закрыть сделку (reply/@бот)\n"
         "/status {id} — статус заявки и предложения\n"
-        "/cancel {id} — отменить заявку\n"
+        "/cancel {id} — отменить заявку (статус cancelled, данные в БД)\n"
         "/approve_price {draft_id} — утвердить черновик прайса\n"
         "/reject_price {draft_id} — отклонить черновик прайса\n"
         "/menu — управление поставщиками, сотрудниками, беседами и каналами (owner)\n"
+        "/purge_request {id} — удалить заявку из БД навсегда (owner, с подтверждением)\n"
+        "/purge_old {days} [limit] [--confirm] — очистка старых cancelled/closed (owner)\n"
         "/help — эта справка"
     ),
     # Owner admin menu

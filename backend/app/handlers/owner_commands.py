@@ -1,4 +1,4 @@
-"""Owner command handlers for analytics reports (TECH DOC §9.6, §11)."""
+"""Owner command handlers for analytics reports and purge (TECH DOC §9.6, §11)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,24 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.purge_service import DEFAULT_PURGE_OLD_LIMIT, purge_old_requests
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol
+from app.telegram.keyboards import inline_keyboard, menu_button
+from app.templates.messages_ru import render_template
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import get_owner_by_telegram_id
 
 _REPORT_RE = re.compile(r"^/report(?:@\w+)?(?:\s+(.+))?\s*$", re.IGNORECASE)
 _STATS_RE = re.compile(r"^/stats(?:@\w+)?(?:\s+(.+))?\s*$", re.IGNORECASE)
+_PURGE_REQUEST_RE = re.compile(
+    r"^/purge_request(?:@\w+)?\s+(\d+)\s*$",
+    re.IGNORECASE,
+)
+_PURGE_OLD_RE = re.compile(
+    r"^/purge_old(?:@\w+)?\s+(\d+)(?:\s+(\d+))?(?:\s+(--confirm))?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _parse_report_args(text: str) -> tuple[str, int | None] | None:
@@ -33,6 +44,91 @@ def _parse_report_args(text: str) -> tuple[str, int | None] | None:
         return None
 
     return None
+
+
+def _format_id_list(ids: list[int]) -> str:
+    if not ids:
+        return "—"
+    return ", ".join(f"#{request_id}" for request_id in ids)
+
+
+async def _handle_purge_request(
+    *,
+    chat_id: int,
+    text: str,
+    telegram: TelegramClientProtocol,
+) -> str:
+    match = _PURGE_REQUEST_RE.match(text)
+    if not match:
+        await telegram.send_message(
+            chat_id,
+            render_template("purge_request_invalid"),
+        )
+        return "ok"
+
+    request_id = int(match.group(1))
+    markup = inline_keyboard(
+        [
+            [
+                menu_button("Удалить", "purge_confirm", request_id),
+                menu_button("Отмена", "purge_cancel", request_id),
+            ]
+        ]
+    )
+    await telegram.send_message(
+        chat_id,
+        render_template("purge_request_confirm", request_id=request_id),
+        reply_markup=markup,
+    )
+    return "ok"
+
+
+async def _handle_purge_old(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    text: str,
+    telegram: TelegramClientProtocol,
+) -> str:
+    match = _PURGE_OLD_RE.match(text)
+    if not match:
+        await telegram.send_message(
+            chat_id,
+            render_template("purge_old_invalid"),
+        )
+        return "ok"
+
+    days = int(match.group(1))
+    limit = int(match.group(2)) if match.group(2) else DEFAULT_PURGE_OLD_LIMIT
+    dry_run = match.group(3) is None
+
+    count, request_ids = await purge_old_requests(
+        session,
+        days=days,
+        limit=limit,
+        dry_run=dry_run,
+    )
+    ids_text = _format_id_list(request_ids)
+    if dry_run:
+        await telegram.send_message(
+            chat_id,
+            render_template(
+                "purge_old_preview",
+                count=count,
+                days=days,
+                ids=ids_text,
+            ),
+        )
+    else:
+        await telegram.send_message(
+            chat_id,
+            render_template(
+                "purge_old_done",
+                count=count,
+                ids=ids_text,
+            ),
+        )
+    return "ok"
 
 
 async def handle_owner_message(
@@ -57,6 +153,21 @@ async def handle_owner_message(
     text = extract_message_text(message)
     if chat_id is None or not text:
         return "ignored"
+
+    if text.startswith("/purge_request"):
+        return await _handle_purge_request(
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+        )
+
+    if text.startswith("/purge_old"):
+        return await _handle_purge_old(
+            session,
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+        )
 
     parsed = _parse_report_args(text)
     if parsed is None:
