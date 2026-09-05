@@ -425,7 +425,8 @@ class PriceListDraft(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    items: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB, nullable=False)
+    # list[dict], not dict|list: SQLAlchemy 2 + py3.11 ForwardRef crash (Coolify image)
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=sa_text("'pending'")
     )
