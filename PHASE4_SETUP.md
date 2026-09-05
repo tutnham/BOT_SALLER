@@ -21,8 +21,8 @@ DEFAULT_MARKUP=500
 # Таймаут HTTP к сервису-парсеру (секунды)
 PARSER_TIMEOUT_SECONDS=15
 
-# URL и токен API парсера каналов
-PARSER_API_URL=http://tg-parser-api:8100
+# URL и токен API парсера каналов (Docker-сеть Coolify или UUID-hostname — см. СЕРВИСЫ.md)
+PARSER_API_URL=http://<parser-api-uuid-or-tg-parser-api>:8000
 PARSER_API_TOKEN=
 ```
 
@@ -38,7 +38,7 @@ PARSER_API_TOKEN=
 | `PRICE_PUBLISH_CHAT_IDS` | Список chat_id (CSV), куда публикуется утверждённый прайс. Пример: `-100111,-100222` |
 | `DEFAULT_MARKUP` | Базовая наценка в рублях, если в `markup_rules` нет `markup_fixed` |
 | `PARSER_TIMEOUT_SECONDS` | Сколько ждать ответ парсера каналов |
-| `PARSER_API_URL` | Базовый URL сервиса `tg-channel-parser` |
+| `PARSER_API_URL` | Базовый URL сервиса `tg-channel-parser` (**порт 8000**, не 8100). В Coolify с Predefined Network — UUID-hostname контейнера |
 | `PARSER_API_TOKEN` | Bearer-токен для `GET /posts` (тот же, что `API_AUTH_TOKEN` у парсера) |
 
 Как узнать `chat_id`: добавь бота в нужный чат/канал и посмотри update (или используй бота вроде `@userinfobot` / логи webhook).
@@ -90,14 +90,25 @@ WHERE id = <supplier_id>;
 
 ## 4. Сервис-парсер (отдельный)
 
-Backend **не** читает каналы сам. Нужен развёрнутый `tg-channel-parser`:
+Backend **не** читает каналы сам. Нужен развёрнутый `tg-channel-parser` (см. **`СЕРВИСЫ.md`** — Coolify Compose, env, auth, сеть):
 
-1. Сервис поднят, `PARSER_API_URL` доступен из backend.
-2. В `.env` backend и парсера совпадает токен (`PARSER_API_TOKEN` = `API_AUTH_TOKEN`).
-3. Каналы поставщиков добавлены в парсер с `purpose='supplier_price_source'`.
-4. Личный аккаунт парсера состоит в этих каналах.
+1. Stack поднят, `GET /health` parser → `db: ok`
+2. `PARSER_API_TOKEN` (backend) = `API_AUTH_TOKEN` (parser)
+3. Каналы через `/menu` или `POST /channels` с `purpose='supplier_price_source'`
+4. MTProto-аккаунт состоит в каналах; `TELEGRAM_SESSION_STRING` в env parser
 
-Пока парсера нет — manual_message (DM с маркером) всё равно работает; channel_post будет `degraded`, job вернёт HTTP 200.
+Пока parser недоступен — manual DM (`прайс`) работает; channel_post → `degraded`, job HTTP 200.
+
+---
+
+## 10. Coolify: parser stack (кратко)
+
+1. New **Service Stack** → repo `tutnham/BOT_SALLER`, base `tg-channel-parser/`, compose `docker-compose.tg-parser.yml`
+2. Env — см. `СЕРВИСЫ.md`; **без domains**
+3. `auth_cli` → `TELEGRAM_SESSION_STRING` → redeploy
+4. **Connect to Predefined Network** на parser + backend
+5. UUID-hostname → backend `PARSER_API_URL=http://<uuid>:8000`
+6. Smoke: `tg-channel-parser/scripts/smoke-from-backend.sh`
 
 ---
 
@@ -136,8 +147,9 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 ## 9. Текущий статус parser-сервиса
 
-Документация `TG_CHANNEL_PARSER_DOCUMENTATION.md` описывает отдельный сервис `tg-channel-parser`.
-В текущем репозитории реализован только backend Zakupki-Bot. Папка `tg-channel-parser/` отсутствует и должна быть поставлена отдельным релизом.
+Код **`tg-channel-parser/`** в репозитории (commit `72ea6a1+`): Compose без публичных портов, auto-migrate, cursor pagination, DB-aware health. Production deploy — отдельный Coolify stack; инструкция в **`СЕРВИСЫ.md`**.
+
+MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — вне текущего prod scope.
 
 ---
 

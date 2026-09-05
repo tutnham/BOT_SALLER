@@ -1,2 +1,24 @@
 # BOT_SALLER
-это боты в виде ии-агентов которые собирают обрабатывают и выдают информацию 
+
+Боты-агенты для сбора, обработки и выдачи информации по закупкам (Zakupki-Bot + tg-channel-parser).
+
+## Репозиторий
+
+| Путь | Сервис |
+|---|---|
+| `backend/` | Telegram Bot API, webhook, morning-price, Supabase |
+| `tg-channel-parser/` | MTProto parser, internal API, Postgres `tg_parser` |
+
+## Документация
+
+- **`СЕРВИСЫ.md`** — production Coolify/VPS, env, deploy parser
+- **`PHASE4_SETUP.md`** — morning-price, parser env, чеклист
+- **`TG_CHANNEL_PARSER_DOCUMENTATION.md`** — спека parser
+- **`Техническая документация  бот для закупок.md`** — спека backend
+- **`CLAUDE.md`** / **`AGENTS.md`** — правила для агентов
+
+## Production (кратко)
+
+- Backend: Coolify app `bot-saller`, Supabase Session pooler IPv4
+- Parser: отдельный Coolify Compose stack, **без публичного API**
+- Связь: `PARSER_API_URL` + `PARSER_API_TOKEN` (порт **8000**)

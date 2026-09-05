@@ -28,4 +28,4 @@ Always place code in its designated location based on its responsibility:
 ## 5. Additional Hard Requirements
 
 1. **Money Type Safety:** Monetary values must use `Decimal` end-to-end. Do not parse or store money via `float`.
-2. **Repository Scope:** `backend/` is present in this repository. `tg-channel-parser` is documented but currently отсутствует как директория с исходным кодом.
+2. **Repository Scope:** `backend/` and `tg-channel-parser/` live in this repository. Deploy parser as a separate Coolify Compose resource; never merge databases or MTProto code into backend.

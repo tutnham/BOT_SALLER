@@ -9,10 +9,11 @@ This repository houses a dual-service architecture designed to automate hardware
    - **Stack:** Python 3.11+, FastAPI, PostgreSQL, SQLAlchemy 2.x, Alembic, APScheduler (in-process cron).
    - **Primary Spec:** `Техническая документация  бот для закупок.md` (Source [6])
 
-2. **tg-channel-parser (Standalone Userbot Microservice, planned)**
-   - **Role:** MTProto userbot parsing Telegram channels (for daily supplier prices or monitoring). Reads posts, runs OCR/AI tasks, serves FastAPI endpoints to Zakupki-Bot.
-   - **Stack:** Python 3.11+, Pyrogram (MTProto), PostgreSQL (`tg_parser` database), Ollama/Local LLM.
+2. **tg-channel-parser (Standalone Userbot Microservice)**
+   - **Role:** MTProto userbot parsing Telegram channels (for daily supplier prices or monitoring). Serves internal FastAPI to Zakupki-Bot; MVP scope is `supplier_price_source` + media download.
+   - **Stack:** Python 3.11+, Pyrogram (MTProto), PostgreSQL (`tg_parser` database), separate Coolify Compose stack.
    - **Primary Spec:** `TG_CHANNEL_PARSER_DOCUMENTATION.md` (Source [4])
+   - **Ops:** `СЕРВИСЫ.md`, `PHASE4_SETUP.md`
 
 ---
 
@@ -50,5 +51,5 @@ This repository houses a dual-service architecture designed to automate hardware
 
 ## Current Repository Scope
 
-- This repository currently contains the `backend/` service of Zakupki-Bot.
-- `tg-channel-parser` is documented but not yet present as source code directory in this repo.
+- This repository contains **`backend/`** (Zakupki-Bot) and **`tg-channel-parser/`** (MTProto microservice).
+- Production: backend on Coolify + Supabase; parser on Coolify as private Compose stack (see `СЕРВИСЫ.md`).

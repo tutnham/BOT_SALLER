@@ -196,7 +196,7 @@ CLI: python -m app.mtproto.add_channel --channel @supplier_x_price \
 4. перезагрузить tg-listener, чтобы реалтайм-обработчик (6.2) взял в работу новый канал
 ```
 
-Перезагрузка контейнера на шаге 4 — сознательное упрощение для MVP: горячее добавление канала без рестарта требует периодического опроса `parser_channels` внутри процесса и пересборки фильтра Pyrogram — вынесено как возможное расширение, не входит в MVP.
+Перезагрузка контейнера на шаге 4 — **не обязательна**: listener перечитывает `parser_channels` каждые ~30s (`listener_reload_interval_seconds`) и обновляет Pyrogram filter без restart.
 
 ### 6.1 Backfill (первичная загрузка истории)
 
@@ -517,92 +517,41 @@ else:
 
 | Метод | Путь | Действие |
 |---|---|---|
-| `GET` | `/channels` | список отслеживаемых каналов |
-| `GET` | `/channels?purpose=` | список каналов, фильтр по `monitoring`/`supplier_price_source` |
-| `GET` | `/posts?channel_id=&status=&content_type=&from=&to=` | список постов с фильтрами; `from`/`to` — по `post_date`. Используется ботом закупок для забора постов из каналов поставщиков (`TECHNICAL_DOCUMENTATION.md`, 9.5.1) |
-| `GET` | `/posts/{id}` | пост целиком: raw + текущий AI-результат + медиа |
-| `GET` | `/posts/{id}/ai-results` | история всех попыток ИИ-обработки поста |
-| `POST` | `/posts/{id}/reprocess` | создать новую задачу `ai_process` (status сбрасывается на `new`, `is_current` предыдущего результата → `false`) |
-| `POST` | `/posts/{id}/redownload-media` | создать новую задачу `download_media` для всех вложений поста |
-| `POST` | `/posts/{id}/exclude` | `excluded=true`, обязателен `reason` в теле запроса |
-| `POST` | `/posts/{id}/include` | снять исключение |
-| `GET` | `/tasks?status=failed` | список задач с ошибками (для ручного разбора) |
-| `GET` | `/health` | без авторизации, для healthcheck контейнера |
+| `GET` | `/channels` | список отслеживаемых каналов (JSON-массив) |
+| `GET` | `/channels?purpose=` | фильтр `monitoring` / `supplier_price_source` |
+| `POST` | `/channels` | регистрация канала: `{"handle":"@x","purpose":"supplier_price_source"}` → 202, `status: pending` |
+| `DELETE` | `/channels/{id}` | деактивация (`id` = PK `parser_channels.id`) |
+| `GET` | `/posts?channel_id=&content_type=&from=&limit=&cursor=` | paginated: `{"items":[...],"next_cursor":...}`; `from` по `post_date` |
+| `GET` | `/posts/{id}` | один пост |
+| `GET` | `/health` | без auth: `{"status":"ok","db":"ok\|error"}` |
 
 ---
 
-## 12. Docker Compose
+## 12. Docker Compose (production)
+
+Файл: `docker-compose.tg-parser.yml`. Coolify: base directory `tg-channel-parser/`, **без domains**, env через UI.
+
+Сервисы: `tg-parser-postgres`, `tg-parser-migrate` (one-shot Alembic), `tg-listener`, `tg-worker`, `tg-parser-api`.
+
+Host ports **не** публикуются. Ollama в текущем MVP **не** включён.
+
+Подробный prod runbook: **`СЕРВИСЫ.md`**.
 
 ```yaml
-version: "3.9"
-
+# Упрощённая схема (см. актуальный файл в репо)
 services:
   tg-parser-postgres:
     image: postgres:15
-    environment:
-      POSTGRES_DB: tg_parser
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - tg_parser_pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+    # без ports:
+  tg-parser-migrate:
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
   tg-listener:
-    build:
-      context: .
-      dockerfile: Dockerfile.listener
-    env_file: .env
     command: ["python", "-m", "app.mtproto.realtime"]
-    depends_on:
-      tg-parser-postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    volumes:
-      - media_tmp:/tmp/media
-
   tg-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    env_file: .env
     command: ["python", "-m", "app.worker.task_worker"]
-    depends_on:
-      tg-parser-postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    volumes:
-      - media_tmp:/tmp/media
-      - media_local:/data/media   # используется только если MEDIA_STORAGE_BACKEND=local
-
   tg-parser-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    env_file: .env
-    ports:
-      - "8081:8000"
-    depends_on:
-      tg-parser-postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
-    restart: unless-stopped
-
-volumes:
-  tg_parser_pg_data:
-  media_tmp:
-  media_local:
-  ollama_data:
+    # internal :8000, healthcheck /health
 ```
 
 `tg-listener` для режима backfill запускается разово отдельной командой (не как постоянный сервис): `docker compose run --rm tg-listener python -m app.mtproto.backfill --channel @my_channel --from-date 2026-01-01`.

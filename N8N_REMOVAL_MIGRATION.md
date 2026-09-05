@@ -351,7 +351,7 @@ LLM_MODEL=
 LLM_PROVIDER=
 
 # Сервис парсинга каналов поставщиков (без изменений)
-PARSER_API_URL=http://tg-parser-api:8100
+PARSER_API_URL=http://tg-parser-api:8000
 PARSER_API_TOKEN=
 PARSER_API_TIMEOUT_SECONDS=10
 ```
