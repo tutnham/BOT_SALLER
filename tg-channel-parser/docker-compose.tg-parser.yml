@@ -1,3 +1,22 @@
+x-app-environment: &app-environment
+  DATABASE_URL: ${DATABASE_URL:?required}
+  TELEGRAM_API_ID: ${TELEGRAM_API_ID:?required}
+  TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?required}
+  TELEGRAM_SESSION_STRING: ${TELEGRAM_SESSION_STRING:?required}
+  API_AUTH_TOKEN: ${API_AUTH_TOKEN:?required}
+  MEDIA_STORAGE_BACKEND: ${MEDIA_STORAGE_BACKEND:-local}
+  MEDIA_LOCAL_PATH: ${MEDIA_LOCAL_PATH:-/data/media}
+  MEDIA_TMP_PATH: ${MEDIA_TMP_PATH:-/tmp/media}
+  TASK_POLL_INTERVAL_SECONDS: ${TASK_POLL_INTERVAL_SECONDS:-2}
+  MEDIA_MAX_RETRIES: ${MEDIA_MAX_RETRIES:-3}
+  MEDIA_RETRY_BACKOFF_BASE_SECONDS: ${MEDIA_RETRY_BACKOFF_BASE_SECONDS:-5}
+  TZ: ${TZ:-Europe/Moscow}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+  DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+  DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+
 services:
   tg-parser-postgres:
     image: postgres:15
@@ -7,24 +26,41 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
     volumes:
       - tg_parser_pg_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tg_parser} -d ${POSTGRES_DB:-tg_parser}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-tg_parser} -d ${POSTGRES_DB:-tg_parser}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
+  tg-parser-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      <<: *app-environment
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      tg-parser-postgres:
+        condition: service_healthy
+    restart: "no"
+
   tg-listener:
     build:
       context: .
       dockerfile: Dockerfile.listener
-    env_file: .env
+    environment:
+      <<: *app-environment
     command: ["python", "-m", "app.mtproto.realtime"]
     depends_on:
       tg-parser-postgres:
         condition: service_healthy
+      tg-parser-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     volumes:
       - media_tmp:/tmp/media
@@ -33,11 +69,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    env_file: .env
+    environment:
+      <<: *app-environment
     command: ["python", "-m", "app.worker.task_worker"]
     depends_on:
       tg-parser-postgres:
         condition: service_healthy
+      tg-parser-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     volumes:
       - media_tmp:/tmp/media
@@ -47,12 +86,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    env_file: .env
-    ports:
-      - "127.0.0.1:8081:8000"
+    environment:
+      <<: *app-environment
     depends_on:
       tg-parser-postgres:
         condition: service_healthy
+      tg-parser-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [

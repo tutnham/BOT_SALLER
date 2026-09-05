@@ -5,10 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from loguru import logger
+from sqlalchemy import text
 
 from app.api.routers import channels, posts
 from app.config import get_settings
-from app.db.session import dispose_engine
+from app.db.session import dispose_engine, get_engine
 from app.logging_setup import setup_logging
 
 
@@ -27,4 +29,13 @@ app.include_router(posts.router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    """Liveness/readiness: process up and Postgres reachable."""
+    db_status = "ok"
+    try:
+        engine = get_engine()
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("Health DB check failed: {}", exc)
+        db_status = "error"
+    return {"status": "ok", "db": db_status}

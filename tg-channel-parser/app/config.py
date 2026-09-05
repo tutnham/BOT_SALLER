@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # Worker
     task_poll_interval_seconds: float = 2.0
+    listener_reload_interval_seconds: float = 30.0
     media_max_retries: int = 3
     media_retry_backoff_base_seconds: float = 5.0
 

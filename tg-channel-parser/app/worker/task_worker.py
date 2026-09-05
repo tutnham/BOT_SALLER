@@ -7,7 +7,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
 import os
 from datetime import datetime, timedelta, timezone
@@ -33,6 +32,7 @@ from app.logging_setup import setup_logging
 from app.mtproto.client_factory import create_client
 from app.mtproto.flood_wait import with_flood_wait
 from app.storage.local_storage import LocalStorage, guess_ext, media_key
+from app.utils.hashing import sha256_file
 
 
 async def claim_next_task(session: AsyncSession) -> ParserTask | None:
@@ -88,15 +88,16 @@ async def claim_next_task(session: AsyncSession) -> ParserTask | None:
 async def _fail_or_retry(
     session: AsyncSession,
     task: ParserTask,
-    post: ParserPost,
+    post: ParserPost | None,
     error: str,
 ) -> None:
     settings = get_settings()
     task.error_text = error
     if task.attempts >= task.max_attempts:
         task.status = ParserStatus.failed
-        post.status = ParserStatus.failed
-        post.error_text = error
+        if post is not None:
+            post.status = ParserStatus.failed
+            post.error_text = error
         logger.error("Task {} failed permanently: {}", task.id, error)
     else:
         delay = settings.media_retry_backoff_base_seconds * (2 ** (task.attempts - 1))
@@ -184,13 +185,11 @@ async def process_download_media(
 
     media_rows = list(post.media_files)
     if not media_rows:
-        # Nothing to download — mark done
         task.status = ParserStatus.processed
         post.status = ParserStatus.downloaded
         return
 
     try:
-        # Fetch original message for download_media
         message = await with_flood_wait(
             lambda: client.get_messages(post.channel_id, post.message_id)
         )
@@ -213,8 +212,7 @@ async def process_download_media(
                 continue
 
             tmp_path_str = str(tmp_path)
-            with open(tmp_path_str, "rb") as fh:
-                digest = hashlib.sha256(fh.read()).hexdigest()
+            digest = sha256_file(tmp_path_str)
             mime = media.mime_type or mimetypes.guess_type(tmp_path_str)[0]
             ext = guess_ext(tmp_path_str, mime)
             key = media_key(post.channel_id, post.message_id, media.file_unique_id, ext)
@@ -242,6 +240,33 @@ async def process_download_media(
         await _fail_or_retry(session, task, post, f"{type(exc).__name__}:{exc}")
 
 
+async def _claim_next_task_id() -> int | None:
+    factory = get_session_factory()
+    async with factory() as session:
+        task = await claim_next_task(session)
+        if task is None:
+            return None
+        task_id = task.id
+        await session.commit()
+        return task_id
+
+
+async def _process_claimed_task(task_id: int, client) -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        task = await session.get(ParserTask, task_id)
+        if task is None or task.status != ParserStatus.processing:
+            return
+        if task.task_type == ParserTaskType.resolve_channel:
+            await process_resolve_channel(session, task, client)
+        elif task.task_type == ParserTaskType.download_media:
+            await process_download_media(session, task, client)
+        else:
+            task.status = ParserStatus.failed
+            task.error_text = f"unsupported_task_type:{task.task_type}"
+        await session.commit()
+
+
 async def worker_loop() -> None:
     settings = get_settings()
     setup_logging(settings.log_level, settings.secret_values())
@@ -249,25 +274,14 @@ async def worker_loop() -> None:
 
     client = create_client("worker", settings=settings)
     await client.start()
-    factory = get_session_factory()
     logger.info("tg-worker started (download_media only)")
     try:
         while True:
-            async with factory() as session:
-                task = await claim_next_task(session)
-            if task is None:
-                await session.commit()
-            else:
-                if task.task_type == ParserTaskType.resolve_channel:
-                    await process_resolve_channel(session, task, client)
-                elif task.task_type == ParserTaskType.download_media:
-                    await process_download_media(session, task, client)
-                else:
-                    task.status = ParserStatus.failed
-                    task.error_text = f"unsupported_task_type:{task.task_type}"
-                await session.commit()
-            if task is None:
+            task_id = await _claim_next_task_id()
+            if task_id is None:
                 await asyncio.sleep(settings.task_poll_interval_seconds)
+                continue
+            await _process_claimed_task(task_id, client)
     finally:
         await client.stop()
         await dispose_engine()

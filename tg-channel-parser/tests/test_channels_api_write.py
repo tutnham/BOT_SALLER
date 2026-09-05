@@ -30,7 +30,6 @@ def _make_fake_session():
         def __init__(self) -> None:
             self.channels: list[ParserChannel] = []
             self.tasks: list[ParserTask] = []
-            self.flushed: list[Any] = []
             self._next_id = 1
 
         async def execute(self, stmt: Any) -> _Result:
@@ -44,18 +43,24 @@ def _make_fake_session():
                 if ch.id is None:
                     ch.id = self._next_id
                     self._next_id += 1
-            for t in self.tasks:
-                if t.id is None:
-                    t.id = self._next_id
+            for task in self.tasks:
+                if task.id is None:
+                    task.id = self._next_id
                     self._next_id += 1
 
         async def commit(self) -> None:
-            pass
+            return None
+
+        async def get(self, model, ident):
+            for ch in self.channels:
+                if ch.id == ident:
+                    return ch
+            return None
 
         async def close(self) -> None:
-            pass
+            return None
 
-        async def add(self, obj: Any) -> None:
+        def add(self, obj: Any) -> None:
             if isinstance(obj, ParserChannel):
                 self.channels.append(obj)
             elif isinstance(obj, ParserTask):
@@ -64,13 +69,6 @@ def _make_fake_session():
         async def delete(self, obj: Any) -> None:
             if isinstance(obj, ParserChannel) and obj in self.channels:
                 self.channels.remove(obj)
-
-        def add_all(self, objs: list[Any]) -> None:
-            for obj in objs:
-                if isinstance(obj, ParserChannel):
-                    self.channels.append(obj)
-                elif isinstance(obj, ParserTask):
-                    self.tasks.append(obj)
 
     return FakeSession
 
@@ -145,4 +143,4 @@ async def test_delete_channel_deactivates(client: AsyncClient, fake_session: Any
 @pytest.mark.asyncio
 async def test_create_channel_requires_auth(client: AsyncClient) -> None:
     response = await client.post("/channels", json={"handle": "@supplier_prices"})
-    assert response.status_code == 403
+    assert response.status_code == 401

@@ -39,4 +39,4 @@ async def test_posts_ok_token(client: AsyncClient) -> None:
         headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
     )
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"items": [], "next_cursor": None}

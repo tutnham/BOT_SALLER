@@ -7,8 +7,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import sys
-from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from pyrogram import filters
@@ -36,24 +34,27 @@ async def _load_active_channel_ids() -> list[int]:
         return list(result.scalars().all())
 
 
+def _build_handler(channel_ids: list[int]) -> MessageHandler | None:
+    if not channel_ids:
+        return None
+    return MessageHandler(_on_new_post, filters.chat(channel_ids))
+
+
 async def run_realtime() -> None:
     settings = get_settings()
     setup_logging(settings.log_level, settings.secret_values())
     settings.require_mtproto()
 
     channel_ids = await _load_active_channel_ids()
-    if not channel_ids:
-        logger.critical(
-            "No active channels in parser_channels — register via add_channel or POST /channels"
-        )
-        print("WARNING: no active channels; sleeping forever", file=sys.stderr)
-        while True:
-            await asyncio.sleep(3600)
-
-    logger.info("Realtime listening channels={}", channel_ids)
     client = create_client("listener", settings=settings)
-    handler = MessageHandler(_on_new_post, filters.chat(channel_ids))
-    client.add_handler(handler)
+    handler = _build_handler(channel_ids)
+    if handler is not None:
+        client.add_handler(handler)
+        logger.info("Realtime listening channels={}", channel_ids)
+    else:
+        logger.warning(
+            "No active channels in parser_channels — waiting for POST /channels or add_channel"
+        )
 
     try:
         await client.start()
@@ -93,11 +94,11 @@ async def _on_new_post(_client, message) -> None:  # noqa: ANN001
 
 async def _reload_loop(
     client,
-    handler,
+    handler: MessageHandler | None,
     settings,
 ) -> None:
     """Periodically refresh the channel filter without restarting the process."""
-    interval = getattr(settings, "listener_reload_interval_seconds", 30)
+    interval = settings.listener_reload_interval_seconds
     last_ids: frozenset[int] = frozenset()
     while True:
         await asyncio.sleep(interval)
@@ -106,9 +107,11 @@ async def _reload_loop(
             if new_ids == last_ids:
                 continue
             logger.info("Reloading listener channel filter channels={}", sorted(new_ids))
-            client.remove_handler(handler)
-            handler = MessageHandler(_on_new_post, filters.chat(list(new_ids)))
-            client.add_handler(handler)
+            if handler is not None:
+                client.remove_handler(handler)
+            handler = _build_handler(list(new_ids))
+            if handler is not None:
+                client.add_handler(handler)
             last_ids = new_ids
         except Exception:
             logger.exception("Failed to reload listener channel filter")

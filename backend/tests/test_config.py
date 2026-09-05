@@ -44,7 +44,7 @@ def test_settings_loads_required_and_defaults(monkeypatch: pytest.MonkeyPatch) -
     assert s.telegram_webhook_secret_token == "secret-telegram-xyz"
     assert s.confidence_threshold == 0.75
     assert s.tz == "Europe/Moscow"
-    assert s.parser_api_url == "http://tg-parser-api:8100"
+    assert s.parser_api_url == "http://tg-parser-api:8000"
     assert s.scheduler_enabled is True
     assert s.public_backend_url is None
 
