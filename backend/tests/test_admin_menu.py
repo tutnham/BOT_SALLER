@@ -6,7 +6,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AdminDialog, Owner, Supplier, SupplierChat, SupplierChatType
+from app.db.models import AdminDialog, Employee, Owner, Supplier, SupplierChat, SupplierChatType
+from app.utils.whitelist import is_employee
 from sqlalchemy import select
 from app.db.session import get_db
 from app.main import app
@@ -49,6 +50,338 @@ def _menu_command_payload(owner_id: int, text: str = "/menu") -> dict:
             "text": text,
         },
     }
+
+
+def _owner_text_payload(
+    owner_id: int,
+    *,
+    update_id: int,
+    text: str = "",
+    forward_from: dict | None = None,
+    forward_origin: dict | None = None,
+) -> dict:
+    message: dict = {
+        "message_id": update_id * 10,
+        "from": {"id": owner_id},
+        "chat": {"id": owner_id, "type": "private"},
+        "text": text,
+    }
+    if forward_from is not None:
+        message["forward_from"] = forward_from
+    if forward_origin is not None:
+        message["forward_origin"] = forward_origin
+    return {"update_id": update_id, "message": message}
+
+
+def _callback_data_from_markup(markup: dict | None) -> list[str]:
+    if markup is None:
+        return []
+    rows = markup.get("inline_keyboard") or []
+    result: list[str] = []
+    for row in rows:
+        for btn in row:
+            data = btn.get("callback_data")
+            if data:
+                result.append(data)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_main_menu_has_employees_button(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+) -> None:
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_menu_command_payload(OWNER_TG_ID),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    callbacks = _callback_data_from_markup(markup)
+    assert any("employees" in data for data in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_add_employee_dialog(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_add",
+            CallbackData(namespace="admin", action="employee_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is not None
+    assert dialog.state == "await_employee_name"
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=101, text="Менеджер А"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is not None
+    assert dialog.state == "await_employee_telegram_id"
+    assert dialog.payload == {"name": "Менеджер А"}
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=102, text="777888999"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    employee = (
+        await db_session.execute(
+            select(Employee).where(Employee.telegram_id == 777888999)
+        )
+    ).scalar_one_or_none()
+    assert employee is not None
+    assert employee.name == "Менеджер А"
+    assert employee.active is True
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is None
+
+
+@pytest.mark.asyncio
+async def test_add_employee_via_forward_from(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_add2",
+            CallbackData(namespace="admin", action="employee_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=201, text="Менеджер B"),
+        headers=webhook_headers,
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(
+            OWNER_TG_ID,
+            update_id=202,
+            forward_from={"id": 888777666, "is_bot": False},
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    employee = (
+        await db_session.execute(
+            select(Employee).where(Employee.telegram_id == 888777666)
+        )
+    ).scalar_one_or_none()
+    assert employee is not None
+    assert employee.name == "Менеджер B"
+
+
+@pytest.mark.asyncio
+async def test_add_employee_via_forward_origin(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_add3",
+            CallbackData(namespace="admin", action="employee_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=301, text="Менеджер C"),
+        headers=webhook_headers,
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(
+            OWNER_TG_ID,
+            update_id=302,
+            forward_origin={
+                "type": "user",
+                "sender_user": {"id": 666555444, "is_bot": False},
+            },
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    employee = (
+        await db_session.execute(
+            select(Employee).where(Employee.telegram_id == 666555444)
+        )
+    ).scalar_one_or_none()
+    assert employee is not None
+
+
+@pytest.mark.asyncio
+async def test_add_employee_invalid_telegram_id_keeps_dialog(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_add4",
+            CallbackData(namespace="admin", action="employee_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=401, text="Менеджер D"),
+        headers=webhook_headers,
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=402, text="not-a-number"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    count = (
+        await db_session.execute(select(Employee).where(Employee.name == "Менеджер D"))
+    ).scalars().all()
+    assert count == []
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is not None
+    assert dialog.state == "await_employee_telegram_id"
+
+
+@pytest.mark.asyncio
+async def test_add_employee_duplicate_inactive_rejected(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    db_session.add(
+        Employee(telegram_id=555444333, name="Old Manager", active=False)
+    )
+    await db_session.flush()
+
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_add5",
+            CallbackData(namespace="admin", action="employee_add_start"),
+        ),
+        headers=webhook_headers,
+    )
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=501, text="New Manager"),
+        headers=webhook_headers,
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=502, text="555444333"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    employees = (
+        await db_session.execute(
+            select(Employee).where(Employee.telegram_id == 555444333)
+        )
+    ).scalars().all()
+    assert len(employees) == 1
+    assert employees[0].active is False
+    assert employees[0].name == "Old Manager"
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is not None
+    assert dialog.state == "await_employee_telegram_id"
+
+
+@pytest.mark.asyncio
+async def test_toggle_employee_active(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    employee = Employee(telegram_id=111222333, name="Toggle Me", active=True)
+    db_session.add(employee)
+    await db_session.flush()
+
+    payload = _callback_payload(
+        OWNER_TG_ID,
+        "cb_emp_toggle",
+        CallbackData(namespace="admin", action="employee_toggle_active", arg=employee.id),
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook", json=payload, headers=webhook_headers
+    )
+    assert resp.json()["status"] == "ok"
+
+    await db_session.refresh(employee)
+    assert employee.active is False
+    assert await is_employee(db_session, employee.telegram_id) is False
+    assert (
+        await is_employee(db_session, employee.telegram_id, require_active=False) is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_deactivated_employee_ask_ignored(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_group_chat_id: int,
+    seed_supplier_count: int,
+) -> None:
+    employee = Employee(telegram_id=444333222, name="Inactive Ask", active=False)
+    db_session.add(employee)
+    await db_session.flush()
+
+    payload = {
+        "update_id": 60001,
+        "message": {
+            "message_id": 600010,
+            "from": {"id": employee.telegram_id, "first_name": "Inactive"},
+            "chat": {"id": seed_group_chat_id, "type": "supergroup"},
+            "text": "/ask iPhone 17 256GB",
+        },
+    }
+    resp = await webhook_client.post(
+        "/telegram/webhook", json=payload, headers=webhook_headers
+    )
+    assert resp.json()["status"] == "ignored"
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,20 @@ TEMPLATES: dict[str, str] = {
         "{deal_block}"
     ),
     "cancel_ok": "Заявка #{request_id} отменена",
+    "purge_request_confirm": (
+        "Заявка #{request_id} и все её сообщения/котировки/сделки "
+        "будут безвозвратно удалены. Подтвердите?"
+    ),
+    "purge_request_ok": "Заявка #{request_id} удалена из БД.",
+    "purge_request_not_found": "Заявка #{request_id} не найдена.",
+    "purge_request_invalid": "Использование: /purge_request {id}",
+    "purge_old_preview": (
+        "Dry-run: будет удалено {count} заявок "
+        "(cancelled/closed старше {days} дн.). ID: {ids}"
+    ),
+    "purge_old_done": "Удалено {count} заявок: {ids}",
+    "purge_old_invalid": "Использование: /purge_old {days} [limit] [--confirm]",
+    "purge_cancelled": "Удаление отменено.",
     "request_not_found": "Заявка #{request_id} не найдена",
     "supplier_not_found": "Поставщик #{supplier_id} не найден",
     "request_not_open": "Заявка #{request_id} уже закрыта или отменена",
@@ -110,7 +124,10 @@ TEMPLATES: dict[str, str] = {
         "/report day — отчёт за день\n"
         "/report week — отчёт за неделю\n"
         "/report {{id}} — отчёт по заявке\n"
-        "/stats week — синоним /report week"
+        "/stats week — синоним /report week\n"
+        "/menu — админка (поставщики, сотрудники, чаты)\n"
+        "/purge_request {{id}} — удалить заявку из БД (с подтверждением)\n"
+        "/purge_old {{days}} [--confirm] — очистка старых cancelled/closed"
     ),
     "supplier_start_ok": (
         "Здравствуйте! Вы подключены как поставщик.\n"
@@ -140,7 +157,7 @@ TEMPLATES: dict[str, str] = {
         "/cancel {id} — отменить заявку\n"
         "/approve_price {draft_id} — утвердить черновик прайса\n"
         "/reject_price {draft_id} — отклонить черновик прайса\n"
-        "/menu — управление поставщиками, беседами и каналами (owner)\n"
+        "/menu — управление поставщиками, сотрудниками, беседами и каналами (owner)\n"
         "/help — эта справка"
     ),
     # Owner admin menu
@@ -169,6 +186,30 @@ TEMPLATES: dict[str, str] = {
     "admin_need_name": "Название не может быть пустым. Введите ещё раз:",
     "admin_need_channel": "Канал не может быть пустым. Введите ещё раз:",
     "admin_channel_add_error": "Не удалось добавить канал: {detail}",
+    "admin_employees_list": "Список сотрудников:",
+    "admin_employee_detail": (
+        "Сотрудник #{employee_id} {employee_name}\n"
+        "Telegram ID: {telegram_id}\n"
+        "Активен: {active}"
+    ),
+    "admin_await_employee_name": "Введите имя нового сотрудника:",
+    "admin_await_employee_telegram_id": (
+        "Отправьте Telegram ID сотрудника (только цифры из @userinfobot)\n"
+        "или перешлите любое сообщение от этого человека."
+    ),
+    "admin_employee_need_name": "Имя не может быть пустым. Введите ещё раз:",
+    "admin_employee_invalid_telegram_id": (
+        "Некорректный Telegram ID. Введите только цифры из @userinfobot "
+        "или перешлите сообщение сотрудника."
+    ),
+    "admin_employee_duplicate_telegram_id": (
+        "Сотрудник с Telegram ID {telegram_id} уже есть в базе. "
+        "Введите другой ID или отмените добавление."
+    ),
+    "admin_employee_forward_hidden": (
+        "Не удалось определить ID отправителя (скрыт настройками приватности). "
+        "Пришлите числовой ID из @userinfobot."
+    ),
     "admin_dialog_expired": "Сессия устарела. Начните сначала через /menu.",
     "admin_unknown_command": "Неизвестная команда. Используйте /menu",
     "admin_error": "Ошибка: {detail}",

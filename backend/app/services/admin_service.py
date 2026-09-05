@@ -14,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     AdminDialog,
     ClientGroup,
+    Employee,
     PendingChat,
     Supplier,
     SupplierChat,
     SupplierChatType,
 )
 from app.services.routing_service import chat_role
+from app.utils.whitelist import get_employee_by_telegram_id
 
 _DIALOG_TTL = timedelta(minutes=15)
 
@@ -38,6 +40,51 @@ class UnknownPendingChatError(Exception):
 
 class SupplierNotFoundError(Exception):
     """Supplier id not found."""
+
+
+class EmployeeNotFoundError(Exception):
+    """Employee id not found."""
+
+
+class DuplicateEmployeeTelegramIdError(Exception):
+    """Employee with this telegram_id already exists."""
+
+
+async def list_employees(session: AsyncSession) -> list[Employee]:
+    result = await session.execute(
+        select(Employee).order_by(Employee.name.asc(), Employee.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def add_employee(
+    session: AsyncSession,
+    *,
+    name: str,
+    telegram_id: int,
+) -> Employee:
+    existing = await get_employee_by_telegram_id(
+        session, telegram_id, require_active=False
+    )
+    if existing is not None:
+        raise DuplicateEmployeeTelegramIdError(telegram_id)
+
+    employee = Employee(name=name, telegram_id=telegram_id, active=True)
+    session.add(employee)
+    await session.flush()
+    return employee
+
+
+async def toggle_employee_active(
+    session: AsyncSession,
+    employee_id: int,
+) -> Employee:
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        raise EmployeeNotFoundError(employee_id)
+    employee.active = not employee.active
+    await session.flush()
+    return employee
 
 
 async def list_suppliers(session: AsyncSession) -> list[Supplier]:

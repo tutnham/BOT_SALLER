@@ -12,12 +12,16 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import PendingChat, Supplier
-from app.services import admin_service, parser_client
+from app.db.models import Employee, PendingChat, Supplier
+from app.services import admin_service, parser_client, purge_service
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
 from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button, paginated_keyboard
 from app.templates.messages_ru import render_template
-from app.utils.telegram import extract_message_text
+from app.utils.telegram import (
+    extract_forwarded_user_id,
+    extract_message_text,
+    parse_telegram_id_text,
+)
 from app.utils.whitelist import get_owner_by_telegram_id
 
 _PAGE_SIZE = 8
@@ -63,9 +67,9 @@ async def handle_admin_message(
         return "ignored"
 
     dialog = await admin_service.get_dialog(session, owner_id)
-    if dialog is not None and text:
+    if dialog is not None:
         return await _handle_dialog_text(
-            session, dialog, owner_id, chat_id, text, telegram
+            session, dialog, owner_id, chat_id, message, telegram
         )
 
     if text.startswith("/menu") or text.startswith("/admin") or text.startswith("/"):
@@ -132,6 +136,33 @@ async def _dispatch_callback(
 
     if action == "suppliers":
         await _send_supplier_list(session, telegram, chat_id, cd.page, message_id=message_id)
+        return
+
+    if action == "employees":
+        await _send_employee_list(session, telegram, chat_id, cd.page, message_id=message_id)
+        return
+
+    if action == "employee_detail":
+        await _send_employee_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
+        return
+
+    if action == "employee_add_start":
+        await admin_service.set_dialog(
+            session, telegram_id=owner_id, state="await_employee_name", payload={}
+        )
+        text = render_template("admin_await_employee_name")
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=text,
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("Отмена", "employees", page=0)]]),
+        )
+        return
+
+    if action == "employee_toggle_active":
+        await admin_service.toggle_employee_active(session, cd.arg)
+        await _send_employee_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
         return
 
     if action == "supplier_detail":
@@ -269,6 +300,29 @@ async def _dispatch_callback(
         await _send_price_channels(session, telegram, chat_id, message_id=message_id)
         return
 
+    if action == "purge_confirm":
+        deleted = await purge_service.hard_delete_request(session, cd.arg)
+        text = render_template(
+            "purge_request_ok" if deleted else "purge_request_not_found",
+            request_id=cd.arg,
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=text,
+            message_id=message_id,
+        )
+        return
+
+    if action == "purge_cancel":
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("purge_cancelled"),
+            message_id=message_id,
+        )
+        return
+
     if action == "noop":
         return
 
@@ -290,6 +344,7 @@ async def _send_main_menu(
     count = await _pending_count(session)
     rows = [
         [menu_button("Поставщики", "suppliers", page=0)],
+        [menu_button("Сотрудники", "employees", page=0)],
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],
@@ -332,6 +387,82 @@ async def _send_supplier_list(
         telegram,
         chat_id=chat_id,
         text=render_template("admin_supplier_list"),
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_employee_list(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    page: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    employees = await admin_service.list_employees(session)
+    items = [
+        (
+            f"{e.name or '—'} {'✅' if e.active else '⛔'} ({e.telegram_id})",
+            _cb("employee_detail", arg=e.id),
+        )
+        for e in employees
+    ]
+    rows = paginated_keyboard(
+        items,
+        page=page,
+        page_size=_PAGE_SIZE,
+        nav_callback=_cb("employees", page=0),
+    )
+    rows.append(
+        [
+            menu_button("➕ Добавить сотрудника", "employee_add_start"),
+            menu_button("В меню", "main_menu"),
+        ]
+    )
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template("admin_employees_list"),
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_employee_detail(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    employee_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        await _send_employee_list(session, telegram, chat_id, 0, message_id=message_id)
+        return
+
+    text = render_template(
+        "admin_employee_detail",
+        employee_id=employee.id,
+        employee_name=employee.name or "—",
+        telegram_id=employee.telegram_id,
+        active=employee.active,
+    )
+    rows = [
+        [
+            menu_button(
+                "⛔ Вкл/выкл" if employee.active else "✅ Вкл/выкл",
+                "employee_toggle_active",
+                employee_id,
+            ),
+        ],
+        [menu_button("К списку", "employees", page=0), menu_button("В меню", "main_menu")],
+    ]
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=text,
         message_id=message_id,
         markup=inline_keyboard(rows),
     )
@@ -552,11 +683,12 @@ async def _handle_dialog_text(
     dialog: Any,
     owner_id: int,
     chat_id: int,
-    text: str,
+    message: dict[str, Any],
     telegram: TelegramClientProtocol,
 ) -> str:
     state = dialog.state
     payload = dialog.payload or {}
+    text = extract_message_text(message)
 
     if state == "await_supplier_name":
         name = text.strip()
@@ -599,6 +731,68 @@ async def _handle_dialog_text(
         await admin_service.rename_supplier(session, supplier_id, name)
         await admin_service.clear_dialog(session, owner_id)
         await _send_supplier_detail(session, telegram, chat_id, supplier_id)
+        return "ok"
+
+    if state == "await_employee_name":
+        name = text.strip()
+        if not name:
+            await telegram.send_message(
+                chat_id, render_template("admin_employee_need_name")
+            )
+            return "ok"
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_employee_telegram_id",
+            payload={"name": name},
+        )
+        await telegram.send_message(
+            chat_id,
+            render_template("admin_await_employee_telegram_id"),
+            reply_markup=inline_keyboard(
+                [[menu_button("Отмена", "employees", page=0)]]
+            ),
+        )
+        return "ok"
+
+    if state == "await_employee_telegram_id":
+        name = payload.get("name")
+        if not name:
+            await admin_service.clear_dialog(session, owner_id)
+            await _send_main_menu(session, telegram, chat_id)
+            return "ok"
+
+        telegram_id = parse_telegram_id_text(text)
+        if telegram_id is None:
+            telegram_id = extract_forwarded_user_id(message)
+
+        if telegram_id is None:
+            if message.get("forward_from") or message.get("forward_origin"):
+                await telegram.send_message(
+                    chat_id, render_template("admin_employee_forward_hidden")
+                )
+            else:
+                await telegram.send_message(
+                    chat_id, render_template("admin_employee_invalid_telegram_id")
+                )
+            return "ok"
+
+        try:
+            employee = await admin_service.add_employee(
+                session, name=name, telegram_id=telegram_id
+            )
+        except admin_service.DuplicateEmployeeTelegramIdError:
+            await telegram.send_message(
+                chat_id,
+                render_template(
+                    "admin_employee_duplicate_telegram_id",
+                    telegram_id=telegram_id,
+                ),
+            )
+            return "ok"
+
+        await admin_service.clear_dialog(session, owner_id)
+        await _send_employee_detail(session, telegram, chat_id, employee.id)
         return "ok"
 
     await admin_service.clear_dialog(session, owner_id)

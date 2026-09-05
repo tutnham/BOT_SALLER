@@ -18,6 +18,7 @@ from app.handlers.llm_billing_commands import handle_set_llm_price
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.start_handler import handle_start, is_start_command
 from app.handlers.supplier_messages import handle_reply
+from app.services import admin_service
 from app.services.alert_service import send_admin_alert
 from app.services.routing_service import chat_role
 from app.telegram.client import get_telegram_client
@@ -137,10 +138,14 @@ async def _route_message(
                 return await handle_admin_message(session, message, telegram=telegram)
             if text.startswith("/set_llm_price"):
                 return await handle_set_llm_price(session, message, telegram=telegram)
+            if text.startswith("/purge_request") or text.startswith("/purge_old"):
+                return await handle_owner_message(session, message, telegram=telegram)
             if text.startswith("/report") or text.startswith("/stats"):
                 return await handle_owner_message(session, message, telegram=telegram)
             if text.startswith("/"):
                 # any unrecognized slash command from owner also falls back to admin
+                return await handle_admin_message(session, message, telegram=telegram)
+            if await admin_service.get_dialog(session, int(from_id)) is not None:
                 return await handle_admin_message(session, message, telegram=telegram)
 
         # D5: employees may approve/reject price drafts in DM (§11)
