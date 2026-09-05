@@ -33,7 +33,7 @@ async def test_owner_report_day_returns_text(
     assert resp.json()["status"] == "ok"
     assert mock_telegram.sent
     assert mock_telegram.sent[-1][0] == seed_owner.telegram_id
-    assert mock_telegram.parse_modes[-1] is None
+    assert mock_telegram.parse_modes[-1] == "HTML"
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_stats_week_is_report_week_synonym(
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
-    assert mock_telegram.parse_modes[-1] is None
+    assert mock_telegram.parse_modes[-1] == "HTML"
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from app.services.price_service import build_morning_price, notify_morning_price
 from app.services.recheck_service import send_due_rechecks
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
+from app.utils.html import TELEGRAM_HTML_PARSE_MODE
 
 
 async def _resolve_owner_destinations(
@@ -100,7 +101,11 @@ async def run_daily_report(
     failed = 0
     for chat_id in destinations:
         try:
-            await telegram.send_message(chat_id, report_text)
+            await telegram.send_message(
+                chat_id,
+                report_text,
+                parse_mode=TELEGRAM_HTML_PARSE_MODE,
+            )
             sent += 1
         except TelegramSendError:
             failed += 1

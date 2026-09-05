@@ -116,7 +116,8 @@ async def test_report_service_uses_fallback_when_llm_unavailable(
     try:
         mock_llm.raise_report = LLMProviderError("provider_down")
         text = await build_report(db_session, period="day")
-        assert "<b>Отчет закупок</b>" in text
-        assert "н/д" in text or "0" in text
+        assert "<b>Отчёт закупок</b>" in text
+        assert "05." in text or "За период активности не зафиксировано." in text
+        assert "н/д" not in text
     finally:
         set_llm_client(None)

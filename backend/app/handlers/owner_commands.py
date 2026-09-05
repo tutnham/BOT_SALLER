@@ -11,6 +11,7 @@ from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol
 from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
+from app.utils.html import TELEGRAM_HTML_PARSE_MODE
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import get_owner_by_telegram_id
 
@@ -179,5 +180,9 @@ async def handle_owner_message(
 
     period, request_id = parsed
     report_text = await build_report(session, period=period, request_id=request_id)
-    await telegram.send_message(int(chat_id), report_text)
+    await telegram.send_message(
+        int(chat_id),
+        report_text,
+        parse_mode=TELEGRAM_HTML_PARSE_MODE,
+    )
     return "ok"

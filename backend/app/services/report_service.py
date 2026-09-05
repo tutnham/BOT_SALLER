@@ -23,7 +23,7 @@ from app.db.models import (
 )
 from app.llm.client import LLMProviderError, get_llm_client
 from app.templates.report_fallback import render_report_fallback
-from app.utils.html import sanitize_telegram_html
+from app.utils.html import sanitize_telegram_html, sanitize_telegram_report_html
 
 REQUEST_SCOPED_CACHE_TTL = timedelta(minutes=5)
 
@@ -274,6 +274,10 @@ async def build_report(
         formatted = render_report_fallback(metrics)
     if not formatted.strip():
         formatted = render_report_fallback(metrics)
+
+    formatted = sanitize_telegram_report_html(formatted)
+    if not formatted.strip():
+        formatted = sanitize_telegram_report_html(render_report_fallback(metrics))
 
     cache_row.formatted_text = formatted
     cache_row.created_at = now_utc
