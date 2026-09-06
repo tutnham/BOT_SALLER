@@ -60,11 +60,11 @@ def upgrade() -> None:
         "parser_tasks",
         sa.Column("channel_id", sa.BigInteger(), nullable=True),
     )
+    # Non-partial: PG forbids using a newly ADD VALUE enum label in the same transaction.
     op.create_index(
         "idx_parser_tasks_resolve_channel",
         "parser_tasks",
         ["status", "task_type", "scheduled_at"],
-        postgresql_where=sa.text("task_type = 'resolve_channel'"),
     )
 
 
