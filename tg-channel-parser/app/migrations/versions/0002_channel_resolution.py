@@ -50,17 +50,9 @@ def upgrade() -> None:
     op.execute("UPDATE parser_channels SET status = 'active' WHERE status = 'pending'")
 
     # New channels may not have a numeric id yet (pending resolution).
+    # Keep UNIQUE: parser_posts.channel_id FK depends on parser_channels_channel_id_key.
+    # PostgreSQL UNIQUE already allows multiple NULLs, so a partial unique index is unnecessary.
     op.alter_column("parser_channels", "channel_id", nullable=True)
-
-    # Partial unique constraint for known channel ids.
-    op.drop_constraint("parser_channels_channel_id_key", "parser_channels", type_="unique")
-    op.create_index(
-        "ix_parser_channels_channel_id",
-        "parser_channels",
-        ["channel_id"],
-        unique=True,
-        postgresql_where=sa.text("channel_id IS NOT NULL"),
-    )
 
     # Tasks may reference a channel without a post (for resolution).
     op.alter_column("parser_tasks", "post_id", nullable=True)
@@ -81,12 +73,6 @@ def downgrade() -> None:
     op.drop_column("parser_tasks", "channel_id")
     op.alter_column("parser_tasks", "post_id", nullable=False)
 
-    op.drop_index("ix_parser_channels_channel_id", table_name="parser_channels")
-    op.create_unique_constraint(
-        "parser_channels_channel_id_key",
-        "parser_channels",
-        ["channel_id"],
-    )
     op.alter_column("parser_channels", "channel_id", nullable=False)
 
     op.drop_column("parser_channels", "error_text")
