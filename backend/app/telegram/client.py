@@ -122,7 +122,10 @@ class TelegramClient:
 
             if response.status_code == 200 and data.get("ok"):
                 if return_result:
-                    return data.get("result") or {}
+                    result = data.get("result") or {}
+                    if not isinstance(result, dict):
+                        return {}
+                    return result
                 return data
 
             retry_after = _extract_retry_after_seconds(data)
