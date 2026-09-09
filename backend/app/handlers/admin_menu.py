@@ -286,28 +286,30 @@ async def _dispatch_callback(
         )
         return
 
-    # Legacy supplier_tgid_start / supplier_tgid_clear are replaced by the
-    # self-service supplier_bind_start / supplier_unbind flow.  Treat them as
-    # aliases so old tests / bookmarks keep working.
     if action == "supplier_tgid_start":
-        return await _dispatch_callback(
+        await admin_service.set_dialog(
             session,
-            CallbackData(namespace="admin", action="supplier_bind_start", arg=cd.arg, page=cd.page),
-            owner_id,
-            chat_id,
-            message_id,
-            telegram,
+            telegram_id=owner_id,
+            state="await_supplier_telegram_id",
+            payload={"supplier_id": cd.arg},
         )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_tgid_prompt"),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [[menu_button("Отмена", "supplier_detail", cd.arg)]]
+            ),
+        )
+        return
 
     if action == "supplier_tgid_clear":
-        return await _dispatch_callback(
-            session,
-            CallbackData(namespace="admin", action="supplier_unbind", arg=cd.arg, page=cd.page),
-            owner_id,
-            chat_id,
-            message_id,
-            telegram,
+        await admin_service.unbind_supplier_telegram_id(session, cd.arg)
+        await _send_supplier_detail(
+            session, telegram, chat_id, cd.arg, message_id=message_id
         )
+        return
 
     if action == "supplier_bind_start":
         await admin_service.set_dialog(

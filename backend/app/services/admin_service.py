@@ -123,6 +123,25 @@ async def list_supplier_chats(
     return list(result.scalars().all())
 
 
+async def _deactivate_old_private_chat(
+    session: AsyncSession,
+    supplier_id: int,
+    old_tgid: int,
+) -> None:
+    """Mark the previous private chat as inactive/non-default when ID changes."""
+    result = await session.execute(
+        select(SupplierChat).where(
+            SupplierChat.supplier_id == supplier_id,
+            SupplierChat.chat_id == old_tgid,
+            SupplierChat.chat_type == SupplierChatType.private,
+        )
+    )
+    old_chat = result.scalar_one_or_none()
+    if old_chat is not None:
+        old_chat.active = False
+        old_chat.is_default = False
+
+
 async def _ensure_private_supplier_chat(
     session: AsyncSession,
     supplier: Supplier,
@@ -404,9 +423,12 @@ async def consume_supplier_bind_token(
         bind_token.used_at = _now()
         return BindTokenResult.conflict, bind_token
 
+    old_tgid = supplier.telegram_id
     supplier.telegram_id = telegram_id
     supplier.dm_ok = True
     await _ensure_private_supplier_chat(session, supplier, telegram_id, bind_token.created_by_owner_id)
+    if old_tgid is not None and old_tgid != telegram_id:
+        await _deactivate_old_private_chat(session, supplier.id, old_tgid)
     bind_token.used_at = _now()
     await session.flush()
     return BindTokenResult.ok, bind_token
@@ -418,7 +440,6 @@ async def bind_supplier_telegram_id(
     supplier_id: int,
     telegram_id: int,
     bound_by_owner_id: int,
-    set_dm_ok: bool = False,
 ) -> Supplier:
     """Bind a Telegram user id to a supplier via owner forward/digits input."""
     supplier = await session.get(Supplier, supplier_id)
@@ -428,10 +449,12 @@ async def bind_supplier_telegram_id(
     if await _is_telegram_id_busy(session, telegram_id, exclude_supplier_id=supplier.id):
         raise TelegramIdConflictError(telegram_id)
 
+    old_tgid = supplier.telegram_id
     supplier.telegram_id = telegram_id
-    if set_dm_ok:
-        supplier.dm_ok = True
+    supplier.dm_ok = True
     await _ensure_private_supplier_chat(session, supplier, telegram_id, bound_by_owner_id)
+    if old_tgid is not None and old_tgid != telegram_id:
+        await _deactivate_old_private_chat(session, supplier.id, old_tgid)
     await session.flush()
     return supplier
 
@@ -450,14 +473,17 @@ async def unbind_supplier_telegram_id(
     supplier.dm_ok = False
 
     if old_tgid is not None:
-        chats = await list_supplier_chats(session, supplier_id)
-        for chat in chats:
-            if chat.chat_id == old_tgid and chat.chat_type == SupplierChatType.private:
-                chat.active = False
-                chat.is_default = False
+        await _deactivate_old_private_chat(session, supplier_id, old_tgid)
 
     await session.flush()
     return supplier
+
+
+# Legacy aliases: old admin callbacks/tests use set_supplier_telegram_id /
+# clear_supplier_telegram_id. New code should prefer bind_supplier_telegram_id /
+# unbind_supplier_telegram_id.
+set_supplier_telegram_id = bind_supplier_telegram_id
+clear_supplier_telegram_id = unbind_supplier_telegram_id
 
 
 async def bind_pending_chat_as_client_group(

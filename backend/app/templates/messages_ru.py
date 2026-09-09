@@ -242,6 +242,23 @@ TEMPLATES: dict[str, str] = {
         "Ссылка недействительна, уже использована или устарела. "
         "Попросите заказчика прислать новую."
     ),
+    # Legacy templates kept for backwards compatibility with old admin callbacks
+    "admin_supplier_tgid_prompt": (
+        "Отправьте Telegram ID поставщика (только цифры из @userinfobot)\n"
+        "или перешлите любое сообщение от этого человека."
+    ),
+    "admin_supplier_tgid_saved": (
+        "Telegram ID {telegram_id} сохранён для поставщика #{supplier_id}.\n"
+        "Поставщику нужно написать боту /start в ЛС, чтобы открыть личные сообщения."
+    ),
+    "admin_supplier_tgid_taken": (
+        "Telegram ID {telegram_id} уже используется другим поставщиком или чатом. "
+        "Введите другой ID."
+    ),
+    "admin_supplier_tgid_cleared": (
+        "Telegram ID сброшен для поставщика #{supplier_id}.\n"
+        "RFQ в личку не пойдёт, пока ID не задан снова и поставщик не нажмёт /start."
+    ),
     "admin_supplier_chats": "Чаты поставщика #{supplier_id} (всего {count}):",
     "admin_client_groups": "Клиентские беседы:",
     "admin_pending_chats": "Новые чаты, куда добавили бота:",
