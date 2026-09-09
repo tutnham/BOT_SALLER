@@ -9,7 +9,9 @@
 Скопируй из `.env.example` или допиши вручную:
 
 ```env
-# Куда слать черновик прайса на approve/reject
+# Куда слать черновик прайса на approve/reject (CSV, предпочтительно)
+PRICE_APPROVAL_CHAT_IDS=
+# Legacy: один chat_id, если CHAT_IDS пустой
 PRICE_APPROVAL_CHAT_ID=
 
 # Куда публиковать прайс после /approve_price (несколько chat_id через запятую)
@@ -24,9 +26,15 @@ PARSER_TIMEOUT_SECONDS=15
 # URL и токен API парсера каналов (Docker-сеть Coolify или UUID-hostname — см. СЕРВИСЫ.md)
 PARSER_API_URL=http://<parser-api-uuid-or-tg-parser-api>:8000
 PARSER_API_TOKEN=
+
+# LLM (backend Coolify). Не LLM_PROVIDER=deepseek — см. СЕРВИСЫ.md § LLM
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=
 ```
 
-Если `PRICE_APPROVAL_CHAT_ID` пустой — черновик уйдёт в `ADMIN_ALERT_CHAT_ID` (если он задан).
+Порядок чатов approve: `PRICE_APPROVAL_CHAT_IDS` → иначе `PRICE_APPROVAL_CHAT_ID` → иначе `ADMIN_ALERT_CHAT_ID`.
 
 ---
 
@@ -34,12 +42,17 @@ PARSER_API_TOKEN=
 
 | Переменная | Зачем |
 |---|---|
-| `PRICE_APPROVAL_CHAT_ID` | Telegram chat_id, куда бот шлёт черновик с командами `/approve_price` и `/reject_price` |
+| `PRICE_APPROVAL_CHAT_IDS` | CSV chat_id, куда бот шлёт черновик (`/approve_price`, `/reject_price`) |
+| `PRICE_APPROVAL_CHAT_ID` | Legacy: один chat_id, если CSV пустой |
 | `PRICE_PUBLISH_CHAT_IDS` | Список chat_id (CSV), куда публикуется утверждённый прайс. Пример: `-100111,-100222` |
 | `DEFAULT_MARKUP` | Базовая наценка в рублях, если в `markup_rules` нет `markup_fixed` |
 | `PARSER_TIMEOUT_SECONDS` | Сколько ждать ответ парсера каналов |
 | `PARSER_API_URL` | Базовый URL сервиса `tg-channel-parser` (**порт 8000**, не 8100). В Coolify с Predefined Network — UUID-hostname контейнера |
 | `PARSER_API_TOKEN` | Bearer-токен для `GET /posts` (тот же, что `API_AUTH_TOKEN` у парсера) |
+| `LLM_PROVIDER` | Только `openai` / `openai_compatible` / `openrouter` / `ollama`. Не `deepseek` |
+| `LLM_BASE_URL` | Для DeepSeek: `https://api.deepseek.com` (код дописывает `/chat/completions`) |
+| `LLM_MODEL` | Например `deepseek-chat` |
+| `LLM_API_KEY` | Ключ провайдера; только Coolify, не git |
 
 Как узнать `chat_id`: добавь бота в нужный чат/канал и посмотри update (или используй бота вроде `@userinfobot` / логи webhook).
 
@@ -126,7 +139,8 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 ## 6. Быстрый чеклист
 
-- [ ] В `.env` заполнены `PRICE_APPROVAL_CHAT_ID` и `PRICE_PUBLISH_CHAT_IDS`
+- [ ] В `.env` заполнены `PRICE_APPROVAL_CHAT_IDS` (или legacy `PRICE_APPROVAL_CHAT_ID`) и `PRICE_PUBLISH_CHAT_IDS`
+- [ ] LLM: `openai_compatible` + `LLM_BASE_URL` провайдера + Restart backend после правки Coolify
 - [ ] Задан `PARSER_API_TOKEN` (если нужны каналы)
 - [ ] В БД есть активные `markup_rules` (хотя бы `*`)
 - [ ] У нужных поставщиков заполнен `price_channel_id` **или** они шлют `прайс` в ЛС
@@ -147,16 +161,20 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 ## 9. Текущий статус parser-сервиса
 
-Код **`tg-channel-parser/`** в репозитории (commit `72ea6a1+`): Compose без публичных портов, auto-migrate, cursor pagination, DB-aware health. Production deploy — отдельный Coolify stack; инструкция в **`СЕРВИСЫ.md`**.
+Код **`tg-channel-parser/`** в репозитории. Prod на Coolify (smoke 2026-09-06): stack Running, migrate `0002` после `606d9ab`+`83d4bca`, сеть `coolify`, smoke из bot-saller успешен, каналов `[]`.
+
+Публичная проверка 2026-09-09: backend `/health` `db: ok`. LLM-ключи в Coolify **не** равны рабочему парсингу, пока `LLM_PROVIDER` не `openai_compatible` и контейнер не перезапущен. Осталось для morning-price: канал active, `price_channel_id`, `markup_rules`, чаты approve/publish. Подробно — `СЕРВИСЫ.md` § «Готовность».
 
 MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — вне текущего prod scope.
+
+`auth_cli` на VPS: `TELEGRAM_SESSION_STRING=placeholder` + `docker compose … run --rm -it --no-deps tg-listener python -m app.mtproto.auth_cli`. Hostname API после Redeploy обновить в `PARSER_API_URL`.
 
 ---
 
 ## 7. Как пользоваться после настройки
 
-1. Утром APScheduler запускает `morning_price`.
-2. В `PRICE_APPROVAL_CHAT_ID` приходит черновик.
+1. В 11:00 МСК APScheduler запускает `morning_price` (после окна публикации в каналах 08:00–11:00).
+2. В чаты из `PRICE_APPROVAL_CHAT_IDS` (или legacy `PRICE_APPROVAL_CHAT_ID`) приходит черновик.
 3. Сотрудник пишет:
    - `/approve_price {id}` — публикация в `PRICE_PUBLISH_CHAT_IDS`
    - `/reject_price {id}` — отклонение

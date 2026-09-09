@@ -650,8 +650,11 @@ cp .env.example .env
 # заполнить TELEGRAM_API_ID, TELEGRAM_API_HASH, TARGET_CHANNEL, POSTGRES_*, AI_*
 
 # 2. Первичная авторизация (разово, интерактивно, НЕ в Docker с detached-режимом)
-docker compose run --rm tg-listener python -m app.mtproto.auth_cli
-# скопировать выведенный session_string в .env → TELEGRAM_SESSION_STRING
+# compose требует непустой TELEGRAM_SESSION_STRING ещё до auth_cli:
+# в .env поставить TELEGRAM_SESSION_STRING=placeholder, затем:
+docker compose -f docker-compose.tg-parser.yml run --rm -it --no-deps \
+  tg-listener python -m app.mtproto.auth_cli
+# скопировать выведенный session_string в .env и Coolify → TELEGRAM_SESSION_STRING
 
 # 3. Применение миграций
 docker compose run --rm tg-parser-api alembic upgrade head

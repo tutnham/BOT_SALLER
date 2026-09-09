@@ -36,9 +36,11 @@ class JobSpec(NamedTuple):
 
 # Timeouts are safety nets vs hung I/O; morning-price allows parser+LLM headroom.
 # misfire_grace_time is per-job: monthly reminder can tolerate a longer outage.
+# morning-price at 11:00 MSK: suppliers post in price channels 08:00–11:00;
+# realtime listener already writes parser_posts; this job pulls them into zakupki.
 def build_job_specs(settings: Settings) -> tuple[JobSpec, ...]:
     return (
-        JobSpec("morning_price", "0 8 * * *", "morning-price", 300.0, True, 300),
+        JobSpec("morning_price", "0 11 * * *", "morning-price", 300.0, True, 300),
         JobSpec("recheck_due", "*/15 * * * *", "recheck-due", 120.0, False, 300),
         JobSpec("daily_report_day", "0 21 * * *", "daily-report-day", 60.0, False, 300),
         JobSpec("weekly_report", "0 9 * * 1", "weekly-report", 60.0, False, 300),

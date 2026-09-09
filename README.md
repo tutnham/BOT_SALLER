@@ -22,6 +22,7 @@
 - Backend: Coolify app `bot-saller`, Supabase Session pooler IPv4
 - Parser: отдельный Coolify Compose stack, **без публичного API**
 - Связь: `PARSER_API_URL` + `PARSER_API_TOKEN` (порт **8000**)
+- **Готовность 2026-09-09:** публичный `/health` backend `db: ok`; webhook/jobs закрыты 401. Parser снаружи не виден. LLM-ключи в Coolify **не доказывают** рабочий разбор: нужен `LLM_PROVIDER=openai_compatible` (не `deepseek`) + Restart. Каналы прайса — нет. Таблица: `СЕРВИСЫ.md` § «Готовность».
 
 ## Owner `/menu` (ЛС бота)
 

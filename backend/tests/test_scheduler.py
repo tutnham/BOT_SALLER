@@ -63,7 +63,7 @@ def test_setup_scheduler_registers_expected_jobs() -> None:
     assert set(jobs) == expected_ids
 
     assert str(jobs["morning_price"].trigger) == (
-        "cron[month='*', day='*', day_of_week='*', hour='8', minute='0']"
+        "cron[month='*', day='*', day_of_week='*', hour='11', minute='0']"
     )
     assert str(jobs["recheck_due"].trigger) == (
         "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
