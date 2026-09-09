@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import ParseCache, Supplier
 from app.llm.client import set_llm_client
 from app.parsers.cache import build_content_hash, set_cached
 from app.services.price_service import insert_raw_price, parse_pending_raw_prices
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from tests.conftest import MockLLMClient
 
 

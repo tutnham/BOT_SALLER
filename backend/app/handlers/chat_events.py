@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ClientGroup, SupplierChat
 from app.services import admin_service
-from app.telegram.client import get_telegram_client
-from app.telegram.keyboards import button, inline_keyboard, menu_button
+from app.telegram.client import TelegramClientProtocol, get_telegram_client
+from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
 from app.utils.whitelist import list_owner_telegram_ids
 
@@ -55,12 +56,20 @@ async def handle_my_chat_member(
 
     # Bot removed: deactivate any bindings to avoid routing failures.
     deactivated = False
-    chat_row = await session.get(SupplierChat, {"chat_id": chat_id})
+    chat_row = (
+        await session.execute(
+            select(SupplierChat).where(SupplierChat.chat_id == int(chat_id))
+        )
+    ).scalar_one_or_none()
     if chat_row is not None:
         chat_row.active = False
         chat_row.is_default = False
         deactivated = True
-    group_row = await session.get(ClientGroup, {"chat_id": chat_id})
+    group_row = (
+        await session.execute(
+            select(ClientGroup).where(ClientGroup.chat_id == int(chat_id))
+        )
+    ).scalar_one_or_none()
     if group_row is not None:
         group_row.active = False
         deactivated = True
@@ -78,7 +87,7 @@ async def handle_my_chat_member(
 
 async def _notify_owners_about_pending(
     session: AsyncSession,
-    telegram,
+    telegram: TelegramClientProtocol,
     *,
     chat_id: int,
     title: str | None,
@@ -114,7 +123,7 @@ async def _notify_owners_about_pending(
 
 async def _notify_owners_about_removal(
     session: AsyncSession,
-    telegram,
+    telegram: TelegramClientProtocol,
     *,
     chat_id: int,
     title: str | None,

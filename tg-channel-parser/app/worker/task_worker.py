@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,7 +22,6 @@ from app.config import get_settings
 from app.db.models import (
     ParserChannel,
     ParserChannelStatus,
-    ParserMediaFile,
     ParserPost,
     ParserStatus,
     ParserTask,
@@ -37,7 +37,7 @@ from app.utils.hashing import sha256_file
 
 async def claim_next_task(session: AsyncSession) -> ParserTask | None:
     """Pick one due task: resolve_channel first, then download_media."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     resolve_stmt = (
         select(ParserTask)
@@ -85,6 +85,27 @@ async def claim_next_task(session: AsyncSession) -> ParserTask | None:
     return task
 
 
+async def reclaim_stale_processing(session: AsyncSession) -> int:
+    """Return stuck processing tasks to new so a crashed worker cannot hang them."""
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(
+        minutes=settings.task_stale_processing_minutes
+    )
+    result = await session.execute(
+        update(ParserTask)
+        .where(
+            ParserTask.status == ParserStatus.processing,
+            ParserTask.last_attempt_at.is_not(None),
+            ParserTask.last_attempt_at < cutoff,
+        )
+        .values(
+            status=ParserStatus.new,
+            error_text="reclaimed_stale_processing",
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 async def _fail_or_retry(
     session: AsyncSession,
     task: ParserTask,
@@ -102,7 +123,7 @@ async def _fail_or_retry(
     else:
         delay = settings.media_retry_backoff_base_seconds * (2 ** (task.attempts - 1))
         task.status = ParserStatus.new
-        task.scheduled_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        task.scheduled_at = datetime.now(UTC) + timedelta(seconds=delay)
         logger.warning(
             "Task {} retry in {}s attempt={}: {}",
             task.id,
@@ -115,7 +136,7 @@ async def _fail_or_retry(
 async def process_resolve_channel(
     session: AsyncSession,
     task: ParserTask,
-    client,
+    client: Any,
 ) -> None:
     """Resolve pending channel handle to numeric channel_id via MTProto."""
     if task.channel_id is None:
@@ -165,7 +186,7 @@ async def process_resolve_channel(
 async def process_download_media(
     session: AsyncSession,
     task: ParserTask,
-    client,
+    client: Any,
 ) -> None:
     result = await session.execute(
         select(ParserPost)
@@ -200,19 +221,32 @@ async def process_download_media(
         for media in media_rows:
             if media.download_status == ParserStatus.downloaded and media.storage_path:
                 continue
-            tmp_path = await with_flood_wait(
-                lambda: client.download_media(
-                    message,
-                    file_name=str(tmp_dir / f"{media.file_unique_id}.tmp"),
-                )
-            )
+            if media.file_size is not None and media.file_size > settings.max_media_bytes:
+                media.download_status = ParserStatus.failed
+                media.error_text = "file_too_large"
+                continue
+            dest = str(tmp_dir / f"{media.file_unique_id}.tmp")
+
+            def _download(path: str = dest) -> Any:
+                return client.download_media(message, file_name=path)
+
+            tmp_path = await with_flood_wait(_download)
             if not tmp_path:
                 media.download_status = ParserStatus.failed
                 media.error_text = "download_returned_empty"
                 continue
 
             tmp_path_str = str(tmp_path)
-            digest = sha256_file(tmp_path_str)
+            size = await asyncio.to_thread(os.path.getsize, tmp_path_str)
+            if size > settings.max_media_bytes:
+                media.download_status = ParserStatus.failed
+                media.error_text = "file_too_large"
+                try:
+                    os.remove(tmp_path_str)
+                except OSError:
+                    pass
+                continue
+            digest = await asyncio.to_thread(sha256_file, tmp_path_str)
             mime = media.mime_type or mimetypes.guess_type(tmp_path_str)[0]
             ext = guess_ext(tmp_path_str, mime)
             key = media_key(post.channel_id, post.message_id, media.file_unique_id, ext)
@@ -220,9 +254,9 @@ async def process_download_media(
             media.storage_path = storage_path
             media.sha256_hash = digest
             media.mime_type = mime
-            media.file_size = os.path.getsize(tmp_path_str)
+            media.file_size = size
             media.download_status = ParserStatus.downloaded
-            media.downloaded_at = datetime.now(timezone.utc)
+            media.downloaded_at = datetime.now(UTC)
             media.error_text = None
             try:
                 os.remove(tmp_path_str)
@@ -251,7 +285,7 @@ async def _claim_next_task_id() -> int | None:
         return task_id
 
 
-async def _process_claimed_task(task_id: int, client) -> None:
+async def _process_claimed_task(task_id: int, client: Any) -> None:
     factory = get_session_factory()
     async with factory() as session:
         task = await session.get(ParserTask, task_id)
@@ -277,6 +311,12 @@ async def worker_loop() -> None:
     logger.info("tg-worker started (download_media only)")
     try:
         while True:
+            factory = get_session_factory()
+            async with factory() as session:
+                reclaimed = await reclaim_stale_processing(session)
+                if reclaimed:
+                    logger.warning("Reclaimed {} stale processing tasks", reclaimed)
+                await session.commit()
             task_id = await _claim_next_task_id()
             if task_id is None:
                 await asyncio.sleep(settings.task_poll_interval_seconds)

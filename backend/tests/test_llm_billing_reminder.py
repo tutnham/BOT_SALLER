@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import AppSetting, BillingReminder, Owner
+from app.db.models import BillingReminder, Owner
 from app.jobs import run_llm_billing_reminder
 from app.services.app_settings_service import LLM_TOPUP_PRICE_TEXT_KEY, set_setting
 from app.telegram.client import TelegramSendError
@@ -167,11 +167,11 @@ async def test_reminder_period_key_in_configured_timezone(
     mock_telegram: MockTelegramClient,
     _monkeypatch_settings: None,
 ) -> None:
-    settings = get_settings()
+    get_settings()
 
     # 2026-08-31 23:30 UTC == 2026-09-01 02:30 MSK
     msk_just_after_midnight = datetime(2026, 9, 1, 2, 30, tzinfo=ZoneInfo("Europe/Moscow"))
-    utc_before_midnight = msk_just_after_midnight.astimezone(timezone.utc)
+    utc_before_midnight = msk_just_after_midnight.astimezone(UTC)
 
     with patch("app.jobs.datetime") as mock_dt:
         mock_dt.now.return_value = utc_before_midnight

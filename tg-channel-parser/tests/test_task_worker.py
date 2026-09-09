@@ -111,3 +111,22 @@ async def test_process_claimed_task_uses_fresh_session() -> None:
 
     resolve_mock.assert_awaited_once()
     assert fake_session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_processing_updates_stuck_tasks() -> None:
+    class FakeResult:
+        rowcount = 3
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.stmt = None
+
+        async def execute(self, stmt):
+            self.stmt = stmt
+            return FakeResult()
+
+    session = FakeSession()
+    count = await task_worker.reclaim_stale_processing(session)  # type: ignore[arg-type]
+    assert count == 3
+    assert session.stmt is not None

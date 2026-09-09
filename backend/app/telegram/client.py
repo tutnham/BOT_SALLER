@@ -159,6 +159,8 @@ class TelegramClient:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         result = await self._request("sendMessage", payload, throttle_chat_id=chat_id)
+        if not isinstance(result, dict) or "message_id" not in result:
+            raise TelegramSendError("telegram_empty_send_result")
         return int(result["message_id"])
 
     async def answer_callback_query(

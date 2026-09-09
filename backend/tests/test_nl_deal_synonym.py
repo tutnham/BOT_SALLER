@@ -5,12 +5,13 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from app.db.models import Deal, Quote, QuoteSource, RequestStatus, Supplier
-from app.parsers.nl_commands import parse_nl_command
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Deal, Quote, QuoteSource, RequestStatus, Supplier
+from app.parsers.nl_commands import parse_nl_command
+from app.services.request_service import create_request
 
 
 def _group_nl_update(

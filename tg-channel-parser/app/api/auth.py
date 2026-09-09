@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -19,7 +21,13 @@ async def require_api_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing_bearer_token",
         )
-    if credentials.credentials != settings.api_auth_token:
+    provided = credentials.credentials.encode("utf-8", "surrogateescape")
+    expected = settings.api_auth_token.encode("utf-8")
+    try:
+        matched = hmac.compare_digest(provided, expected)
+    except ValueError:
+        matched = False
+    if not matched:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_token",

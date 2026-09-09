@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import pytest
@@ -31,7 +32,13 @@ os.environ.setdefault("PARSER_API_TOKEN", "test-parser-token")
 os.environ.setdefault("DEFAULT_MARKUP", "500")
 
 from app.config import get_settings  # noqa: E402
-from app.db.models import ClientGroup, Employee, MarkupRule, Owner, Supplier  # noqa: E402
+from app.db.models import (  # noqa: E402
+    ClientGroup,
+    Employee,
+    MarkupRule,
+    Owner,
+    Supplier,
+)
 from app.db.session import get_db  # noqa: E402
 from app.llm.client import set_llm_client  # noqa: E402
 from app.main import app  # noqa: E402
@@ -394,8 +401,9 @@ async def engine(test_database_url: str) -> AsyncGenerator[AsyncEngine, None]:
     Avoids asyncpg 'Future attached to a different loop' when pytest-asyncio
     creates a new event loop per test.
     """
-    from app.db import session as session_mod
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db import session as session_mod
 
     eng = create_async_engine(test_database_url, poolclass=NullPool)
     session_mod._engine = eng

@@ -5,12 +5,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from app.db.models import MarkupRule, PriceListDraft, Supplier
-from app.services.price_service import insert_raw_price
-from app.templates.messages_ru import render_template
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import MarkupRule, PriceListDraft, Supplier
+from app.services.price_service import insert_raw_price
+from app.templates.messages_ru import render_template
 from tests.conftest import PRICE_APPROVAL_CHAT_ID, MockLLMClient
 
 FORBIDDEN_FRAGMENTS = (

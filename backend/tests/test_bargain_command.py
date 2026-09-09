@@ -5,6 +5,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import (
     MessageKind,
     MessageOut,
@@ -15,9 +19,6 @@ from app.db.models import (
     Supplier,
 )
 from app.services.request_service import create_request
-from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _employee_command_update(

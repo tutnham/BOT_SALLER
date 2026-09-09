@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Deal, Request, RequestStatus, Supplier
+from app.db.models import Request, RequestStatus, Supplier
 from app.services.deal_service import (
     DealAlreadyExistsError,
     RequestNotFoundError,

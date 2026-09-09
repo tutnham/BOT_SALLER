@@ -11,7 +11,6 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.db.models import BillingReminder
 from app.services.app_settings_service import LLM_TOPUP_PRICE_TEXT_KEY, get_setting
 from app.templates.messages_ru import render_template

@@ -5,15 +5,15 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import MarkupRule, PriceListDraft, Supplier
 from app.services.price_service import (
     approve_price_draft,
     insert_raw_price,
     reject_price_draft,
 )
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from tests.conftest import (
     PRICE_PUBLISH_CHAT_ID,
     MockLLMClient,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -14,12 +14,12 @@ from app.api.pagination import decode_cursor, encode_cursor, paginate_rows
 def _row(row_id: int, minute: int) -> SimpleNamespace:
     return SimpleNamespace(
         id=row_id,
-        post_date=datetime(2026, 7, 30, 6, minute, tzinfo=timezone.utc),
+        post_date=datetime(2026, 7, 30, 6, minute, tzinfo=UTC),
     )
 
 
 def test_encode_decode_cursor_roundtrip() -> None:
-    post_date = datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc)
+    post_date = datetime(2026, 7, 30, 6, 0, tzinfo=UTC)
     cursor = encode_cursor(post_date, 42)
     decoded_date, decoded_id = decode_cursor(cursor)
     assert decoded_id == 42

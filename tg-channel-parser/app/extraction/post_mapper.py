@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.db.models import ParserContentType, ParserMediaType
@@ -50,6 +50,7 @@ def _message_to_raw_metadata(message: Any) -> dict[str, Any]:
     """Best-effort serializable snapshot for audit."""
     chat = getattr(message, "chat", None)
     date = getattr(message, "date", None)
+    date_iso: str | None
     if isinstance(date, datetime):
         date_iso = date.isoformat()
     else:
@@ -84,9 +85,9 @@ def map_message_to_post_fields(message: Any) -> dict[str, Any]:
 
     post_date = getattr(message, "date", None)
     if post_date is None:
-        post_date = datetime.now(timezone.utc)
+        post_date = datetime.now(UTC)
     elif post_date.tzinfo is None:
-        post_date = post_date.replace(tzinfo=timezone.utc)
+        post_date = post_date.replace(tzinfo=UTC)
 
     raw_text = getattr(message, "text", None) or getattr(message, "caption", None)
     content_type = classify_content_type(message)

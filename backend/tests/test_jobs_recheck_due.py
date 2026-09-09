@@ -7,6 +7,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import (
     MessageKind,
     MessageOut,
@@ -18,9 +22,6 @@ from app.db.models import (
 )
 from app.services.request_service import create_request
 from app.telegram.client import TelegramSendError
-from httpx import AsyncClient
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def _due_request(

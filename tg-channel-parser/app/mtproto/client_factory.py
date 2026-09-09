@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pyrogram import Client
 
 from app.config import Settings, get_settings
@@ -21,7 +23,7 @@ def create_client(
     if not api_id or not api_hash:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH required")
 
-    kwargs: dict = {
+    kwargs: dict[str, Any] = {
         "name": name,
         "api_id": api_id,
         "api_hash": api_hash,
@@ -38,10 +40,12 @@ def create_auth_client(settings: Settings | None = None) -> Client:
     cfg = settings or get_settings()
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH required")
-    return Client(
-        name=":memory:",
-        api_id=cfg.telegram_api_id,
-        api_hash=cfg.telegram_api_hash,
-        phone_number=cfg.telegram_phone_number,
-        in_memory=True,
-    )
+    kwargs: dict[str, Any] = {
+        "name": ":memory:",
+        "api_id": cfg.telegram_api_id,
+        "api_hash": cfg.telegram_api_hash,
+        "in_memory": True,
+    }
+    if cfg.telegram_phone_number:
+        kwargs["phone_number"] = cfg.telegram_phone_number
+    return Client(**kwargs)

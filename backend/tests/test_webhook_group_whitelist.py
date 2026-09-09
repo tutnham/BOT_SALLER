@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import ClientGroup
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import ClientGroup
 
 
 def _employee_update(*, update_id: int, from_id: int, group_id: int, text: str) -> dict:

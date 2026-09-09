@@ -18,7 +18,7 @@ class _SecretFilter:
     def set_secrets(self, secrets: list[str]) -> None:
         self._secrets = [s for s in secrets if s and len(s) >= 4]
 
-    def __call__(self, record: dict[str, Any]) -> bool:
+    def __call__(self, record: Any) -> bool:
         message = str(record["message"])
         for secret in self._secrets:
             if secret in message:
@@ -45,7 +45,7 @@ def setup_logging(level: str = "INFO", secrets: list[str] | None = None) -> None
             '"event":"{message}",'
             '"module":"{name}"}}'
         ),
-        filter=_secret_filter,
+        filter=lambda record: _secret_filter(record),
         enqueue=False,
     )
     logging.getLogger("pyrogram").setLevel(logging.WARNING)

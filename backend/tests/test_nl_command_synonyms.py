@@ -5,6 +5,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import get_settings
 from app.db.models import (
     MessageKind,
@@ -16,9 +20,6 @@ from app.db.models import (
 )
 from app.parsers.nl_commands import parse_nl_command
 from app.services.request_service import create_request
-from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _group_nl_update(

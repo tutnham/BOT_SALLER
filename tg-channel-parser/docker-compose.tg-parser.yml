@@ -10,6 +10,8 @@ x-app-environment: &app-environment
   TASK_POLL_INTERVAL_SECONDS: ${TASK_POLL_INTERVAL_SECONDS:-2}
   MEDIA_MAX_RETRIES: ${MEDIA_MAX_RETRIES:-3}
   MEDIA_RETRY_BACKOFF_BASE_SECONDS: ${MEDIA_RETRY_BACKOFF_BASE_SECONDS:-5}
+  TASK_STALE_PROCESSING_MINUTES: ${TASK_STALE_PROCESSING_MINUTES:-15}
+  MAX_MEDIA_BYTES: ${MAX_MEDIA_BYTES:-52428800}
   TZ: ${TZ:-Europe/Moscow}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
@@ -64,6 +66,12 @@ services:
     restart: unless-stopped
     volumes:
       - media_tmp:/tmp/media
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
 
   tg-worker:
     build:
@@ -81,6 +89,12 @@ services:
     volumes:
       - media_tmp:/tmp/media
       - media_local:/data/media
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
 
   tg-parser-api:
     build:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import MarkupRule, Supplier
 from app.llm.client import set_llm_client
 from app.services.markup_service import classify_category, load_rules, resolve_markup
@@ -14,8 +16,6 @@ from app.services.price_service import (
     insert_raw_price,
     parse_pending_raw_prices,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from tests.conftest import MockLLMClient
 
 

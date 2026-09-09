@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
@@ -16,7 +17,7 @@ class LocalStorage:
     async def save(self, local_tmp_path: str, key: str) -> str:
         dest = self.root / key
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(local_tmp_path, dest)
+        await asyncio.to_thread(shutil.copy2, local_tmp_path, dest)
         return str(dest)
 
 

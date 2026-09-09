@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import ClientGroup, Owner, PriceListDraft
-from app.telegram.keyboards import CallbackData
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import Owner, PriceListDraft
+from app.telegram.keyboards import CallbackData
 from tests.conftest import PRICE_PUBLISH_CHAT_ID, MockTelegramClient
 
 

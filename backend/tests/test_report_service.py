@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import (
     Deal,
     Employee,
@@ -18,8 +21,6 @@ from app.db.models import (
 )
 from app.llm.client import LLMProviderError, set_llm_client
 from app.services.report_service import build_report
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

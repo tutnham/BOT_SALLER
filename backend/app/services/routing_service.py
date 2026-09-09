@@ -30,7 +30,12 @@ class RfqTarget:
 async def chat_role(session: AsyncSession, chat_id: int) -> ChatRole:
     """Classify a chat id as client group, supplier chat, or unknown."""
     result = await session.execute(
-        select(ClientGroup.id).where(ClientGroup.chat_id == chat_id).limit(1)
+        select(ClientGroup.id)
+        .where(
+            ClientGroup.chat_id == chat_id,
+            ClientGroup.active.is_(True),
+        )
+        .limit(1)
     )
     if result.scalar_one_or_none() is not None:
         return "client_group"
@@ -108,15 +113,3 @@ def _resolve_default_chat(supplier: Supplier) -> int | None:
         return private[0].chat_id
 
     return None
-
-
-async def is_client_group_active(session: AsyncSession, chat_id: int) -> bool:
-    """Backward-compatible client group check.
-
-    If no client groups are configured at all, any group is allowed (legacy
-    behaviour). Once at least one group exists, only registered active groups
-    are accepted.
-    """
-    from app.utils.whitelist import is_client_group_active as _legacy_check
-
-    return await _legacy_check(session, chat_id)

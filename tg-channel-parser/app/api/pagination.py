@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from datetime import datetime
 from typing import TypeVar
 
@@ -33,8 +34,8 @@ def paginate_rows(
     *,
     limit: int,
     cursor: str | None,
-    get_post_date,
-    get_row_id,
+    get_post_date: Callable[[T], datetime],
+    get_row_id: Callable[[T], int],
 ) -> tuple[list[T], str | None]:
     """Stable pagination by (post_date, id)."""
     ordered = sorted(rows, key=lambda row: (get_post_date(row), get_row_id(row)))

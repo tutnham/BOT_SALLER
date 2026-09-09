@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import Quote, QuoteSource, Request, RequestStatus, Supplier
-from app.services.quote_service import upsert_quote
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Quote, QuoteSource, Request, RequestStatus, Supplier
+from app.services.quote_service import upsert_quote
 
 
 @pytest.mark.asyncio

@@ -7,13 +7,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from loguru import logger
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from sqlalchemy import select
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import ParserChannel, ParserChannelStatus
 from app.db.session import dispose_engine, get_session_factory
 from app.logging_setup import setup_logging
@@ -31,13 +32,14 @@ async def _load_active_channel_ids() -> list[int]:
                 ParserChannel.channel_id.is_not(None),
             )
         )
-        return list(result.scalars().all())
+        return [cid for cid in result.scalars().all() if cid is not None]
 
 
 def _build_handler(channel_ids: list[int]) -> MessageHandler | None:
     if not channel_ids:
         return None
-    return MessageHandler(_on_new_post, filters.chat(channel_ids))
+    chat_filter: list[int | str] = list(channel_ids)
+    return MessageHandler(_on_new_post, filters.chat(chat_filter))
 
 
 async def run_realtime() -> None:
@@ -71,7 +73,7 @@ async def run_realtime() -> None:
         await dispose_engine()
 
 
-async def _on_new_post(_client, message) -> None:  # noqa: ANN001
+async def _on_new_post(_client: Client, message: Any) -> None:
     factory = get_session_factory()
     try:
         async with factory() as session:
@@ -93,9 +95,9 @@ async def _on_new_post(_client, message) -> None:  # noqa: ANN001
 
 
 async def _reload_loop(
-    client,
+    client: Client,
     handler: MessageHandler | None,
-    settings,
+    settings: Settings,
 ) -> None:
     """Periodically refresh the channel filter without restarting the process."""
     interval = settings.listener_reload_interval_seconds

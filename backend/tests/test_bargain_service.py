@@ -163,7 +163,7 @@ async def test_start_bargain_no_quotes(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
 ) -> None:
-    supplier = seed_suppliers[0]
+    seed_suppliers[0]
     request = Request(
         group_chat_id=-100123,
         employee_id=1,

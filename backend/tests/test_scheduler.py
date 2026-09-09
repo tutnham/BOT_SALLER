@@ -6,9 +6,10 @@ from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
+
 from app import scheduler as scheduler_mod
 from app.config import get_settings
-from app.scheduler import JobSpec, build_job_specs, setup_scheduler
+from app.scheduler import build_job_specs, setup_scheduler
 from app.utils.job_lock import acquire_job_lock, release_job_lock
 
 

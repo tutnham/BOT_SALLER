@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from app.db.models import MarkupRule, PriceListDraft, RawPrice, Supplier
-from app.services.parser_client import ParserPost
-from app.services.price_service import insert_raw_price
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MarkupRule, PriceListDraft, RawPrice, Supplier
+from app.services.parser_client import ParserPost
+from app.services.price_service import insert_raw_price
 
 
 @pytest.mark.asyncio

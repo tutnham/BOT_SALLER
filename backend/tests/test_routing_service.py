@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ClientGroup, Supplier, SupplierChat, SupplierChatType
+from app.db.models import ClientGroup, SupplierChat, SupplierChatType
 from app.services.admin_service import add_supplier
 from app.services.routing_service import (
     chat_role,
@@ -90,6 +90,13 @@ async def test_chat_role(db_session: AsyncSession) -> None:
     assert await chat_role(db_session, -2002) == "client_group"
     assert await chat_role(db_session, -1001) == "supplier_chat"
     assert await chat_role(db_session, -9999) == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_chat_role_ignores_inactive_client_group(db_session: AsyncSession) -> None:
+    db_session.add(ClientGroup(chat_id=-2003, title="Inactive", active=False))
+    await db_session.flush()
+    assert await chat_role(db_session, -2003) == "unknown"
 
 
 @pytest.mark.asyncio

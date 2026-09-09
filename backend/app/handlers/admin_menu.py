@@ -118,7 +118,7 @@ async def handle_admin_callback(
         await _send_or_edit(
             telegram,
             chat_id=chat_id,
-            text=render_template("admin_error", detail=str(exc)),
+            text=render_template("admin_error", detail="операция не выполнена"),
             message_id=message_id,
             markup=inline_keyboard([[menu_button("В меню", "main_menu")]]),
         )
@@ -1034,7 +1034,7 @@ async def _handle_dialog_text(
         return "ok"
 
     if state == "await_employee_telegram_id":
-        name = payload.get("name")
+        name = str(payload.get("name") or "")
         if not name:
             await admin_service.clear_dialog(session, owner_id)
             await _send_main_menu(session, telegram, chat_id)

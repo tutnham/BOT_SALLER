@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import func, select, update
@@ -29,10 +30,17 @@ def _parse_date(value: str | None) -> datetime | None:
     if "T" in value:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     else:
-        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
+
+
+def _require_chat_id(chat: Any) -> int:
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        raise RuntimeError("telegram_chat_id_missing")
+    return int(chat_id)
 
 
 async def run_backfill(
@@ -50,27 +58,32 @@ async def run_backfill(
     inserted = 0
     try:
         chat = await with_flood_wait(lambda: client.get_chat(channel))
+        chat_id = _require_chat_id(chat)
         factory = get_session_factory()
         async with factory() as session:
             await upsert_channel(
                 session,
-                channel_id=chat.id,
+                channel_id=chat_id,
                 username=getattr(chat, "username", None),
                 title=getattr(chat, "title", None),
                 purpose=purpose,
             )
             await session.commit()
 
-        kwargs: dict = {"chat_id": chat.id}
+        kwargs: dict[str, Any] = {"chat_id": chat_id}
         if from_message_id is not None:
             kwargs["offset_id"] = from_message_id
         elif from_date is not None:
             kwargs["offset_date"] = from_date
 
-        async for message in client.get_chat_history(**kwargs):
+        history = client.get_chat_history(**kwargs)
+        if history is None:
+            logger.warning("Backfill got empty history channel={}", chat_id)
+            return 0
+        async for message in history:
             msg_date = message.date
             if msg_date and msg_date.tzinfo is None:
-                msg_date = msg_date.replace(tzinfo=timezone.utc)
+                msg_date = msg_date.replace(tzinfo=UTC)
             if to_date is not None and msg_date is not None and msg_date > to_date:
                 continue
             if from_date is not None and msg_date is not None and msg_date < from_date:
@@ -86,19 +99,19 @@ async def run_backfill(
         async with factory() as session:
             max_id = await session.scalar(
                 select(func.max(ParserPost.message_id)).where(
-                    ParserPost.channel_id == chat.id
+                    ParserPost.channel_id == chat_id
                 )
             )
             if max_id is not None:
                 await session.execute(
                     update(ParserChannel)
-                    .where(ParserChannel.channel_id == chat.id)
+                    .where(ParserChannel.channel_id == chat_id)
                     .values(last_synced_message_id=max_id)
                 )
                 await session.commit()
 
-        logger.info("Backfill done channel={} inserted={}", chat.id, inserted)
-        print(f"OK inserted={inserted} channel_id={chat.id}")
+        logger.info("Backfill done channel={} inserted={}", chat_id, inserted)
+        print(f"OK inserted={inserted} channel_id={chat_id}")
         return 0
     finally:
         await client.stop()

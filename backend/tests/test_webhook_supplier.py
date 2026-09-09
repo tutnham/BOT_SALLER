@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageIn, MessageOut, RequestStatus, Supplier
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageIn, MessageOut, RequestStatus, Supplier
+from app.services.request_service import create_request
 
 
 def _supplier_reply_update(

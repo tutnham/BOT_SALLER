@@ -6,6 +6,7 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import Supplier, SupplierBindToken
 from app.services import admin_service
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
@@ -89,28 +90,24 @@ async def handle_start(
         assert bind_token is not None
         await session.flush()
         await telegram.send_message(cid, render_template("supplier_start_ok"))
-        await telegram.send_message(
-            bind_token.created_by_owner_id,
-            render_template(
-                "admin_supplier_bound",
-                supplier_id=bind_token.supplier_id,
-                supplier_name=bind_token.supplier.name,
-                telegram_id=tid,
-            ),
+        await _notify_owner_bind_result(
+            session,
+            telegram,
+            bind_token=bind_token,
+            telegram_id=tid,
+            template="admin_supplier_bound",
         )
         return "ok"
 
     if result == admin_service.BindTokenResult.conflict:
         await telegram.send_message(cid, render_template("supplier_bind_conflict"))
         if bind_token is not None:
-            await telegram.send_message(
-                bind_token.created_by_owner_id,
-                render_template(
-                    "admin_bind_conflict_notice",
-                    supplier_id=bind_token.supplier_id,
-                    supplier_name=bind_token.supplier.name,
-                    telegram_id=tid,
-                ),
+            await _notify_owner_bind_result(
+                session,
+                telegram,
+                bind_token=bind_token,
+                telegram_id=tid,
+                template="admin_bind_conflict_notice",
             )
         return "ok"
 
@@ -118,3 +115,24 @@ async def handle_start(
         cid, render_template("supplier_bind_token_invalid")
     )
     return "ok"
+
+
+async def _notify_owner_bind_result(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    *,
+    bind_token: SupplierBindToken,
+    telegram_id: int,
+    template: str,
+) -> None:
+    supplier = await session.get(Supplier, bind_token.supplier_id)
+    supplier_name = supplier.name if supplier is not None else str(bind_token.supplier_id)
+    await telegram.send_message(
+        bind_token.created_by_owner_id,
+        render_template(
+            template,
+            supplier_id=bind_token.supplier_id,
+            supplier_name=supplier_name,
+            telegram_id=telegram_id,
+        ),
+    )

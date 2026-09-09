@@ -48,7 +48,7 @@ class CallbackData(BaseModel):
         return _join([self.namespace, self.action, str(self.arg), str(self.page)])
 
     @classmethod
-    def decode(cls, raw: str | None) -> "CallbackData | None":
+    def decode(cls, raw: str | None) -> CallbackData | None:
         if raw is None:
             return None
         parts = raw.split(":")

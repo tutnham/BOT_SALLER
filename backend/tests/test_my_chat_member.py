@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Owner, PendingChat, Supplier, SupplierChat, SupplierChatType
+from app.db.models import Owner, PendingChat, SupplierChat, SupplierChatType
 from app.services.admin_service import add_supplier
 from app.telegram.keyboards import CallbackData
 

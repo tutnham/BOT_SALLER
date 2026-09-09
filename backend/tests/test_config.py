@@ -1,8 +1,9 @@
 """Settings fail-fast and defaults."""
 
 import pytest
-from app.config import Settings, get_settings
 from pydantic import ValidationError
+
+from app.config import Settings, get_settings
 
 
 def test_settings_missing_required_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,6 +47,7 @@ def test_settings_loads_required_and_defaults(monkeypatch: pytest.MonkeyPatch) -
     assert s.tz == "Europe/Moscow"
     assert s.parser_api_url == "http://tg-parser-api:8000"
     assert s.scheduler_enabled is True
+    assert s.docs_enabled is False
     assert s.public_backend_url is None
 
 

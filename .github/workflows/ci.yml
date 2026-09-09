@@ -55,7 +55,23 @@ jobs:
 
   tg-channel-parser:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: tg_parser_test
+          POSTGRES_USER: tg_parser
+          POSTGRES_PASSWORD: tg_parser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tg_parser -d tg_parser_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
+      DATABASE_URL: postgresql+asyncpg://tg_parser:tg_parser@localhost:5432/tg_parser_test
+      PARSER_TEST_DATABASE_URL: postgresql+asyncpg://tg_parser:tg_parser@localhost:5432/tg_parser_test
       API_AUTH_TOKEN: test-parser-api-token
       TELEGRAM_API_ID: "12345"
       TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef"
@@ -75,5 +91,8 @@ jobs:
         run: ruff check --config tg-channel-parser/pyproject.toml tg-channel-parser/app tg-channel-parser/tests
       - name: Mypy
         run: mypy tg-channel-parser/app --config-file tg-channel-parser/pyproject.toml
+      - name: Alembic upgrade
+        working-directory: tg-channel-parser
+        run: alembic upgrade head
       - name: Pytest
         run: pytest tg-channel-parser/tests -q --rootdir=tg-channel-parser

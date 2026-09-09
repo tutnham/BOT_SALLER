@@ -8,7 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
-from app.db.models import ParserChannel, ParserChannelPurpose, ParserChannelStatus, ParserStatus, ParserTask, ParserTaskType
+from app.db.models import (
+    ParserChannel,
+    ParserChannelPurpose,
+    ParserChannelStatus,
+    ParserStatus,
+    ParserTask,
+    ParserTaskType,
+)
 from app.db.session import get_db
 
 router = APIRouter(prefix="/channels", tags=["channels"])

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from app.parsers.cache import build_content_hash, get_cached, set_cached
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.parsers.cache import build_content_hash, get_cached, set_cached
 
 
 def test_build_content_hash_is_stable_for_whitespace() -> None:

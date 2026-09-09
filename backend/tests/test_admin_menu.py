@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AdminDialog, Employee, Owner, Supplier, SupplierChat, SupplierChatType
-from app.utils.whitelist import is_employee
-from sqlalchemy import select
-from app.db.session import get_db
-from app.main import app
+from app.db.models import (
+    AdminDialog,
+    Employee,
+    Owner,
+    Supplier,
+    SupplierChat,
+    SupplierChatType,
+)
 from app.services import parser_client
-from app.telegram.client import set_telegram_client
-from app.telegram.keyboards import CallbackData, menu_button
+from app.telegram.keyboards import CallbackData
+from app.utils.whitelist import is_employee
 
 OWNER_TG_ID = 300300300
 

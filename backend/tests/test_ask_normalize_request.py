@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageOut, Request
-from app.llm.client import LLMProviderError, set_llm_client
-from app.services.request_service import build_normalized_json
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageOut, Request
+from app.llm.client import LLMProviderError, set_llm_client
+from app.services.request_service import build_normalized_json
 
 
 def _ask_update(

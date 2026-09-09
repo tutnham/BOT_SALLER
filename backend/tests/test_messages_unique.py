@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageIn, MessageKind, MessageOut, Request, RequestStatus
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageIn, MessageKind, MessageOut, Request, RequestStatus
 
 
 @pytest.mark.asyncio
