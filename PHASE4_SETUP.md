@@ -34,7 +34,7 @@ LLM_MODEL=deepseek-chat
 LLM_API_KEY=
 ```
 
-Порядок чатов approve: `PRICE_APPROVAL_CHAT_IDS` → иначе `PRICE_APPROVAL_CHAT_ID` → иначе `ADMIN_ALERT_CHAT_ID`.
+Порядок чатов approve: `PRICE_APPROVAL_CHAT_IDS` → иначе `PRICE_APPROVAL_CHAT_ID` → иначе `ADMIN_ALERT_CHAT_ID`. Дополнительно draft уходит в ЛС всех `owners` с `dm_ok=true`.
 
 ---
 
@@ -174,7 +174,7 @@ MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — �
 ## 7. Как пользоваться после настройки
 
 1. В 11:00 МСК APScheduler запускает `morning_price` (после окна публикации в каналах 08:00–11:00).
-2. В чаты из `PRICE_APPROVAL_CHAT_IDS` (или legacy `PRICE_APPROVAL_CHAT_ID`) приходит черновик.
+2. Черновик приходит в `PRICE_APPROVAL_CHAT_IDS` и в ЛС владельцев с `dm_ok`.
 3. Сотрудник пишет:
    - `/approve_price {id}` — публикация в `PRICE_PUBLISH_CHAT_IDS`
    - `/reject_price {id}` — отклонение

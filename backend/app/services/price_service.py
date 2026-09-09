@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.db.models import ParsedItem, PriceListDraft, RawPrice, Supplier
+from app.db.models import Owner, ParsedItem, PriceListDraft, RawPrice, Supplier
 from app.llm.client import LLMProviderError, get_llm_client
 from app.llm.schemas import (
     ParsedPriceItem,
@@ -402,6 +402,25 @@ def _resolve_approval_chat_ids() -> list[int]:
     return get_settings().price_approval_chat_id_list
 
 
+async def resolve_price_draft_destinations(session: AsyncSession) -> list[int]:
+    """Env approval chats plus every owner with ``dm_ok`` (deduped, env first)."""
+    ids: list[int] = []
+    seen: set[int] = set()
+    for chat_id in _resolve_approval_chat_ids():
+        if chat_id not in seen:
+            seen.add(chat_id)
+            ids.append(chat_id)
+    result = await session.execute(
+        select(Owner.telegram_id).where(Owner.dm_ok.is_(True))
+    )
+    for telegram_id in result.scalars().all():
+        chat_id = int(telegram_id)
+        if chat_id not in seen:
+            seen.add(chat_id)
+            ids.append(chat_id)
+    return ids
+
+
 def format_draft_lines(items: list[dict[str, Any]]) -> str:
     if not items:
         return "—"
@@ -476,17 +495,18 @@ async def build_morning_price(
 
 
 async def notify_morning_price_draft(
+    session: AsyncSession,
     telegram: TelegramClientProtocol,
     *,
     draft_id: int,
     items_block: str,
 ) -> None:
     """Send approval chat message after the draft row is committed."""
-    approval_chats = _resolve_approval_chat_ids()
+    approval_chats = await resolve_price_draft_destinations(session)
     if not approval_chats:
         logger.warning(
-            "No PRICE_APPROVAL_CHAT_IDS / PRICE_APPROVAL_CHAT_ID / ADMIN_ALERT_CHAT_ID; "
-            "draft {} not sent",
+            "No PRICE_APPROVAL_CHAT_IDS / PRICE_APPROVAL_CHAT_ID / ADMIN_ALERT_CHAT_ID "
+            "and no owners with dm_ok; draft {} not sent",
             draft_id,
         )
         return

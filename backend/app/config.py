@@ -109,7 +109,8 @@ class Settings(BaseSettings):
 
         Prefers ``PRICE_APPROVAL_CHAT_IDS`` (CSV, supports several approvers);
         falls back to the legacy single ``PRICE_APPROVAL_CHAT_ID``, then to
-        ``ADMIN_ALERT_CHAT_ID`` if neither is set.
+        ``ADMIN_ALERT_CHAT_ID`` if neither is set. Draft notify also adds
+        owners with ``dm_ok`` (see ``resolve_price_draft_destinations``).
         """
         csv_ids = self._parse_csv_chat_ids(self.price_approval_chat_ids)
         if csv_ids:

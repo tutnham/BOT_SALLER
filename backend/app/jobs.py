@@ -55,6 +55,7 @@ async def run_morning_price(
     await session.commit()
     if draft_id is not None and not reused and items_block is not None:
         await notify_morning_price_draft(
+            session,
             telegram,
             draft_id=int(draft_id),
             items_block=str(items_block),

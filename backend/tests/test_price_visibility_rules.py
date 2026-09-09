@@ -91,6 +91,44 @@ async def test_draft_message_hides_sensitive_fields(
     assert "/reject_price" in outgoing
 
 
+@pytest.mark.asyncio
+async def test_draft_also_notifies_dm_ok_owners(
+    webhook_client: AsyncClient,
+    db_session: AsyncSession,
+    mock_telegram,
+    mock_llm: MockLLMClient,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules: list[MarkupRule],
+    seed_owner,
+) -> None:
+    await insert_raw_price(
+        db_session,
+        supplier_id=seed_suppliers[0].id,
+        text="iPhone 15 256 Black owner notify unique",
+        source="manual_message",
+    )
+    await db_session.flush()
+
+    with patch(
+        "app.services.price_service.get_posts",
+        new=AsyncMock(return_value=[]),
+    ):
+        resp = await webhook_client.post(
+            "/jobs/morning-price",
+            json={},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+        )
+
+    assert resp.status_code == 200
+    approval_chats = {
+        chat_id
+        for chat_id, text in mock_telegram.sent
+        if "/approve_price" in text
+    }
+    assert PRICE_APPROVAL_CHAT_ID in approval_chats
+    assert seed_owner.telegram_id in approval_chats
+
+
 def test_published_template_has_no_internals() -> None:
     text = render_template(
         "price_list_published",
