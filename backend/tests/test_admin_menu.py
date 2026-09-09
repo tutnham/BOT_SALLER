@@ -451,7 +451,9 @@ async def test_add_supplier_dialog(
     assert supplier.active is True
 
     dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
-    assert dialog is None
+    assert dialog is not None
+    assert dialog.state == "await_supplier_bind"
+    assert dialog.payload["supplier_id"] == supplier.id
 
 
 @pytest.mark.asyncio
