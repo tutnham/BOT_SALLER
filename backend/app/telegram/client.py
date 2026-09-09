@@ -113,29 +113,33 @@ class TelegramClient:
                 await asyncio.sleep(min(3.0, 0.2 * (2 ** (attempt - 1))))
                 continue
 
+            api_data: dict[str, Any]
             try:
-                data = response.json()
+                raw = response.json()
             except ValueError:
-                data = {"ok": False, "description": "invalid_json_response"}
-            if not isinstance(data, dict):
-                data = {"ok": False, "description": "invalid_json_response"}
+                api_data = {"ok": False, "description": "invalid_json_response"}
+            else:
+                if isinstance(raw, dict):
+                    api_data = raw
+                else:
+                    api_data = {"ok": False, "description": "invalid_json_response"}
 
-            if response.status_code == 200 and data.get("ok"):
+            if response.status_code == 200 and api_data.get("ok"):
                 if return_result:
-                    result = data.get("result") or {}
+                    result = api_data.get("result") or {}
                     if not isinstance(result, dict):
                         return {}
                     return result
-                return data
+                return api_data
 
-            retry_after = _extract_retry_after_seconds(data)
+            retry_after = _extract_retry_after_seconds(api_data)
             can_retry = response.status_code in {429, 500, 502, 503, 504}
             if can_retry and attempt < MAX_ATTEMPTS:
                 base_wait = retry_after if retry_after is not None else 0.3 * (2 ** (attempt - 1))
                 await asyncio.sleep(min(8.0, base_wait + random.uniform(0.0, 0.15)))
                 continue
 
-            description = data.get("description", response.text)
+            description = api_data.get("description", response.text)
             logger.warning(
                 "Telegram {} failed chat_id={} status={} detail={}",
                 method,
