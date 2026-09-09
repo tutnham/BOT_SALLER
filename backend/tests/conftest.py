@@ -13,7 +13,7 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -38,6 +38,8 @@ from app.db.models import (  # noqa: E402
     MarkupRule,
     Owner,
     Supplier,
+    SupplierChat,
+    SupplierChatType,
 )
 from app.db.session import get_db  # noqa: E402
 from app.llm.client import set_llm_client  # noqa: E402
@@ -274,6 +276,19 @@ async def seed_suppliers(db_session: AsyncSession) -> list[Supplier]:
     ]
     db_session.add_all(suppliers)
     await db_session.flush()
+    for supplier in suppliers:
+        if supplier.telegram_id is None:
+            continue
+        db_session.add(
+            SupplierChat(
+                supplier_id=supplier.id,
+                chat_id=supplier.telegram_id,
+                chat_type=SupplierChatType.private,
+                active=True,
+                is_default=True,
+            )
+        )
+    await db_session.flush()
     return suppliers
 
 
@@ -420,14 +435,19 @@ async def engine(test_database_url: str) -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest_asyncio.fixture
 async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    """Each test runs in a connection transaction; handler commits only savepoints."""
+    """Rollback after each test; handler ``commit()`` only releases a SAVEPOINT."""
     async with engine.connect() as conn:
         trans = await conn.begin()
-        session = AsyncSession(
-            bind=conn,
-            expire_on_commit=False,
-            join_transaction_mode="create_savepoint",
-        )
+        await conn.begin_nested()
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+
+        @event.listens_for(session.sync_session, "after_transaction_end")
+        def _restart_savepoint(sync_session, transaction) -> None:  # noqa: ARG001
+            if conn.closed:
+                return
+            if not conn.in_nested_transaction() and conn.sync_connection is not None:
+                conn.sync_connection.begin_nested()
+
         try:
             yield session
         finally:

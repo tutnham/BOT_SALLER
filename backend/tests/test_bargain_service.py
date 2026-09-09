@@ -17,8 +17,6 @@ from app.db.models import (
     Request,
     RequestStatus,
     Supplier,
-    SupplierChat,
-    SupplierChatType,
 )
 from app.services.bargain_service import (
     BargainStatusError,
@@ -67,15 +65,6 @@ async def _priced_request(
             confidence=1.0,
         )
     )
-    db_session.add(
-        SupplierChat(
-            supplier_id=supplier.id,
-            chat_id=supplier.telegram_id,
-            chat_type=SupplierChatType.private,
-            active=True,
-            is_default=True,
-        )
-    )
     await db_session.flush()
     return request, supplier
 
@@ -112,15 +101,6 @@ async def test_start_bargain_with_explicit_supplier(
 ) -> None:
     request, _ = await _priced_request(db_session, seed_suppliers, seed_employee, 0)
     chosen = seed_suppliers[1]
-    db_session.add(
-        SupplierChat(
-            supplier_id=chosen.id,
-            chat_id=chosen.telegram_id,
-            chat_type=SupplierChatType.private,
-            active=True,
-            is_default=True,
-        )
-    )
     db_session.add(
         Quote(
             request_id=request.id,

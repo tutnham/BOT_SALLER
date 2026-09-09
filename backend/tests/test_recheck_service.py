@@ -18,8 +18,6 @@ from app.db.models import (
     Request,
     RequestStatus,
     Supplier,
-    SupplierChat,
-    SupplierChatType,
 )
 from app.services.recheck_service import (
     InvalidRecheckHoursError,
@@ -63,15 +61,6 @@ async def _due_request(
             price_initial=Decimal("85000"),
             source=QuoteSource.manual,
             confidence=1.0,
-        )
-    )
-    db_session.add(
-        SupplierChat(
-            supplier_id=supplier.id,
-            chat_id=supplier.telegram_id,
-            chat_type=SupplierChatType.private,
-            active=True,
-            is_default=True,
         )
     )
     request.recheck_at = datetime.now(UTC) - timedelta(minutes=1)

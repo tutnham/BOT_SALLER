@@ -78,11 +78,12 @@ async def resolve_rfq_targets(session: AsyncSession) -> list[RfqTarget]:
 
 async def resolve_target_chat(session: AsyncSession, supplier_id: int) -> int | None:
     """Return the active default chat for a supplier, or fall back to private DM."""
-    supplier = await session.get(
-        Supplier,
-        supplier_id,
-        options=(selectinload(Supplier.chats),),
+    result = await session.execute(
+        select(Supplier)
+        .where(Supplier.id == supplier_id)
+        .options(selectinload(Supplier.chats))
     )
+    supplier = result.scalar_one_or_none()
     if supplier is None:
         return None
     return _resolve_default_chat(supplier)
