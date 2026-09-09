@@ -261,6 +261,7 @@ async def set_supplier_default_chat(
     chat.is_default = True
     chat.active = True
     await session.flush()
+    session.expire_all()
     return chat
 
 

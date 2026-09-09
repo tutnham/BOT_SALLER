@@ -59,6 +59,39 @@ async def handle_start(
     tid = int(telegram_id)
     cid = int(chat_id)
 
+    payload = _extract_start_payload(message)
+    if payload:
+        result, bind_token = await admin_service.consume_supplier_bind_token(
+            session, token=payload, telegram_id=tid
+        )
+        if result == admin_service.BindTokenResult.ok:
+            assert bind_token is not None
+            await session.flush()
+            await telegram.send_message(cid, render_template("supplier_start_ok"))
+            await _notify_owner_bind_result(
+                session,
+                telegram,
+                bind_token=bind_token,
+                telegram_id=tid,
+                template="admin_supplier_bound",
+            )
+            return "ok"
+        if result == admin_service.BindTokenResult.conflict:
+            await telegram.send_message(cid, render_template("supplier_bind_conflict"))
+            if bind_token is not None:
+                await _notify_owner_bind_result(
+                    session,
+                    telegram,
+                    bind_token=bind_token,
+                    telegram_id=tid,
+                    template="admin_bind_conflict_notice",
+                )
+            return "ok"
+        await telegram.send_message(
+            cid, render_template("supplier_bind_token_invalid")
+        )
+        return "ok"
+
     owner = await get_owner_by_telegram_id(session, tid)
     if owner is not None:
         owner.dm_ok = True
@@ -78,43 +111,7 @@ async def handle_start(
         await telegram.send_message(cid, render_template("help"))
         return "ok"
 
-    payload = _extract_start_payload(message)
-    if not payload:
-        return "ignored"
-
-    result, bind_token = await admin_service.consume_supplier_bind_token(
-        session, token=payload, telegram_id=tid
-    )
-
-    if result == admin_service.BindTokenResult.ok:
-        assert bind_token is not None
-        await session.flush()
-        await telegram.send_message(cid, render_template("supplier_start_ok"))
-        await _notify_owner_bind_result(
-            session,
-            telegram,
-            bind_token=bind_token,
-            telegram_id=tid,
-            template="admin_supplier_bound",
-        )
-        return "ok"
-
-    if result == admin_service.BindTokenResult.conflict:
-        await telegram.send_message(cid, render_template("supplier_bind_conflict"))
-        if bind_token is not None:
-            await _notify_owner_bind_result(
-                session,
-                telegram,
-                bind_token=bind_token,
-                telegram_id=tid,
-                template="admin_bind_conflict_notice",
-            )
-        return "ok"
-
-    await telegram.send_message(
-        cid, render_template("supplier_bind_token_invalid")
-    )
-    return "ok"
+    return "ignored"
 
 
 async def _notify_owner_bind_result(

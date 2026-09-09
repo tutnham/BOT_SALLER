@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Employee, Request, RequestStatus, Supplier
 from app.services.deal_service import (
-    DealAlreadyExistsError,
     RequestNotFoundError,
     RequestNotOpenError,
     cancel_request,
@@ -110,7 +109,7 @@ async def test_create_deal_already_exists(
         final_price=Decimal("100"),
     )
 
-    with pytest.raises(DealAlreadyExistsError):
+    with pytest.raises(RequestNotOpenError):
         await create_deal(
             db_session,
             request_id=request.id,

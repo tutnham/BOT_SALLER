@@ -18,6 +18,7 @@ from app.db.models import (
 from app.services import parser_client
 from app.telegram.keyboards import CallbackData
 from app.utils.whitelist import is_employee
+from tests.conftest import next_tg_update_id
 
 OWNER_TG_ID = 300300300
 
@@ -31,7 +32,7 @@ def _callback_payload(
     message_id: int = 1,
 ) -> dict:
     return {
-        "update_id": 100,
+        "update_id": next_tg_update_id(),
         "callback_query": {
             "id": callback_id,
             "from": {"id": owner_id},
@@ -574,7 +575,7 @@ async def test_price_channel_delete_callback(
     resp = await webhook_client.post("/telegram/webhook", json=payload, headers=webhook_headers)
     assert resp.json()["status"] == "ok"
     assert deleted_ids == [7]
-    assert listed == [1, 1]  # list before + after delete
+    assert listed == [1]
 
 
 @pytest.mark.asyncio

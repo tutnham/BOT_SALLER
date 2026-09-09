@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
@@ -51,6 +52,12 @@ WEBHOOK_SECRET = "test-webhook-secret"
 TELEGRAM_WEBHOOK_SECRET_TOKEN = "test-telegram-webhook-secret"
 PRICE_APPROVAL_CHAT_ID = -1001111111111
 PRICE_PUBLISH_CHAT_ID = -1002222222222
+_TG_UPDATE_IDS = itertools.count(50_000_000)
+
+
+def next_tg_update_id() -> int:
+    """Monotonic Telegram update_id so leaked update_log rows cannot collide."""
+    return next(_TG_UPDATE_IDS)
 
 
 
@@ -277,7 +284,11 @@ async def seed_suppliers(db_session: AsyncSession) -> list[Supplier]:
     db_session.add_all(suppliers)
     await db_session.flush()
     for supplier in suppliers:
-        if supplier.telegram_id is None:
+        if (
+            supplier.telegram_id is None
+            or not supplier.active
+            or not supplier.dm_ok
+        ):
             continue
         db_session.add(
             SupplierChat(
@@ -440,6 +451,8 @@ async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
         trans = await conn.begin()
         await conn.begin_nested()
         session = AsyncSession(bind=conn, expire_on_commit=False)
+        await session.execute(text("DELETE FROM update_log"))
+        await session.flush()
 
         @event.listens_for(session.sync_session, "after_transaction_end")
         def _restart_savepoint(sync_session, transaction) -> None:  # noqa: ARG001

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Owner, PendingChat, SupplierChat, SupplierChatType
 from app.services.admin_service import add_supplier, set_supplier_default_chat
 from app.telegram.keyboards import CallbackData
+from tests.conftest import next_tg_update_id
 
 OWNER_TG_ID = 300300300
 
@@ -35,7 +36,7 @@ def _my_chat_member_payload(
 
 def _callback_payload(owner_id: int, data: CallbackData, *, chat_id: int = OWNER_TG_ID) -> dict:
     return {
-        "update_id": 200,
+        "update_id": next_tg_update_id(),
         "callback_query": {
             "id": "cb1",
             "from": {"id": owner_id},
