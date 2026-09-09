@@ -95,9 +95,19 @@ async def test_morning_price_happy_path_manual_and_channel(
     assert seed_channel_supplier.last_price_sync_at is not None
 
     approval_msgs = [
-        text for chat_id, text in mock_telegram.sent if "/approve_price" in text
+        text for chat_id, text, markup in mock_telegram.sent if "/approve_price" in text
     ]
     assert approval_msgs
+    markup = next(markup for _, text, markup in mock_telegram.sent if "/approve_price" in text)
+    callbacks = [
+        btn["callback_data"]
+        for row in (markup or {}).get("inline_keyboard", [])
+        for btn in row
+        if btn.get("callback_data")
+    ]
+    assert any(data.startswith("price:approve:") for data in callbacks)
+    assert any(data.startswith("price:reject:") for data in callbacks)
+    assert all(len(data.encode("utf-8")) <= 64 for data in callbacks)
 
 
 @pytest.mark.asyncio

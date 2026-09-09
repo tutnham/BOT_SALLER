@@ -523,12 +523,23 @@ async def test_idempotent_callback(
 
 
 class _FakeParserChannel:
-    def __init__(self, id: int, channel_id: int, username: str | None, title: str | None, is_active: bool):
+    def __init__(
+        self,
+        id: int,
+        channel_id: int | None,
+        username: str | None,
+        title: str | None,
+        is_active: bool,
+        *,
+        purpose: str = "supplier_price_source",
+    ):
         self.id = id
         self.channel_id = channel_id
         self.username = username
         self.title = title
         self.is_active = is_active
+        self.purpose = purpose
+        self.status = "active" if is_active else "pending"
 
 
 @pytest.mark.asyncio
@@ -608,3 +619,266 @@ async def test_price_channel_add_dialog(
     )
     assert resp.json()["status"] == "ok"
     assert added == ["@supplier_prices"]
+
+
+@pytest.mark.asyncio
+async def test_bind_supplier_price_channel_stores_telegram_channel_id(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplier = Supplier(name="Bind Test", active=True, rfq_enabled=True)
+    db_session.add(supplier)
+    await db_session.flush()
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(5, -1007777777777, "@ready_prices", "Ready", True),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind",
+            CallbackData(
+                namespace="admin",
+                action="supplier_bind_ch",
+                arg=supplier.id,
+                page=5,
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id == -1007777777777
+    assert supplier.price_channel_username == "@ready_prices"
+
+
+@pytest.mark.asyncio
+async def test_bind_pending_channel_refused(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplier = Supplier(name="Pending Test", active=True, rfq_enabled=True)
+    db_session.add(supplier)
+    await db_session.flush()
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(9, None, "@pending", "Pending", False),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_pending",
+            CallbackData(
+                namespace="admin",
+                action="supplier_bind_ch",
+                arg=supplier.id,
+                page=9,
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id is None
+    last_text = mock_telegram.edited[-1][2] if mock_telegram.edited else mock_telegram.sent[-1][1]
+    assert "не готов" in last_text
+
+
+@pytest.mark.asyncio
+async def test_bind_channel_busy_refused(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    taken = Supplier(
+        name="Taken",
+        active=True,
+        price_channel_id=-1008888888888,
+        price_channel_username="@busy",
+    )
+    target = Supplier(name="Target", active=True, rfq_enabled=True)
+    db_session.add_all([taken, target])
+    await db_session.flush()
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(11, -1008888888888, "@busy", "Busy", True),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_busy",
+            CallbackData(
+                namespace="admin",
+                action="supplier_bind_ch",
+                arg=target.id,
+                page=11,
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(target)
+    assert target.price_channel_id is None
+    last_text = mock_telegram.edited[-1][2] if mock_telegram.edited else mock_telegram.sent[-1][1]
+    assert "другому поставщику" in last_text
+
+
+@pytest.mark.asyncio
+async def test_unbind_supplier_price_channel(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+) -> None:
+    supplier = Supplier(
+        name="Unbind",
+        active=True,
+        price_channel_id=-100111,
+        price_channel_username="@x",
+    )
+    db_session.add(supplier)
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_unbind",
+            CallbackData(namespace="admin", action="supplier_unbind_ch", arg=supplier.id),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id is None
+    assert supplier.price_channel_username is None
+
+
+@pytest.mark.asyncio
+async def test_set_supplier_telegram_id_and_start_dm_ok(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+) -> None:
+    supplier = Supplier(name="TG Supplier", active=True, rfq_enabled=True)
+    db_session.add(supplier)
+    await db_session.flush()
+    new_tgid = 400400400
+
+    await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_tgid",
+            CallbackData(namespace="admin", action="supplier_tgid_start", arg=supplier.id),
+        ),
+        headers=webhook_headers,
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(
+            OWNER_TG_ID,
+            update_id=2001,
+            text=str(new_tgid),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.telegram_id == new_tgid
+
+    chat = await db_session.scalar(
+        select(SupplierChat).where(
+            SupplierChat.supplier_id == supplier.id,
+            SupplierChat.chat_id == new_tgid,
+        )
+    )
+    assert chat is not None
+    assert chat.active is True
+
+    start_resp = await webhook_client.post(
+        "/telegram/webhook",
+        json={
+            "update_id": 2002,
+            "message": {
+                "message_id": 20,
+                "from": {"id": new_tgid},
+                "chat": {"id": new_tgid, "type": "private"},
+                "text": "/start",
+            },
+        },
+        headers=webhook_headers,
+    )
+    assert start_resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.dm_ok is True
+
+
+@pytest.mark.asyncio
+async def test_clear_supplier_telegram_id_deactivates_private_chat(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+) -> None:
+    tgid = 400400401
+    supplier = Supplier(
+        name="Clear TG",
+        active=True,
+        telegram_id=tgid,
+        dm_ok=True,
+    )
+    db_session.add(supplier)
+    await db_session.flush()
+    chat = SupplierChat(
+        supplier_id=supplier.id,
+        chat_id=tgid,
+        chat_type=SupplierChatType.private,
+        is_default=True,
+        active=True,
+    )
+    db_session.add(chat)
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_clear",
+            CallbackData(namespace="admin", action="supplier_tgid_clear", arg=supplier.id),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    await db_session.refresh(chat)
+    assert supplier.telegram_id is None
+    assert supplier.dm_ok is False
+    assert chat.active is False
+    assert chat.is_default is False

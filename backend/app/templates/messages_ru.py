@@ -155,8 +155,8 @@ TEMPLATES: dict[str, str] = {
         "«беру #N у поставщика S за ЦЕНА» — закрыть сделку (reply/@бот)\n"
         "/status {id} — статус заявки и предложения\n"
         "/cancel {id} — отменить заявку (статус cancelled, данные в БД)\n"
-        "/approve_price {draft_id} — утвердить черновик прайса\n"
-        "/reject_price {draft_id} — отклонить черновик прайса\n"
+        "/approve_price {draft_id} — утвердить черновик прайса (employee или owner)\n"
+        "/reject_price {draft_id} — отклонить черновик прайса (employee или owner)\n"
         "/menu — управление поставщиками, сотрудниками, беседами и каналами (owner)\n"
         "/purge_request {id} — удалить заявку из БД навсегда (owner, с подтверждением)\n"
         "/purge_old {days} [limit] [--confirm] — очистка старых cancelled/closed (owner)\n"
@@ -171,7 +171,76 @@ TEMPLATES: dict[str, str] = {
     "admin_supplier_detail": (
         "Поставщик #{supplier_id} {supplier_name}\n"
         "Активен: {active}\n"
-        "RFQ включён: {rfq_enabled}"
+        "RFQ включён: {rfq_enabled}\n"
+        "Telegram ID: {telegram_id}\n"
+        "ЛС открыт (dm_ok): {dm_ok}\n"
+        "Канал прайса: {price_channel_label}"
+    ),
+    "admin_supplier_channel_pick": (
+        "Выберите канал прайса для поставщика #{supplier_id}:\n"
+        "⏳ — канал ещё не готов"
+    ),
+    "admin_channel_not_ready": (
+        "Канал ещё не готов, подождите ✅\n"
+        "Telegram ID канала появится после первой синхронизации парсера."
+    ),
+    "admin_channel_taken": (
+        "Этот канал уже привязан к другому поставщику. "
+        "Сначала отвяжите его там или выберите другой канал."
+    ),
+    "admin_channel_bound": (
+        "Канал {channel_label} привязан к поставщику #{supplier_id}."
+    ),
+    "admin_channel_unbound": "Канал прайса отвязан от поставщика #{supplier_id}.",
+    "admin_supplier_bind_prompt": (
+        "Как привязать личный Telegram поставщика?\n"
+        "↩️ Переслать сообщение — бот сам увидит ID\n"
+        "🔗 Ссылка — поставщик откроет ссылку и нажмёт Start\n"
+        "⏭ Пропустить — работа только через групповой чат"
+    ),
+    "admin_supplier_forward_prompt": (
+        "Перешлите боту любое сообщение от поставщика. "
+        "Если в настройках приватности ID скрыт, используйте ссылку."
+    ),
+    "admin_supplier_bind_link": (
+        "Отправьте поставщику одноразовую ссылку:\n{link}\n\n"
+        "После нажатия Start личка откроется автоматически."
+    ),
+    "admin_bind_link_unavailable": (
+        "Ссылка временно недоступна: у бота не задан username в настройках.\n"
+        "Используйте «Переслать сообщение» или добавьте username бота позже."
+    ),
+    "admin_supplier_forward_hidden": (
+        "Не удалось определить ID отправителя — настройки приватности скрывают его.\n"
+        "Создайте поставщику одноразовую ссылку кнопкой ниже."
+    ),
+    "admin_supplier_invalid_telegram_id": (
+        "Не распознал ID. Перешлите сообщение от поставщика или попробуйте ссылку."
+    ),
+    "admin_supplier_telegram_id_busy": (
+        "Этот Telegram ID уже занят другим поставщиком, сотрудником или владельцем. "
+        "Попробуйте ссылку, если человек тот же."
+    ),
+    "admin_supplier_bound": (
+        "Поставщик #{supplier_id} {supplier_name} привязан к Telegram ID {telegram_id}.\n"
+        "Личные сообщения открыты."
+    ),
+    "admin_supplier_unbound": (
+        "Личка отвязана от поставщика #{supplier_id} {supplier_name}.\n"
+        "Групповой чат остаётся активным."
+    ),
+    "admin_bind_conflict_notice": (
+        "Внимание: поставщик #{supplier_id} {supplier_name} пытался привязать "
+        "Telegram ID {telegram_id}, но оно уже занято другим пользователем. "
+        "Создайте новую ссылку, если нужно."
+    ),
+    "supplier_bind_conflict": (
+        "Этот Telegram-аккаунт уже привязан к другому пользователю бота. "
+        "Попросите заказчика отправить вам новую ссылку."
+    ),
+    "supplier_bind_token_invalid": (
+        "Ссылка недействительна, уже использована или устарела. "
+        "Попросите заказчика прислать новую."
     ),
     "admin_supplier_chats": "Чаты поставщика #{supplier_id} (всего {count}):",
     "admin_client_groups": "Клиентские беседы:",
@@ -305,5 +374,10 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name in {"price_draft", "price_list_published"}:
         kwargs.setdefault("items_block", kwargs.get("items_block") or "—")
+
+    if name == "admin_supplier_detail":
+        kwargs.setdefault("telegram_id", "—")
+        kwargs.setdefault("dm_ok", "—")
+        kwargs.setdefault("price_channel_label", "не привязан")
 
     return TEMPLATES[name].format(**kwargs)

@@ -61,6 +61,7 @@ async def test_employee_ask_creates_request_and_messages_out(
     seed_employee_telegram_id: int,
     seed_group_chat_id: int,
     seed_supplier_count: int,
+    seed_client_group,
     mock_telegram,
 ) -> None:
     payload = _group_ask_update(
@@ -87,7 +88,7 @@ async def test_employee_ask_creates_request_and_messages_out(
     assert out_count == seed_supplier_count
 
     supplier_sends = [
-        (cid, txt) for cid, txt in mock_telegram.sent if cid != seed_group_chat_id
+        (cid, txt) for cid, txt, _ in mock_telegram.sent if cid != seed_group_chat_id
     ]
     assert len(supplier_sends) == seed_supplier_count
     assert all(f"Запрос #{request.id}" in txt for _, txt in supplier_sends)

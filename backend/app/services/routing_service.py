@@ -29,7 +29,10 @@ class RfqTarget:
 
 async def chat_role(session: AsyncSession, chat_id: int) -> ChatRole:
     """Classify a chat id as client group, supplier chat, or unknown."""
-    if await session.get(ClientGroup, {"chat_id": chat_id}) is not None:
+    result = await session.execute(
+        select(ClientGroup.id).where(ClientGroup.chat_id == chat_id).limit(1)
+    )
+    if result.scalar_one_or_none() is not None:
         return "client_group"
     result = await session.execute(
         select(SupplierChat.id).where(

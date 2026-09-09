@@ -31,7 +31,7 @@ os.environ.setdefault("PARSER_API_TOKEN", "test-parser-token")
 os.environ.setdefault("DEFAULT_MARKUP", "500")
 
 from app.config import get_settings  # noqa: E402
-from app.db.models import Employee, MarkupRule, Owner, Supplier  # noqa: E402
+from app.db.models import ClientGroup, Employee, MarkupRule, Owner, Supplier  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.llm.client import set_llm_client  # noqa: E402
 from app.main import app  # noqa: E402
@@ -205,6 +205,21 @@ def seed_group_chat_id() -> int:
 @pytest.fixture
 def seed_employee_telegram_id() -> int:
     return 100100100
+
+
+@pytest_asyncio.fixture
+async def seed_client_group(
+    db_session: AsyncSession,
+    seed_group_chat_id: int,
+) -> ClientGroup:
+    group = ClientGroup(
+        chat_id=seed_group_chat_id,
+        title="Test Client Group",
+        active=True,
+    )
+    db_session.add(group)
+    await db_session.flush()
+    return group
 
 
 @pytest_asyncio.fixture

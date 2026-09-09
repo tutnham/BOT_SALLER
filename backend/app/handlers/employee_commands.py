@@ -28,7 +28,6 @@ from app.services.deal_service import (
     cancel_request,
     create_deal,
 )
-from app.services.price_service import approve_price_draft, reject_price_draft
 from app.services.quote_service import upsert_quote
 from app.services.recheck_service import (
     RECHECK_HOURS_DEFAULT,
@@ -62,16 +61,6 @@ _RECHECK_COMMAND_RE = re.compile(
     r"^/recheck(?:@\w+)?\s+(\d+)(?:\s+(\d+))?\s*$",
     re.IGNORECASE,
 )
-_APPROVE_PRICE_RE = re.compile(
-    r"^/approve_price(?:@\w+)?\s+(\d+)\s*$",
-    re.IGNORECASE,
-)
-_REJECT_PRICE_RE = re.compile(
-    r"^/reject_price(?:@\w+)?\s+(\d+)\s*$",
-    re.IGNORECASE,
-)
-
-
 def extract_ask_text(message: dict) -> str:
     """Build request text from reply + text after ``/ask``."""
     parts: list[str] = []
@@ -743,88 +732,6 @@ async def _handle_cancel(
     return "ok"
 
 
-async def _handle_approve_price(
-    session: AsyncSession,
-    message: dict,
-    *,
-    chat_id: int,
-    employee_id: int,
-    telegram: TelegramClientProtocol,
-) -> str:
-    text = _message_text(message)
-    match = _APPROVE_PRICE_RE.match(text)
-    if not match:
-        await telegram.send_message(chat_id, render_template("invalid_command"))
-        return "ok"
-
-    draft_id = int(match.group(1))
-    outcome = await approve_price_draft(
-        session,
-        draft_id=draft_id,
-        employee_id=employee_id,
-        telegram=telegram,
-    )
-    if outcome == "not_found":
-        await telegram.send_message(
-            chat_id,
-            render_template("price_draft_not_found", draft_id=draft_id),
-        )
-    elif outcome == "already_processed":
-        await telegram.send_message(
-            chat_id,
-            render_template("price_draft_already_processed", draft_id=draft_id),
-        )
-    elif outcome == "approved_partial":
-        await telegram.send_message(
-            chat_id,
-            "Прайс утверждён, но публикация прошла частично. Проверьте логи отправки.",
-        )
-    else:
-        await telegram.send_message(
-            chat_id,
-            render_template("price_approved", draft_id=draft_id),
-        )
-    return "ok"
-
-
-async def _handle_reject_price(
-    session: AsyncSession,
-    message: dict,
-    *,
-    chat_id: int,
-    employee_id: int,
-    telegram: TelegramClientProtocol,
-) -> str:
-    text = _message_text(message)
-    match = _REJECT_PRICE_RE.match(text)
-    if not match:
-        await telegram.send_message(chat_id, render_template("invalid_command"))
-        return "ok"
-
-    draft_id = int(match.group(1))
-    outcome = await reject_price_draft(
-        session,
-        draft_id=draft_id,
-        employee_id=employee_id,
-    )
-    if outcome == "not_found":
-        await telegram.send_message(
-            chat_id,
-            render_template("price_draft_not_found", draft_id=draft_id),
-        )
-    elif outcome == "already_processed":
-        await telegram.send_message(
-            chat_id,
-            render_template("price_draft_already_processed", draft_id=draft_id),
-        )
-    else:
-        await telegram.send_message(
-            chat_id,
-            render_template("price_rejected", draft_id=draft_id),
-        )
-    return "ok"
-
-
 async def handle_employee_message(
     session: AsyncSession,
     message: dict,
@@ -917,24 +824,6 @@ async def handle_employee_message(
             chat_id=int(chat_id),
             employee_id=employee.id,
             is_private_chat=is_private_chat,
-            telegram=telegram,
-        )
-
-    if text.startswith("/approve_price"):
-        return await _handle_approve_price(
-            session,
-            message,
-            chat_id=int(chat_id),
-            employee_id=employee.id,
-            telegram=telegram,
-        )
-
-    if text.startswith("/reject_price"):
-        return await _handle_reject_price(
-            session,
-            message,
-            chat_id=int(chat_id),
-            employee_id=employee.id,
             telegram=telegram,
         )
 

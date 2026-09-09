@@ -41,3 +41,11 @@ def extract_forwarded_user_id(message: dict) -> int | None:
         if isinstance(sender_user, dict) and sender_user.get("id") is not None:
             return int(sender_user["id"])
     return None
+
+
+def resolve_user_id_from_message(text: str, message: dict) -> int | None:
+    """Return Telegram user id from plain digits text or a forwarded message."""
+    user_id = parse_telegram_id_text(text)
+    if user_id is not None:
+        return user_id
+    return extract_forwarded_user_id(message)

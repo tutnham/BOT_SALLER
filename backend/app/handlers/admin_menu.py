@@ -12,15 +12,21 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import Employee, PendingChat, Supplier
 from app.services import admin_service, parser_client, purge_service
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
-from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button, paginated_keyboard
+from app.telegram.keyboards import (
+    CallbackData,
+    button,
+    inline_keyboard,
+    menu_button,
+    paginated_keyboard,
+)
 from app.templates.messages_ru import render_template
 from app.utils.telegram import (
-    extract_forwarded_user_id,
     extract_message_text,
-    parse_telegram_id_text,
+    resolve_user_id_from_message,
 )
 from app.utils.whitelist import get_owner_by_telegram_id
 
@@ -212,6 +218,182 @@ async def _dispatch_callback(
 
     if action == "supplier_chats":
         await _send_supplier_chats(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
+        return
+
+    if action == "supplier_channel":
+        await _send_supplier_channel_list(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
+        return
+
+    if action == "supplier_bind_ch":
+        supplier_id = cd.arg
+        parser_pk = cd.page
+        try:
+            channels = await parser_client.list_channels()
+        except parser_client.ParserClientError as exc:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_price_channels_error", detail=str(exc)),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("К поставщику", "supplier_detail", supplier_id)]]
+                ),
+            )
+            return
+        channel = next((ch for ch in channels if ch.id == parser_pk), None)
+        if channel is None or channel.channel_id is None or not channel.is_active:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_channel_not_ready"),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("К каналам", "supplier_channel", supplier_id)]]
+                ),
+            )
+            return
+        try:
+            await admin_service.bind_supplier_price_channel(
+                session,
+                supplier_id=supplier_id,
+                channel_id=int(channel.channel_id),
+                username=channel.username or channel.title,
+            )
+        except admin_service.PriceChannelBusyError:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_channel_taken"),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("К каналам", "supplier_channel", supplier_id)]]
+                ),
+            )
+            return
+        await _send_supplier_detail(
+            session, telegram, chat_id, supplier_id, message_id=message_id
+        )
+        return
+
+    if action == "supplier_unbind_ch":
+        await admin_service.unbind_supplier_price_channel(session, cd.arg)
+        await _send_supplier_detail(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
+        return
+
+    # Legacy supplier_tgid_start / supplier_tgid_clear are replaced by the
+    # self-service supplier_bind_start / supplier_unbind flow.  Treat them as
+    # aliases so old tests / bookmarks keep working.
+    if action == "supplier_tgid_start":
+        return await _dispatch_callback(
+            session,
+            CallbackData(namespace="admin", action="supplier_bind_start", arg=cd.arg, page=cd.page),
+            owner_id,
+            chat_id,
+            message_id,
+            telegram,
+        )
+
+    if action == "supplier_tgid_clear":
+        return await _dispatch_callback(
+            session,
+            CallbackData(namespace="admin", action="supplier_unbind", arg=cd.arg, page=cd.page),
+            owner_id,
+            chat_id,
+            message_id,
+            telegram,
+        )
+
+    if action == "supplier_bind_start":
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_supplier_bind",
+            payload={"supplier_id": cd.arg},
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_bind_prompt"),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [
+                        menu_button("↩️ Переслать сообщение", "supplier_bind_forward", cd.arg),
+                        menu_button("🔗 Ссылка", "supplier_bind_link", cd.arg),
+                    ],
+                    [menu_button("⏭ Пропустить", "supplier_bind_skip", cd.arg)],
+                    [menu_button("Отмена", "supplier_detail", cd.arg)],
+                ]
+            ),
+        )
+        return
+
+    if action == "supplier_bind_forward":
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_supplier_forward",
+            payload={"supplier_id": cd.arg},
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_forward_prompt"),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [[menu_button("Отмена", "supplier_detail", cd.arg)]]
+            ),
+        )
+        return
+
+    if action == "supplier_bind_link":
+        username = get_settings().telegram_bot_username
+        if not username:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_bind_link_unavailable"),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("↩️ Переслать сообщение", "supplier_bind_forward", cd.arg)],
+                     [menu_button("Отмена", "supplier_detail", cd.arg)]]
+                ),
+            )
+            return
+        bind_token = await admin_service.create_supplier_bind_token(
+            session, supplier_id=cd.arg, owner_id=owner_id
+        )
+        link = f"https://t.me/{username.lstrip('@')}?start={bind_token.token}"
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_bind_link", link=link),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [menu_button("К поставщику", "supplier_detail", cd.arg)],
+                    [menu_button("В меню", "main_menu")],
+                ]
+            ),
+        )
+        return
+
+    if action == "supplier_bind_skip":
+        await admin_service.clear_dialog(session, owner_id)
+        await _send_supplier_detail(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
+        return
+
+    if action == "supplier_unbind":
+        await admin_service.unbind_supplier_telegram_id(session, cd.arg)
+        await _send_supplier_detail(
             session, telegram, chat_id, cd.arg, message_id=message_id
         )
         return
@@ -468,6 +650,12 @@ async def _send_employee_detail(
     )
 
 
+def _supplier_price_channel_label(supplier: Supplier) -> str:
+    if supplier.price_channel_id is None:
+        return "не привязан"
+    return supplier.price_channel_username or str(supplier.price_channel_id)
+
+
 async def _send_supplier_detail(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
@@ -487,6 +675,9 @@ async def _send_supplier_detail(
         supplier_name=supplier.name,
         active=supplier.active,
         rfq_enabled=supplier.rfq_enabled,
+        telegram_id=supplier.telegram_id or "—",
+        dm_ok=supplier.dm_ok,
+        price_channel_label=_supplier_price_channel_label(supplier),
     )
     rows = [
         [
@@ -497,6 +688,19 @@ async def _send_supplier_detail(
             menu_button("📤 RFQ вкл" if supplier.rfq_enabled else "📤 RFQ выкл", "supplier_toggle_rfq", supplier_id),
         ],
         [
+            menu_button("📡 Канал прайса", "supplier_channel", supplier_id),
+        ],
+        [
+            menu_button(
+                "📱 Привязать личку" if supplier.telegram_id is None else "🔄 Сменить личку",
+                "supplier_bind_start",
+                supplier_id,
+            ),
+            menu_button("🗑 Отвязать личку", "supplier_unbind", supplier_id)
+            if supplier.telegram_id is not None
+            else button("", cd=_cb("noop")),
+        ],
+        [
             menu_button("Чаты поставщика", "supplier_chats", supplier_id),
         ],
         [menu_button("К списку", "suppliers", page=0), menu_button("В меню", "main_menu")],
@@ -505,6 +709,58 @@ async def _send_supplier_detail(
         telegram,
         chat_id=chat_id,
         text=text,
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_supplier_channel_list(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    supplier_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    try:
+        channels = await parser_client.list_channels()
+    except parser_client.ParserClientError as exc:
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_price_channels_error", detail=str(exc)),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [[menu_button("К поставщику", "supplier_detail", supplier_id)]]
+            ),
+        )
+        return
+
+    price_channels = [
+        ch for ch in channels if ch.purpose == "supplier_price_source"
+    ]
+    rows: list[list[dict[str, Any]]] = [
+        [menu_button("Не привязан / отвязать", "supplier_unbind_ch", supplier_id)]
+    ]
+    for ch in price_channels:
+        handle = ch.username or ch.title or f"#{ch.id}"
+        if ch.channel_id is not None and ch.is_active:
+            label = f"✅ {handle}"
+        else:
+            label = f"⏳ {handle} (готовится)"
+        rows.append(
+            [menu_button(label, "supplier_bind_ch", supplier_id, ch.id)]
+        )
+    rows.append(
+        [
+            menu_button("К поставщику", "supplier_detail", supplier_id),
+            menu_button("В меню", "main_menu"),
+        ]
+    )
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template("admin_supplier_channel_pick", supplier_id=supplier_id),
         message_id=message_id,
         markup=inline_keyboard(rows),
     )
@@ -698,8 +954,28 @@ async def _handle_dialog_text(
         supplier = await admin_service.add_supplier(
             session, name=name, bound_by_owner_id=owner_id
         )
-        await admin_service.clear_dialog(session, owner_id)
-        await _send_supplier_detail(session, telegram, chat_id, supplier.id)
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_supplier_bind",
+            payload={"supplier_id": supplier.id},
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_bind_prompt"),
+            message_id=message.get("message_id"),
+            markup=inline_keyboard(
+                [
+                    [
+                        menu_button("↩️ Переслать сообщение", "supplier_bind_forward", supplier.id),
+                        menu_button("🔗 Ссылка", "supplier_bind_link", supplier.id),
+                    ],
+                    [menu_button("⏭ Пропустить", "supplier_bind_skip", supplier.id)],
+                    [menu_button("Отмена", "main_menu")],
+                ]
+            ),
+        )
         return "ok"
 
     if state == "await_channel_handle":
@@ -762,9 +1038,7 @@ async def _handle_dialog_text(
             await _send_main_menu(session, telegram, chat_id)
             return "ok"
 
-        telegram_id = parse_telegram_id_text(text)
-        if telegram_id is None:
-            telegram_id = extract_forwarded_user_id(message)
+        telegram_id = resolve_user_id_from_message(text, message)
 
         if telegram_id is None:
             if message.get("forward_from") or message.get("forward_origin"):
@@ -793,6 +1067,146 @@ async def _handle_dialog_text(
 
         await admin_service.clear_dialog(session, owner_id)
         await _send_employee_detail(session, telegram, chat_id, employee.id)
+        return "ok"
+
+    if state == "await_supplier_bind":
+        supplier_id = payload.get("supplier_id")
+        if supplier_id is None:
+            await admin_service.clear_dialog(session, owner_id)
+            await _send_main_menu(session, telegram, chat_id)
+            return "ok"
+        # This state is normally driven by callbacks; plain text here is ignored
+        # but the dialog stays alive so owner can click the inline buttons.
+        return "ok"
+
+    if state == "await_supplier_forward":
+        supplier_id = payload.get("supplier_id")
+        if supplier_id is None:
+            await admin_service.clear_dialog(session, owner_id)
+            await _send_main_menu(session, telegram, chat_id)
+            return "ok"
+
+        telegram_id = resolve_user_id_from_message(text, message)
+
+        if telegram_id is None:
+            if message.get("forward_from") or message.get("forward_origin"):
+                await telegram.send_message(
+                    chat_id,
+                    render_template(
+                        "admin_supplier_forward_hidden",
+                        supplier_id=supplier_id,
+                    ),
+                    reply_markup=inline_keyboard(
+                        [
+                            [menu_button("🔗 Сделать ссылку", "supplier_bind_link", supplier_id)],
+                            [menu_button("Отмена", "supplier_detail", supplier_id)],
+                        ]
+                    ),
+                )
+            else:
+                await telegram.send_message(
+                    chat_id,
+                    render_template("admin_supplier_invalid_telegram_id"),
+                    reply_markup=inline_keyboard(
+                        [[menu_button("Отмена", "supplier_detail", supplier_id)]]
+                    ),
+                )
+            return "ok"
+
+        try:
+            supplier = await admin_service.bind_supplier_telegram_id(
+                session,
+                supplier_id=int(supplier_id),
+                telegram_id=telegram_id,
+                bound_by_owner_id=owner_id,
+            )
+        except admin_service.TelegramIdConflictError:
+            await telegram.send_message(
+                chat_id,
+                render_template(
+                    "admin_supplier_telegram_id_busy",
+                    telegram_id=telegram_id,
+                ),
+                reply_markup=inline_keyboard(
+                    [
+                        [menu_button("🔗 Сделать ссылку", "supplier_bind_link", supplier_id)],
+                        [menu_button("Отмена", "supplier_detail", supplier_id)],
+                    ]
+                ),
+            )
+            return "ok"
+
+        await admin_service.clear_dialog(session, owner_id)
+        await telegram.send_message(
+            chat_id,
+            render_template(
+                "admin_supplier_bound",
+                supplier_id=supplier.id,
+                supplier_name=supplier.name,
+                telegram_id=telegram_id,
+            ),
+        )
+        await _send_supplier_detail(session, telegram, chat_id, supplier.id)
+        return "ok"
+
+    # Legacy dialog state: redirect to the new self-service bind flow.
+    if state == "await_supplier_telegram_id":
+        supplier_id = payload.get("supplier_id")
+        if supplier_id is None:
+            await admin_service.clear_dialog(session, owner_id)
+            await _send_main_menu(session, telegram, chat_id)
+            return "ok"
+        telegram_id = resolve_user_id_from_message(text, message)
+        if telegram_id is not None:
+            try:
+                await admin_service.bind_supplier_telegram_id(
+                    session,
+                    supplier_id=int(supplier_id),
+                    telegram_id=telegram_id,
+                    bound_by_owner_id=owner_id,
+                )
+            except admin_service.TelegramIdConflictError:
+                await telegram.send_message(
+                    chat_id,
+                    render_template(
+                        "admin_supplier_telegram_id_busy",
+                        telegram_id=telegram_id,
+                    ),
+                    reply_markup=inline_keyboard(
+                        [
+                            [menu_button("🔗 Сделать ссылку", "supplier_bind_link", supplier_id)],
+                            [menu_button("Отмена", "supplier_detail", supplier_id)],
+                        ]
+                    ),
+                )
+                return "ok"
+            await admin_service.clear_dialog(session, owner_id)
+            await _send_supplier_detail(session, telegram, chat_id, int(supplier_id))
+            return "ok"
+
+        if message.get("forward_from") or message.get("forward_origin"):
+            await telegram.send_message(
+                chat_id,
+                render_template(
+                    "admin_supplier_forward_hidden",
+                    supplier_id=supplier_id,
+                ),
+                reply_markup=inline_keyboard(
+                    [
+                        [menu_button("🔗 Сделать ссылку", "supplier_bind_link", supplier_id)],
+                        [menu_button("Отмена", "supplier_detail", supplier_id)],
+                    ]
+                ),
+            )
+            return "ok"
+
+        await telegram.send_message(
+            chat_id,
+            render_template("admin_supplier_invalid_telegram_id"),
+            reply_markup=inline_keyboard(
+                [[menu_button("Отмена", "supplier_detail", supplier_id)]]
+            ),
+        )
         return "ok"
 
     await admin_service.clear_dialog(session, owner_id)

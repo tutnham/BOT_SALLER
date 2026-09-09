@@ -89,17 +89,19 @@ VALUES
 
 ### 3.2. Поставщики с каналом цен
 
-Для тех, у кого прайс в Telegram-канале:
+**Основной путь (без SQL):** `/menu` → карточка поставщика → **Канал прайса** → выбрать канал из списка парсера (`supplier_price_source`). В БД пишется Telegram `channel_id` (не PK строки парсера). Канал со статусом ⏳ (ещё нет `channel_id` в парсере) привязать нельзя.
+
+**Fallback (ручной SQL, если UI недоступен):**
 
 ```sql
 UPDATE suppliers
 SET
-  price_channel_id = <channel_id>,
+  price_channel_id = <telegram_channel_id>,
   price_channel_username = '@channel_username'
 WHERE id = <supplier_id>;
 ```
 
-`price_channel_id` должен совпадать с каналом, уже зарегистрированным в **tg-channel-parser** с `purpose='supplier_price_source'`.
+`price_channel_id` — numeric id канала Telegram, совпадающий с каналом в **tg-channel-parser** (`purpose='supplier_price_source'`).
 
 Поставщики **без** канала шлют прайс в ЛС боту сообщением, начинающимся с:
 

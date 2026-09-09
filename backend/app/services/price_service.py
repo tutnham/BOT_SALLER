@@ -29,6 +29,7 @@ from app.services.alert_service import send_admin_alert
 from app.services.markup_service import classify_category, load_rules, resolve_markup
 from app.services.parser_client import ParserClientError, get_posts
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
+from app.telegram.keyboards import CallbackData, button, inline_keyboard
 from app.templates.messages_ru import render_template
 
 
@@ -402,6 +403,29 @@ def _resolve_approval_chat_ids() -> list[int]:
     return get_settings().price_approval_chat_id_list
 
 
+async def is_price_command_chat(session: AsyncSession, chat_id: int) -> bool:
+    """True when chat receives morning price draft notifications."""
+    destinations = await resolve_price_draft_destinations(session)
+    return chat_id in destinations
+
+
+def _price_draft_keyboard(draft_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [
+                button(
+                    "✅ Утвердить",
+                    cd=CallbackData(namespace="price", action="approve", arg=draft_id),
+                ),
+                button(
+                    "❌ Отклонить",
+                    cd=CallbackData(namespace="price", action="reject", arg=draft_id),
+                ),
+            ]
+        ]
+    )
+
+
 async def resolve_price_draft_destinations(session: AsyncSession) -> list[int]:
     """Env approval chats plus every owner with ``dm_ok`` (deduped, env first)."""
     ids: list[int] = []
@@ -515,9 +539,10 @@ async def notify_morning_price_draft(
         draft_id=draft_id,
         items_block=items_block,
     )
+    markup = _price_draft_keyboard(draft_id)
     for chat_id in approval_chats:
         try:
-            await telegram.send_message(int(chat_id), message)
+            await telegram.send_message(int(chat_id), message, reply_markup=markup)
         except TelegramSendError as exc:
             logger.warning(
                 "Failed to notify approval chat_id={} for draft_id={}: {}",
@@ -531,8 +556,9 @@ async def approve_price_draft(
     session: AsyncSession,
     *,
     draft_id: int,
-    employee_id: int,
+    employee_id: int | None,
     telegram: TelegramClientProtocol,
+    approver_telegram_id: int | None = None,
 ) -> str:
     """
     Atomically approve pending draft and publish to configured chats.
@@ -546,6 +572,7 @@ async def approve_price_draft(
             UPDATE price_list_drafts
             SET status = 'approved',
                 approved_by = :employee_id,
+                approved_by_telegram_id = :approver_telegram_id,
                 approved_at = :approved_at
             WHERE id = :draft_id AND status = 'pending'
             RETURNING id, items
@@ -554,6 +581,7 @@ async def approve_price_draft(
         {
             "draft_id": draft_id,
             "employee_id": employee_id,
+            "approver_telegram_id": approver_telegram_id,
             "approved_at": now,
         },
     )
@@ -589,7 +617,8 @@ async def reject_price_draft(
     session: AsyncSession,
     *,
     draft_id: int,
-    employee_id: int,
+    employee_id: int | None,
+    approver_telegram_id: int | None = None,
 ) -> str:
     """Atomically reject pending draft. Returns outcome key."""
     now = datetime.now(UTC)
@@ -599,6 +628,7 @@ async def reject_price_draft(
             UPDATE price_list_drafts
             SET status = 'rejected',
                 approved_by = :employee_id,
+                approved_by_telegram_id = :approver_telegram_id,
                 approved_at = :approved_at
             WHERE id = :draft_id AND status = 'pending'
             RETURNING id
@@ -607,6 +637,7 @@ async def reject_price_draft(
         {
             "draft_id": draft_id,
             "employee_id": employee_id,
+            "approver_telegram_id": approver_telegram_id,
             "approved_at": now,
         },
     )

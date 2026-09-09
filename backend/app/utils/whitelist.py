@@ -1,5 +1,7 @@
 """Whitelist checks against owners / employees / suppliers (TECH DOC §5, §13)."""
 
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,3 +101,30 @@ async def get_supplier_by_telegram_id(
         stmt = stmt.where(Supplier.active.is_(True))
     result = await session.execute(stmt.limit(1))
     return result.scalar_one_or_none()
+
+
+@dataclass(frozen=True)
+class PriceApprover:
+    """User allowed to approve or reject price drafts."""
+
+    telegram_id: int
+    employee_id: int | None
+
+
+async def resolve_price_approver(
+    session: AsyncSession,
+    telegram_id: int,
+) -> PriceApprover | None:
+    """Active employee OR owner. None => no access."""
+    employee = await get_employee_by_telegram_id(
+        session, telegram_id, require_active=True
+    )
+    if employee is not None:
+        return PriceApprover(telegram_id=telegram_id, employee_id=employee.id)
+    if await is_owner(session, telegram_id):
+        return PriceApprover(telegram_id=telegram_id, employee_id=None)
+    return None
+
+
+async def can_approve_price(session: AsyncSession, telegram_id: int) -> bool:
+    return await resolve_price_approver(session, telegram_id) is not None

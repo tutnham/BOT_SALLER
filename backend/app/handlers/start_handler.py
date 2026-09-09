@@ -6,6 +6,7 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import admin_service
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
 from app.utils.telegram import extract_message_text
@@ -15,13 +16,24 @@ from app.utils.whitelist import (
     get_supplier_by_telegram_id,
 )
 
-_START_RE = re.compile(r"^/start(?:@\w+)?(?:\s|$)", re.IGNORECASE)
+_START_RE = re.compile(
+    r"^/start(?:@\w+)?(?:\s+)?(?:\s*(\S+))?\s*$",
+    re.IGNORECASE,
+)
 
 
 def is_start_command(message: dict) -> bool:
-    """True when message text is /start (with optional @bot suffix)."""
+    """True when message text is /start (with optional @bot suffix and payload)."""
     text = extract_message_text(message)
     return bool(_START_RE.match(text))
+
+
+def _extract_start_payload(message: dict) -> str | None:
+    text = extract_message_text(message)
+    match = _START_RE.match(text)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 async def handle_start(
@@ -33,7 +45,8 @@ async def handle_start(
     """
     Handle private /start: flip dm_ok for whitelisted owner/supplier.
 
-    Unknown users are silently ignored (no DB writes).
+    Unknown users are silently ignored (no DB writes) unless a valid bind
+    deep-link token is supplied.
     """
     from_user = message.get("from") or {}
     telegram_id = from_user.get("id")
@@ -64,4 +77,44 @@ async def handle_start(
         await telegram.send_message(cid, render_template("help"))
         return "ok"
 
-    return "ignored"
+    payload = _extract_start_payload(message)
+    if not payload:
+        return "ignored"
+
+    result, bind_token = await admin_service.consume_supplier_bind_token(
+        session, token=payload, telegram_id=tid
+    )
+
+    if result == admin_service.BindTokenResult.ok:
+        assert bind_token is not None
+        await session.flush()
+        await telegram.send_message(cid, render_template("supplier_start_ok"))
+        await telegram.send_message(
+            bind_token.created_by_owner_id,
+            render_template(
+                "admin_supplier_bound",
+                supplier_id=bind_token.supplier_id,
+                supplier_name=bind_token.supplier.name,
+                telegram_id=tid,
+            ),
+        )
+        return "ok"
+
+    if result == admin_service.BindTokenResult.conflict:
+        await telegram.send_message(cid, render_template("supplier_bind_conflict"))
+        if bind_token is not None:
+            await telegram.send_message(
+                bind_token.created_by_owner_id,
+                render_template(
+                    "admin_bind_conflict_notice",
+                    supplier_id=bind_token.supplier_id,
+                    supplier_name=bind_token.supplier.name,
+                    telegram_id=tid,
+                ),
+            )
+        return "ok"
+
+    await telegram.send_message(
+        cid, render_template("supplier_bind_token_invalid")
+    )
+    return "ok"

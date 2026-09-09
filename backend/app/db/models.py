@@ -131,7 +131,7 @@ class Supplier(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    chats: Mapped[list["SupplierChat"]] = relationship(
+    chats: Mapped[list[SupplierChat]] = relationship(
         back_populates="supplier",
         cascade="all, delete-orphan",
     )
@@ -146,7 +146,12 @@ class SupplierChatType(str, enum.Enum):
 class SupplierChat(Base):
     __tablename__ = "supplier_chats"
     __table_args__ = (
-        UniqueConstraint("supplier_id", "is_default", name="uq_supplier_default_chat"),
+        Index(
+            "ix_supplier_chats_default",
+            "supplier_id",
+            unique=True,
+            postgresql_where=sa_text("is_default = true"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -199,6 +204,22 @@ class AdminDialog(Base):
         nullable=False,
         server_default=sa_text("now() + interval '15 minutes'"),
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SupplierBindToken(Base):
+    __tablename__ = "supplier_bind_tokens"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id"), nullable=False
+    )
+    created_by_owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -433,6 +454,7 @@ class PriceListDraft(Base):
     approved_by: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("employees.id")
     )
+    approved_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

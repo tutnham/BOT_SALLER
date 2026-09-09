@@ -14,21 +14,24 @@ from app.db.session import get_db
 from app.handlers.admin_menu import handle_admin_callback, handle_admin_message
 from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
+from app.handlers.price_approval import handle_price_callback, handle_price_command
 from app.handlers.llm_billing_commands import handle_set_llm_price
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.start_handler import handle_start, is_start_command
 from app.handlers.supplier_messages import handle_reply
 from app.services import admin_service
 from app.services.alert_service import send_admin_alert
+from app.services.price_service import is_price_command_chat
 from app.services.routing_service import chat_role
 from app.telegram.client import get_telegram_client
+from app.telegram.keyboards import CallbackData
 from app.telegram.deps import verify_telegram_secret_token
 from app.utils.idempotency import is_duplicate_update, mark_update_processed
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import (
-    is_employee,
     is_owner,
     is_supplier,
+    resolve_price_approver,
 )
 
 _PRICE_COMMAND_PREFIXES = ("/approve_price", "/reject_price")
@@ -114,6 +117,20 @@ async def _route_message(
         chat_id = chat.get("id")
         if chat_id is None:
             return "ignored"
+        if text.startswith(_PRICE_COMMAND_PREFIXES):
+            role = await chat_role(session, int(chat_id))
+            if role == "client_group" or await is_price_command_chat(
+                session, int(chat_id)
+            ):
+                approver = await resolve_price_approver(session, int(from_id))
+                if approver is not None:
+                    return await handle_price_command(
+                        session,
+                        message,
+                        approver=approver,
+                        telegram=telegram,
+                    )
+            return "ignored"
         role = await chat_role(session, int(chat_id))
         if role == "client_group":
             if text.startswith("/") or _is_nl_gated_group_message(message):
@@ -133,6 +150,16 @@ async def _route_message(
         if await is_supplier(session, int(from_id)):
             return await handle_reply(session, message, telegram=telegram)
 
+        if text.startswith(_PRICE_COMMAND_PREFIXES):
+            approver = await resolve_price_approver(session, int(from_id))
+            if approver is not None:
+                return await handle_price_command(
+                    session,
+                    message,
+                    approver=approver,
+                    telegram=telegram,
+                )
+
         if await is_owner(session, int(from_id)):
             if text.startswith("/menu") or text.startswith("/admin"):
                 return await handle_admin_message(session, message, telegram=telegram)
@@ -148,12 +175,6 @@ async def _route_message(
             if await admin_service.get_dialog(session, int(from_id)) is not None:
                 return await handle_admin_message(session, message, telegram=telegram)
 
-        # D5: employees may approve/reject price drafts in DM (§11)
-        if text.startswith(_PRICE_COMMAND_PREFIXES) and await is_employee(
-            session, int(from_id)
-        ):
-            return await handle_employee_message(session, message, telegram=telegram)
-
     return "ignored"
 
 
@@ -161,11 +182,31 @@ async def _route_callback(
     session: AsyncSession,
     callback_query: dict[str, Any],
 ) -> str:
+    telegram = get_telegram_client()
     from_user = callback_query.get("from") or {}
     from_id = from_user.get("id")
-    if from_id is None or not await is_owner(session, int(from_id)):
+    if from_id is None:
         return "ignored"
-    return await handle_admin_callback(session, callback_query)
+
+    cd = CallbackData.decode(callback_query.get("data"))
+    if cd is None:
+        return "ignored"
+
+    callback_id = callback_query.get("id", "")
+
+    if cd.namespace == "admin":
+        if not await is_owner(session, int(from_id)):
+            await telegram.answer_callback_query(callback_id, text="Нет доступа")
+            return "ignored"
+        return await handle_admin_callback(session, callback_query)
+
+    if cd.namespace == "price":
+        if await resolve_price_approver(session, int(from_id)) is None:
+            await telegram.answer_callback_query(callback_id, text="Нет доступа")
+            return "ignored"
+        return await handle_price_callback(session, callback_query)
+
+    return "ignored"
 
 
 async def _route_my_chat_member(

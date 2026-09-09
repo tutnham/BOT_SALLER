@@ -63,6 +63,7 @@ async def test_approve_and_reject_transitions(
     seed_employee,
     seed_employee_telegram_id: int,
     seed_group_chat_id: int,
+    seed_client_group,
 ) -> None:
     draft = PriceListDraft(
         items=[
@@ -97,8 +98,9 @@ async def test_approve_and_reject_transitions(
     await db_session.refresh(draft)
     assert draft.status == "approved"
     assert draft.approved_by == seed_employee.id
-    assert any(chat_id == PRICE_PUBLISH_CHAT_ID for chat_id, _ in mock_telegram.sent)
-    assert any("утверждён" in text for _, text in mock_telegram.sent)
+    assert draft.approved_by_telegram_id == seed_employee_telegram_id
+    assert any(chat_id == PRICE_PUBLISH_CHAT_ID for chat_id, _, _ in mock_telegram.sent)
+    assert any("утверждён" in text for _, text, _ in mock_telegram.sent)
 
     # Duplicate approve
     mock_telegram.sent.clear()
@@ -118,8 +120,8 @@ async def test_approve_and_reject_transitions(
     assert resp2.status_code == 200
     await db_session.refresh(draft)
     assert draft.status == "approved"
-    assert any("уже обработан" in text for _, text in mock_telegram.sent)
-    assert not any(chat_id == PRICE_PUBLISH_CHAT_ID for chat_id, _ in mock_telegram.sent)
+    assert any("уже обработан" in text for _, text, _ in mock_telegram.sent)
+    assert not any(chat_id == PRICE_PUBLISH_CHAT_ID for chat_id, _, _ in mock_telegram.sent)
 
 
 @pytest.mark.asyncio
@@ -154,7 +156,7 @@ async def test_reject_and_duplicate_protection(
     assert resp.status_code == 200
     await db_session.refresh(draft)
     assert draft.status == "rejected"
-    assert any("отклонён" in text for _, text in mock_telegram.sent)
+    assert any("отклонён" in text for _, text, _ in mock_telegram.sent)
 
     mock_telegram.sent.clear()
     resp2 = await webhook_client.post(
@@ -173,7 +175,7 @@ async def test_reject_and_duplicate_protection(
     assert resp2.status_code == 200
     await db_session.refresh(draft)
     assert draft.status == "rejected"
-    assert any("уже обработан" in text for _, text in mock_telegram.sent)
+    assert any("уже обработан" in text for _, text, _ in mock_telegram.sent)
 
 
 @pytest.mark.asyncio

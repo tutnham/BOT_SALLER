@@ -5,6 +5,8 @@ All write-side logic lives here; admin_menu.py handles only Telegram UI.
 
 from __future__ import annotations
 
+import enum
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,8 +17,10 @@ from app.db.models import (
     AdminDialog,
     ClientGroup,
     Employee,
+    Owner,
     PendingChat,
     Supplier,
+    SupplierBindToken,
     SupplierChat,
     SupplierChatType,
 )
@@ -48,6 +52,19 @@ class EmployeeNotFoundError(Exception):
 
 class DuplicateEmployeeTelegramIdError(Exception):
     """Employee with this telegram_id already exists."""
+
+
+class BindTokenResult(str, enum.Enum):
+    """Outcome of consuming a supplier bind deep-link token."""
+
+    ok = "ok"
+    expired = "expired"
+    used = "used"
+    conflict = "conflict"
+
+
+class PriceChannelBusyError(Exception):
+    """Telegram price channel already bound to another supplier."""
 
 
 async def list_employees(session: AsyncSession) -> list[Employee]:
@@ -106,6 +123,42 @@ async def list_supplier_chats(
     return list(result.scalars().all())
 
 
+async def _ensure_private_supplier_chat(
+    session: AsyncSession,
+    supplier: Supplier,
+    telegram_id: int,
+    bound_by_owner_id: int | None,
+) -> None:
+    """Create or reactivate a private SupplierChat for the given telegram_id."""
+    chats = await list_supplier_chats(session, supplier.id)
+    has_default = any(c.is_default and c.active for c in chats)
+
+    existing = next(
+        (c for c in chats if c.chat_id == telegram_id and c.chat_type == SupplierChatType.private),
+        None,
+    )
+    if existing is not None:
+        existing.active = True
+        existing.is_default = True
+    else:
+        session.add(
+            SupplierChat(
+                supplier_id=supplier.id,
+                chat_id=telegram_id,
+                chat_type=SupplierChatType.private,
+                is_default=not has_default,
+                active=True,
+                bound_by_owner_id=bound_by_owner_id,
+            )
+        )
+        await session.flush()
+
+    # Remove default flag from any other private chat of the same supplier.
+    for c in chats:
+        if c.chat_id != telegram_id and c.is_default and c.chat_type == SupplierChatType.private:
+            c.is_default = False
+
+
 async def add_supplier(
     session: AsyncSession,
     *,
@@ -117,17 +170,9 @@ async def add_supplier(
     session.add(supplier)
     await session.flush()
     if telegram_id is not None:
-        session.add(
-            SupplierChat(
-                supplier_id=supplier.id,
-                chat_id=telegram_id,
-                chat_type=SupplierChatType.private,
-                is_default=True,
-                active=True,
-                bound_by_owner_id=bound_by_owner_id,
-            )
+        await _ensure_private_supplier_chat(
+            session, supplier, telegram_id, bound_by_owner_id
         )
-        await session.flush()
     return supplier
 
 
@@ -250,6 +295,171 @@ async def bind_pending_chat_as_supplier(
     return supplier
 
 
+class TelegramIdConflictError(Exception):
+    """This Telegram ID is already used by owner, employee, or another supplier."""
+
+
+_BIND_LINK_TTL = timedelta(hours=24)
+
+
+async def _is_telegram_id_busy(
+    session: AsyncSession,
+    telegram_id: int,
+    exclude_supplier_id: int | None = None,
+) -> bool:
+    """Check whether telegram_id is already bound to owner, employee, or another supplier."""
+    owner = await session.execute(
+        select(Owner).where(Owner.telegram_id == telegram_id).limit(1)
+    )
+    if owner.scalar_one_or_none() is not None:
+        return True
+
+    employee = await get_employee_by_telegram_id(
+        session, telegram_id, require_active=False
+    )
+    if employee is not None:
+        return True
+
+    supplier = await session.execute(
+        select(Supplier).where(
+            Supplier.telegram_id == telegram_id,
+            Supplier.id != exclude_supplier_id if exclude_supplier_id is not None else True,
+        ).limit(1)
+    )
+    if supplier.scalar_one_or_none() is not None:
+        return True
+
+    return False
+
+
+async def create_supplier_bind_token(
+    session: AsyncSession,
+    supplier_id: int,
+    owner_id: int,
+) -> SupplierBindToken:
+    """Create a one-time deep-link token for supplier Telegram binding."""
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+
+    token_value = secrets.token_urlsafe(24)
+    bind_token = SupplierBindToken(
+        token=token_value,
+        supplier_id=supplier_id,
+        created_by_owner_id=owner_id,
+        expires_at=_now() + _BIND_LINK_TTL,
+    )
+    session.add(bind_token)
+    await session.flush()
+    return bind_token
+
+
+async def get_supplier_bind_token(
+    session: AsyncSession,
+    token: str,
+) -> SupplierBindToken | None:
+    """Fetch a bind token if it exists and has not been used or expired."""
+    result = await session.execute(
+        select(SupplierBindToken).where(SupplierBindToken.token == token).limit(1)
+    )
+    bind_token = result.scalar_one_or_none()
+    if bind_token is None:
+        return None
+    if bind_token.used_at is not None:
+        return bind_token
+    if bind_token.expires_at < _now():
+        return bind_token
+    return bind_token
+
+
+async def consume_supplier_bind_token(
+    session: AsyncSession,
+    token: str,
+    telegram_id: int,
+) -> tuple[BindTokenResult, SupplierBindToken | None]:
+    """Validate and use a bind token, returning the outcome.
+
+    On conflict the token is still burned so the owner can see the attempt
+    and issue a new link.
+    """
+    result = await session.execute(
+        select(SupplierBindToken).where(SupplierBindToken.token == token).limit(1)
+    )
+    bind_token = result.scalar_one_or_none()
+    if bind_token is None:
+        return BindTokenResult.expired, None
+
+    if bind_token.used_at is not None:
+        return BindTokenResult.used, bind_token
+
+    if bind_token.expires_at < _now():
+        return BindTokenResult.expired, bind_token
+
+    supplier = await session.get(Supplier, bind_token.supplier_id)
+    if supplier is None:
+        bind_token.used_at = _now()
+        return BindTokenResult.expired, bind_token
+
+    if await _is_telegram_id_busy(session, telegram_id, exclude_supplier_id=supplier.id):
+        bind_token.used_at = _now()
+        return BindTokenResult.conflict, bind_token
+
+    supplier.telegram_id = telegram_id
+    supplier.dm_ok = True
+    await _ensure_private_supplier_chat(session, supplier, telegram_id, bind_token.created_by_owner_id)
+    bind_token.used_at = _now()
+    await session.flush()
+    return BindTokenResult.ok, bind_token
+
+
+async def bind_supplier_telegram_id(
+    session: AsyncSession,
+    *,
+    supplier_id: int,
+    telegram_id: int,
+    bound_by_owner_id: int,
+    set_dm_ok: bool = False,
+) -> Supplier:
+    """Bind a Telegram user id to a supplier via owner forward/digits input."""
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+
+    if await _is_telegram_id_busy(session, telegram_id, exclude_supplier_id=supplier.id):
+        raise TelegramIdConflictError(telegram_id)
+
+    supplier.telegram_id = telegram_id
+    if set_dm_ok:
+        supplier.dm_ok = True
+    await _ensure_private_supplier_chat(session, supplier, telegram_id, bound_by_owner_id)
+    await session.flush()
+    return supplier
+
+
+async def unbind_supplier_telegram_id(
+    session: AsyncSession,
+    supplier_id: int,
+) -> Supplier:
+    """Remove private Telegram binding from a supplier; leave group chats untouched."""
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+
+    old_tgid = supplier.telegram_id
+    supplier.telegram_id = None
+    supplier.dm_ok = False
+
+    if old_tgid is not None:
+        chats = await list_supplier_chats(session, supplier_id)
+        for chat in chats:
+            if chat.chat_id == old_tgid and chat.chat_type == SupplierChatType.private:
+                chat.active = False
+                chat.is_default = False
+
+    await session.flush()
+    return supplier
+
+
 async def bind_pending_chat_as_client_group(
     session: AsyncSession,
     *,
@@ -265,7 +475,10 @@ async def bind_pending_chat_as_client_group(
     if role in ("client_group", "supplier_chat"):
         raise ChatConflictError(role)
 
-    existing = await session.get(ClientGroup, {"chat_id": chat_id})
+    result = await session.execute(
+        select(ClientGroup).where(ClientGroup.chat_id == chat_id)
+    )
+    existing = result.scalar_one_or_none()
     if existing is not None:
         existing.active = True
         existing.title = title or existing.title or pending.title
@@ -364,3 +577,43 @@ async def delete_pending_chat(session: AsyncSession, chat_id: int) -> None:
     if pending is not None:
         await session.delete(pending)
         await session.flush()
+
+
+async def bind_supplier_price_channel(
+    session: AsyncSession,
+    *,
+    supplier_id: int,
+    channel_id: int,
+    username: str | None,
+) -> Supplier:
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+
+    result = await session.execute(
+        select(Supplier).where(
+            Supplier.price_channel_id == channel_id,
+            Supplier.id != supplier_id,
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        raise PriceChannelBusyError(channel_id)
+
+    supplier.price_channel_id = channel_id
+    supplier.price_channel_username = username
+    await session.flush()
+    return supplier
+
+
+async def unbind_supplier_price_channel(
+    session: AsyncSession,
+    supplier_id: int,
+) -> Supplier:
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+    supplier.price_channel_id = None
+    supplier.price_channel_username = None
+    await session.flush()
+    return supplier
+
