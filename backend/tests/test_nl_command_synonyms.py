@@ -174,7 +174,7 @@ async def test_nl_bargain_needs_price(
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("Укажите целевую цену" in txt for txt in group_sends)
 
     outs = await db_session.scalars(

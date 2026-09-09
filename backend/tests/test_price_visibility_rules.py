@@ -61,7 +61,7 @@ async def test_draft_message_hides_sensitive_fields(
         resp = await webhook_client.post(
             "/jobs/morning-price",
             json={},
-            headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+            headers={"X-Webhook-Secret": "test-webhook-secret"},
         )
 
     assert resp.status_code == 200
@@ -77,7 +77,7 @@ async def test_draft_message_hides_sensitive_fields(
 
     approval_texts = [
         text
-        for chat_id, text in mock_telegram.sent
+        for chat_id, text, *_ in mock_telegram.sent
         if chat_id == PRICE_APPROVAL_CHAT_ID
     ]
     assert approval_texts
@@ -116,13 +116,13 @@ async def test_draft_also_notifies_dm_ok_owners(
         resp = await webhook_client.post(
             "/jobs/morning-price",
             json={},
-            headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+            headers={"X-Webhook-Secret": "test-webhook-secret"},
         )
 
     assert resp.status_code == 200
     approval_chats = {
         chat_id
-        for chat_id, text in mock_telegram.sent
+        for chat_id, text, *_ in mock_telegram.sent
         if "/approve_price" in text
     }
     assert PRICE_APPROVAL_CHAT_ID in approval_chats

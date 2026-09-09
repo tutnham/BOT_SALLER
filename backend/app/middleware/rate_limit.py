@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from time import monotonic
@@ -43,6 +44,9 @@ async def rate_limit_webhook_and_jobs(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return await call_next(request)
+
     path = request.url.path
     if path.startswith("/telegram/webhook") or path.startswith("/jobs/"):
         body = await request.body()

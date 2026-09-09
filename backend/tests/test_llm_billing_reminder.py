@@ -7,6 +7,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -61,7 +62,7 @@ async def test_reminder_records_sent_at_and_chat_ids(
     result = await run_llm_billing_reminder(db_session, mock_telegram)
 
     assert result["status"] == "ok"
-    row = await db_session.get(BillingReminder, 1)
+    row = await db_session.scalar(select(BillingReminder).limit(1))
     assert row is not None
     assert row.sent_at is not None
     assert row.chat_ids == [100100100]
@@ -122,7 +123,7 @@ async def test_reminder_releases_on_total_failure(
     assert result["status"] == "degraded"
 
     # Reservation should be released so a retry can proceed.
-    row = await db_session.get(BillingReminder, 1)
+    row = await db_session.scalar(select(BillingReminder).limit(1))
     assert row is None
 
 
@@ -133,6 +134,7 @@ async def test_reminder_destinations_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://platform.deepseek.com/top_up")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", 700700700)
     monkeypatch.setattr(settings, "admin_alert_chat_id", 400400400)
 
@@ -153,6 +155,7 @@ async def test_reminder_falls_back_to_configured_chat_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://platform.deepseek.com/top_up")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", 700700700)
     monkeypatch.setattr(settings, "admin_alert_chat_id", None)
 
@@ -178,7 +181,9 @@ async def test_reminder_period_key_in_configured_timezone(
         result = await run_llm_billing_reminder(db_session, mock_telegram)
 
     assert result["period_key"] == "2026-09"
-    assert (await db_session.get(BillingReminder, 1)).period_key == "2026-09"
+    row = await db_session.scalar(select(BillingReminder).limit(1))
+    assert row is not None
+    assert row.period_key == "2026-09"
 
 
 @pytest.mark.asyncio
@@ -188,6 +193,7 @@ async def test_reminder_no_destinations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://example.com/pay")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", None)
     monkeypatch.setattr(settings, "admin_alert_chat_id", None)
 

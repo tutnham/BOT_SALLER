@@ -28,5 +28,5 @@ async def test_jobs_daily_report_sends_report_to_owner_dm(
     assert body["period"] == "day"
     assert body["sent"] >= 1
     assert body["failed"] == 0
-    assert any(chat_id == seed_owner.telegram_id for chat_id, _ in mock_telegram.sent)
+    assert any(chat_id == seed_owner.telegram_id for chat_id, *_ in mock_telegram.sent)
     assert mock_telegram.parse_modes[-1] == "HTML"

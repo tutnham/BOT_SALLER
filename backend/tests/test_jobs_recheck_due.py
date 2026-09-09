@@ -199,7 +199,7 @@ async def test_recheck_due_skip_without_quote(
     await db_session.refresh(request)
     assert request.recheck_at is None
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("пропущена" in txt for txt in group_sends)
 
 

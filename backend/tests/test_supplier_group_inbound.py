@@ -46,7 +46,7 @@ async def test_supplier_reply_in_bound_group(
             chat_id=group_id,
             chat_type=SupplierChatType.supergroup,
             active=True,
-            is_default=True,
+            is_default=False,
         )
     )
     await db_session.flush()

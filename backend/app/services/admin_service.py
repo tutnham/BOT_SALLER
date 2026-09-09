@@ -179,9 +179,9 @@ async def _ensure_private_supplier_chat(
         )
         await session.flush()
 
-    # Remove default flag from any other private chat of the same supplier.
-    for c in chats:
-        if c.chat_id != telegram_id and c.is_default and c.chat_type == SupplierChatType.private:
+    refreshed = await list_supplier_chats(session, supplier.id)
+    for c in refreshed:
+        if c.chat_id != telegram_id and c.is_default:
             c.is_default = False
 
 

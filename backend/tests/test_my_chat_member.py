@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Owner, PendingChat, SupplierChat, SupplierChatType
-from app.services.admin_service import add_supplier
+from app.services.admin_service import add_supplier, set_supplier_default_chat
 from app.telegram.keyboards import CallbackData
 
 OWNER_TG_ID = 300300300
@@ -104,10 +104,11 @@ async def test_bot_removed_from_group_deactivates_binding(
             chat_id=chat_id,
             chat_type=SupplierChatType.supergroup,
             active=True,
-            is_default=True,
+            is_default=False,
         )
     )
     await db_session.flush()
+    await set_supplier_default_chat(db_session, supplier.id, chat_id)
 
     payload = _my_chat_member_payload(chat_id, old_status="member", new_status="left")
     resp = await webhook_client.post("/telegram/webhook", json=payload, headers=webhook_headers)

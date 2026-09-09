@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ClientGroup, SupplierChat, SupplierChatType
-from app.services.admin_service import add_supplier
+from app.services.admin_service import add_supplier, set_supplier_default_chat
 from app.services.routing_service import (
     chat_role,
     resolve_rfq_targets,
@@ -32,11 +32,12 @@ async def test_resolve_rfq_targets_uses_default_group(db_session: AsyncSession) 
         chat_id=-1001,
         chat_type=SupplierChatType.supergroup,
         title="Supplier Group",
-        is_default=True,
+        is_default=False,
         active=True,
     )
     db_session.add(group)
     await db_session.flush()
+    await set_supplier_default_chat(db_session, supplier.id, -1001)
 
     targets = await resolve_rfq_targets(db_session)
     assert len(targets) == 1
@@ -65,11 +66,12 @@ async def test_resolve_target_chat_private_fallback(db_session: AsyncSession) ->
         supplier_id=supplier.id,
         chat_id=-1001,
         chat_type=SupplierChatType.supergroup,
-        is_default=True,
+        is_default=False,
         active=True,
     )
     db_session.add(chat)
     await db_session.flush()
+    await set_supplier_default_chat(db_session, supplier.id, -1001)
     assert await resolve_target_chat(db_session, supplier.id) == -1001
 
 
@@ -80,7 +82,7 @@ async def test_chat_role(db_session: AsyncSession) -> None:
         supplier_id=supplier.id,
         chat_id=-1001,
         chat_type=SupplierChatType.supergroup,
-        is_default=True,
+        is_default=False,
         active=True,
     )
     db_session.add(chat)

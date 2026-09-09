@@ -34,7 +34,8 @@ class CallbackData(BaseModel):
 
     namespace: str = Field(..., pattern=r"^[a-z0-9_]{1,16}$")
     action: str = Field(..., pattern=r"^[a-z0-9_]{1,24}$")
-    arg: int = Field(default=0, ge=0)
+    # Telegram chat ids are negative for groups; supplier/user ids are positive.
+    arg: int = Field(default=0)
     page: int = Field(default=0, ge=0)
 
     @field_validator("namespace", "action")

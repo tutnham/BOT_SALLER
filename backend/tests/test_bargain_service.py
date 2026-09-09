@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    Employee,
     MessageKind,
     MessageOut,
     Quote,
@@ -43,12 +44,13 @@ class _MockTelegram:
 async def _priced_request(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
     supplier_index: int = 0,
 ) -> tuple[Request, Supplier]:
     supplier = seed_suppliers[supplier_index]
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone 17 256GB",
         normalized_json={"model": "iPhone 17", "storage": "256GB"},
         status=RequestStatus.priced,
@@ -82,8 +84,9 @@ async def _priced_request(
 async def test_start_bargain_happy_path(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request, supplier = await _priced_request(db_session, seed_suppliers, 0)
+    request, supplier = await _priced_request(db_session, seed_suppliers, seed_employee, 0)
     telegram = _MockTelegram()
 
     outbound = await start_bargain(
@@ -105,8 +108,9 @@ async def test_start_bargain_happy_path(
 async def test_start_bargain_with_explicit_supplier(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request, _ = await _priced_request(db_session, seed_suppliers, 0)
+    request, _ = await _priced_request(db_session, seed_suppliers, seed_employee, 0)
     chosen = seed_suppliers[1]
     db_session.add(
         SupplierChat(
@@ -144,8 +148,9 @@ async def test_start_bargain_with_explicit_supplier(
 async def test_start_bargain_closed_request_rejected(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request, _ = await _priced_request(db_session, seed_suppliers, 0)
+    request, _ = await _priced_request(db_session, seed_suppliers, seed_employee, 0)
     request.status = RequestStatus.closed
     telegram = _MockTelegram()
 
@@ -162,11 +167,12 @@ async def test_start_bargain_closed_request_rejected(
 async def test_start_bargain_no_quotes(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
     seed_suppliers[0]
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.awaiting_answers,
@@ -188,8 +194,9 @@ async def test_start_bargain_no_quotes(
 async def test_start_bargain_telegram_failure_is_unavailable(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request, supplier = await _priced_request(db_session, seed_suppliers, 0)
+    request, supplier = await _priced_request(db_session, seed_suppliers, seed_employee, 0)
     telegram = _MockTelegram(fail_for={supplier.telegram_id})
 
     with pytest.raises(SupplierUnavailableError):

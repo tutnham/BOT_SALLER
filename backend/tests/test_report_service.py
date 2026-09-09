@@ -95,9 +95,9 @@ async def test_report_service_metrics_and_cache_reuse(
         assert metrics["deals_closed"] == 1
         assert metrics["messages_out_total"] == 1
         assert metrics["messages_in_total"] == 1
-        assert metrics["avg_price_initial"] == 100000.0
-        assert metrics["avg_final_price"] == 95000.0
-        assert metrics["savings_vs_initial"] == 5000.0
+        assert metrics["avg_price_initial"] == "100000.00"
+        assert metrics["avg_final_price"] == "95000.00"
+        assert metrics["savings_vs_initial"] == "5000.00"
         assert metrics["open_requests"] == 0
         assert metrics["top_suppliers"][0]["name"] == "Supp"
 

@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Request, RequestStatus, Supplier
+from app.db.models import Employee, Request, RequestStatus, Supplier
 from app.services.deal_service import (
     DealAlreadyExistsError,
     RequestNotFoundError,
@@ -21,10 +21,11 @@ from app.services.deal_service import (
 async def test_create_deal_closes_request(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone 17 256GB",
         normalized_json={"model": "iPhone 17"},
         status=RequestStatus.priced,
@@ -65,10 +66,11 @@ async def test_create_deal_request_not_found(
 async def test_create_deal_request_closed_rejected(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.closed,
@@ -89,10 +91,11 @@ async def test_create_deal_request_closed_rejected(
 async def test_create_deal_already_exists(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.priced,
@@ -119,10 +122,11 @@ async def test_create_deal_already_exists(
 @pytest.mark.asyncio
 async def test_cancel_request(
     db_session: AsyncSession,
+    seed_employee: Employee,
 ) -> None:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.open,

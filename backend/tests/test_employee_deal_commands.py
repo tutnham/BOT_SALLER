@@ -91,7 +91,7 @@ async def test_setprice_creates_manual_quote(
     assert quote.qty == 2
     assert quote.source.value == "manual"
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("зафиксирована" in txt for txt in group_sends)
     assert any(f"(#{supplier.id})" in txt for txt in group_sends)
 
@@ -116,7 +116,7 @@ async def test_setprice_invalid_command(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("Неверный формат" in txt for txt in group_sends)
 
 
@@ -162,7 +162,7 @@ async def test_deal_closes_request(
     assert deal.final_price == 81000
     assert deal.chosen_supplier_id == supplier.id
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("закрыта" in txt for txt in group_sends)
     assert any(f"(#{supplier.id})" in txt for txt in group_sends)
 
@@ -207,7 +207,7 @@ async def test_deal_rejects_second_deal(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("уже есть сделка" in txt or "закрыта" in txt for txt in group_sends)
 
 
@@ -233,7 +233,7 @@ async def test_deal_request_not_found(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("не найдена" in txt for txt in group_sends)
 
 
@@ -289,7 +289,7 @@ async def test_status_shows_quotes_and_deal(
     )
     assert resp.status_code == 200
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert len(group_sends) == 1
     summary = group_sends[0]
     assert f"Заявка #{request.id}" in summary
@@ -332,7 +332,7 @@ async def test_cancel_request(
     await db_session.refresh(request)
     assert request.status == RequestStatus.cancelled
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("отменена" in txt for txt in group_sends)
 
 
@@ -371,5 +371,5 @@ async def test_cancel_on_closed_rejects(
     await db_session.refresh(request)
     assert request.status == RequestStatus.closed
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("закрыта или отменена" in txt for txt in group_sends)

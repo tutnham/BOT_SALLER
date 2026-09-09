@@ -324,8 +324,10 @@ async def webhook_client(
     mock_llm: MockLLMClient,
     seed_employee: Employee,
     seed_suppliers: list[Supplier],
+    seed_client_group: ClientGroup,
 ) -> AsyncGenerator[AsyncClient, None]:
     """HTTP client with DB session override and mocked Telegram."""
+    assert seed_client_group.active is True
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
@@ -418,10 +420,14 @@ async def engine(test_database_url: str) -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest_asyncio.fixture
 async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    """Each test runs inside a connection-level transaction that is rolled back."""
+    """Each test runs in a connection transaction; handler commits only savepoints."""
     async with engine.connect() as conn:
         trans = await conn.begin()
-        session = AsyncSession(bind=conn, expire_on_commit=False)
+        session = AsyncSession(
+            bind=conn,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
         try:
             yield session
         finally:

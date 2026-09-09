@@ -164,7 +164,7 @@ async def test_ask_template_has_request_id_no_competitor_prices(
     assert request is not None
 
     supplier_sends = [
-        txt for chat_id, txt in mock_telegram.sent if chat_id > 0 and chat_id != seed_group_chat_id
+        txt for chat_id, txt, *_ in mock_telegram.sent if chat_id > 0 and chat_id != seed_group_chat_id
     ]
     assert supplier_sends
     assert all(f"Запрос #{request.id}" in txt for txt in supplier_sends)

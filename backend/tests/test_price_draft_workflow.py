@@ -44,7 +44,7 @@ async def test_draft_created_pending(
         resp = await webhook_client.post(
             "/jobs/morning-price",
             json={},
-            headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+            headers={"X-Webhook-Secret": "test-webhook-secret"},
         )
 
     assert resp.status_code == 200
@@ -82,7 +82,7 @@ async def test_approve_and_reject_transitions(
     # Approve via group command
     resp = await webhook_client.post(
         "/telegram/webhook",
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
         json={
             "update_id": 910001,
             "message": {
@@ -106,7 +106,7 @@ async def test_approve_and_reject_transitions(
     mock_telegram.sent.clear()
     resp2 = await webhook_client.post(
         "/telegram/webhook",
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
         json={
             "update_id": 910002,
             "message": {
@@ -142,7 +142,7 @@ async def test_reject_and_duplicate_protection(
     # Reject via employee DM (D5)
     resp = await webhook_client.post(
         "/telegram/webhook",
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
         json={
             "update_id": 910003,
             "message": {
@@ -161,7 +161,7 @@ async def test_reject_and_duplicate_protection(
     mock_telegram.sent.clear()
     resp2 = await webhook_client.post(
         "/telegram/webhook",
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
         json={
             "update_id": 910004,
             "message": {
