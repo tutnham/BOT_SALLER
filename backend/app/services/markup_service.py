@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -9,32 +10,84 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MarkupRule
 
-_APPLE_MARKERS = (
-    "iphone",
-    "ipad",
-    "macbook",
-    "airpods",
-    "apple watch",
-    "imac",
-    "mac mini",
-    "mac studio",
+# (category, markup_fixed ₽) — most specific categories first in classify_category.
+SEED_MARKUP_RULES: tuple[tuple[str, str], ...] = (
+    ("iphone_17_pro", "800"),
+    ("iphone", "500"),
+    ("airpods", "500"),
+    ("apple_watch", "500"),
+    ("ipad", "500"),
+    ("macbook", "800"),
+    ("samsung_s26_ultra", "800"),
+    ("samsung", "500"),
+    ("playstation", "800"),
+    ("dyson", "800"),
+    ("*", "500"),
 )
-_SAMSUNG_MARKERS = ("samsung", "galaxy", "galaxy tab")
-_PLAYSTATION_MARKERS = ("playstation", "ps5", "ps4", "dualsense")
+
+_IPHONE_RE = re.compile(r"iphone|айфон", re.IGNORECASE)
+_IPHONE_17_PRO_RE = re.compile(
+    r"(?:iphone|айфон).{0,40}17.{0,20}"
+    r"(?:pro\s*max|promax|pro|про\s*макс|промакс|\bпро\b)",
+    re.IGNORECASE,
+)
+_S26_ULTRA_RE = re.compile(
+    r"(?:s|с)\s*26\s*(?:ultra|ультра)",
+    re.IGNORECASE,
+)
+_AIRPODS_RE = re.compile(r"air\s*pods?|эирподс", re.IGNORECASE)
+_WATCH_RE = re.compile(
+    r"apple\s*watch|iwatch|эппл\s*вотч|watch\s*(?:ultra|se|series)",
+    re.IGNORECASE,
+)
+_IPAD_RE = re.compile(r"ipad|айпад", re.IGNORECASE)
+_MACBOOK_RE = re.compile(r"mac\s*book|макбук", re.IGNORECASE)
+_SAMSUNG_RE = re.compile(r"samsung|galaxy|самсунг", re.IGNORECASE)
+_PLAYSTATION_RE = re.compile(
+    r"playstation|play\s*station|ps5|ps4|dualsense|плейстейш|пс5|пс4",
+    re.IGNORECASE,
+)
+_DYSON_RE = re.compile(r"dyson|дайсон", re.IGNORECASE)
 
 
 def classify_category(model: str | None) -> str:
-    """Map model string to markup category: apple / samsung / playstation / *."""
+    """Map model string to a markup_rules.category key."""
     text = (model or "").strip().lower()
     if not text:
         return "*"
-    if any(marker in text for marker in _APPLE_MARKERS):
-        return "apple"
-    if any(marker in text for marker in _SAMSUNG_MARKERS):
+    if _IPHONE_RE.search(text) and _IPHONE_17_PRO_RE.search(text):
+        return "iphone_17_pro"
+    if _IPHONE_RE.search(text):
+        return "iphone"
+    if _S26_ULTRA_RE.search(text):
+        return "samsung_s26_ultra"
+    if _SAMSUNG_RE.search(text):
         return "samsung"
-    if any(marker in text for marker in _PLAYSTATION_MARKERS):
+    if _MACBOOK_RE.search(text):
+        return "macbook"
+    if _AIRPODS_RE.search(text):
+        return "airpods"
+    if _WATCH_RE.search(text) and "galaxy" not in text:
+        return "apple_watch"
+    if _IPAD_RE.search(text):
+        return "ipad"
+    if _PLAYSTATION_RE.search(text):
         return "playstation"
+    if _DYSON_RE.search(text):
+        return "dyson"
     return "*"
+
+
+def seed_markup_rule_rows() -> list[MarkupRule]:
+    """Active fixed-ruble rules matching classify_category keys."""
+    return [
+        MarkupRule(
+            category=category,
+            markup_fixed=Decimal(amount),
+            active=True,
+        )
+        for category, amount in SEED_MARKUP_RULES
+    ]
 
 
 async def load_rules(session: AsyncSession) -> dict[str, MarkupRule]:

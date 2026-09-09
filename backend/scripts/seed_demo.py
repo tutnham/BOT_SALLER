@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -12,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import get_settings
 from app.db.models import ClientGroup, Employee, MarkupRule, Owner, Supplier
+from app.services.markup_service import seed_markup_rule_rows
 
 
 def _env_int(name: str) -> int | None:
@@ -96,17 +96,7 @@ async def _ensure_markup_rules(session: AsyncSession) -> None:
     result = await session.execute(select(MarkupRule.id).limit(1))
     if result.scalar_one_or_none() is not None:
         return
-    session.add_all(
-        [
-            MarkupRule(category="apple", markup_fixed=Decimal("700"), active=True),
-            MarkupRule(
-                category="*",
-                markup_min=Decimal("500"),
-                markup_max=Decimal("1000"),
-                active=True,
-            ),
-        ]
-    )
+    session.add_all(seed_markup_rule_rows())
 
 
 async def seed_demo() -> None:

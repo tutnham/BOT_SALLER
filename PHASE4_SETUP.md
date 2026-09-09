@@ -64,14 +64,22 @@ LLM_API_KEY=
 
 ### 3.1. Правила наценки — таблица `markup_rules`
 
-Минимум одно активное правило с категорией `*` (fallback):
+Минимум одно активное правило с категорией `*` (fallback). Актуальные фиксированные наценки:
 
 ```sql
 INSERT INTO markup_rules (category, markup_fixed, markup_min, markup_max, active)
 VALUES
-  ('apple', 700, NULL, NULL, true),
-  ('samsung', NULL, 500, 1000, true),
-  ('*', NULL, 500, 1000, true);
+  ('iphone_17_pro', 800, NULL, NULL, true),
+  ('iphone', 500, NULL, NULL, true),
+  ('airpods', 500, NULL, NULL, true),
+  ('apple_watch', 500, NULL, NULL, true),
+  ('ipad', 500, NULL, NULL, true),
+  ('macbook', 800, NULL, NULL, true),
+  ('samsung_s26_ultra', 800, NULL, NULL, true),
+  ('samsung', 500, NULL, NULL, true),
+  ('playstation', 800, NULL, NULL, true),
+  ('dyson', 800, NULL, NULL, true),
+  ('*', 500, NULL, NULL, true);
 ```
 
 Логика:

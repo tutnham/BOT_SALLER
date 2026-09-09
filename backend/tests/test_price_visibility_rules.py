@@ -85,8 +85,8 @@ async def test_draft_message_hides_sensitive_fields(
     for fragment in FORBIDDEN_FRAGMENTS:
         assert fragment.lower() not in outgoing.lower()
 
-    # Public price after apple markup 700: 70700
-    assert "70700" in outgoing
+    # Public price after iphone markup 500: 70500
+    assert "70500" in outgoing
     assert "/approve_price" in outgoing
     assert "/reject_price" in outgoing
 

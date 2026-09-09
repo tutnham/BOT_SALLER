@@ -20,9 +20,24 @@ from tests.conftest import MockLLMClient
 
 
 def test_classify_category() -> None:
-    assert classify_category("iPhone 15 Pro") == "apple"
+    assert classify_category("iPhone 15 Pro") == "iphone"
+    assert classify_category("iPhone 13") == "iphone"
+    assert classify_category("iPhone 16") == "iphone"
+    assert classify_category("iPhone 17") == "iphone"
+    assert classify_category("iPhone 17 Pro") == "iphone_17_pro"
+    assert classify_category("iPhone 17 Pro Max") == "iphone_17_pro"
+    assert classify_category("айфон 17 про макс") == "iphone_17_pro"
+    assert classify_category("AirPods Pro") == "airpods"
+    assert classify_category("Apple Watch Ultra") == "apple_watch"
+    assert classify_category("iPad Air") == "ipad"
+    assert classify_category("MacBook Pro 14") == "macbook"
     assert classify_category("Samsung Galaxy S24") == "samsung"
+    assert classify_category("Galaxy S26 Ultra") == "samsung_s26_ultra"
+    assert classify_category("с26 ультра") == "samsung_s26_ultra"
     assert classify_category("PlayStation 5") == "playstation"
+    assert classify_category("Dyson Airwrap") == "dyson"
+    assert classify_category("колонка JBL") == "*"
+    assert classify_category("чехол") == "*"
     assert classify_category("Xiaomi 14") == "*"
 
 
@@ -105,8 +120,8 @@ async def test_min_price_aggregation_and_our_price(
     rules = await load_rules(db_session)
     draft_items = build_draft_items(aggregated, rules, Decimal("500"))
     assert len(draft_items) == 1
-    # apple rule markup_fixed=700
-    assert draft_items[0]["our_price"] == "70700.00"
+    # iphone rule markup_fixed=500
+    assert draft_items[0]["our_price"] == "70500.00"
     assert "min_price" not in draft_items[0]
     assert "markup" not in draft_items[0]
     assert "supplier" not in draft_items[0]

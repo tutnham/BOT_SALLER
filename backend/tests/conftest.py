@@ -281,22 +281,9 @@ async def seed_channel_supplier(db_session: AsyncSession) -> Supplier:
 
 @pytest_asyncio.fixture
 async def seed_markup_rules(db_session: AsyncSession) -> list[MarkupRule]:
-    from decimal import Decimal
+    from app.services.markup_service import seed_markup_rule_rows
 
-    rules = [
-        MarkupRule(
-            category="apple",
-            markup_fixed=Decimal("700"),
-            active=True,
-        ),
-        MarkupRule(
-            category="*",
-            markup_fixed=None,
-            markup_min=Decimal("500"),
-            markup_max=Decimal("1000"),
-            active=True,
-        ),
-    ]
+    rules = seed_markup_rule_rows()
     db_session.add_all(rules)
     await db_session.flush()
     return rules
