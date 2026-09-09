@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -60,7 +58,7 @@ def make_message(
         voice=voice,
         media=media,
         media_group_id=media_group_id,
-        date=date or datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+        date=date or datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         link=link,
     )
 
@@ -89,16 +87,19 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             self.channels = channels_store
 
         async def execute(self, stmt: Any) -> _Result:
-            # Rough routing by table name in compiled string
             sql = str(stmt)
             if "parser_channels" in sql.lower() or "ParserChannel" in sql:
-                purpose_filter = None
-                # return all channels unless we detect purpose — keep simple
                 return _Result(self.channels)
             if "parser_posts" in sql.lower() or "ParserPost" in sql:
                 rows = list(self.posts)
                 return _Result(rows)
             return _Result([])
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
 
         async def close(self) -> None:
             return None

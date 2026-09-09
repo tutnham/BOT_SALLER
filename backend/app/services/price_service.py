@@ -247,6 +247,8 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
         select(RawPrice)
         .where(RawPrice.received_at >= day_start)
         .options(selectinload(RawPrice.parsed_items))
+        .order_by(RawPrice.id.asc())
+        .limit(200)
     )
     raw_prices = list(result.scalars().all())
     inserted = 0

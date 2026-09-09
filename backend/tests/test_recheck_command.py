@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from app.db.models import RequestStatus
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import RequestStatus
+from app.services.request_service import create_request
 
 
 def _employee_command_update(
@@ -69,7 +70,7 @@ async def test_recheck_default_hours_three(
     assert request.recheck_at >= before + timedelta(hours=2, minutes=55)
     assert request.recheck_at <= before + timedelta(hours=3, minutes=5)
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("повторная проверка через 3 ч" in txt for txt in group_sends)
 
 
@@ -152,7 +153,7 @@ async def test_recheck_invalid_hours_rejected(
     assert request.status == original_status
     assert request.recheck_at is None
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("от 2 до 5" in txt for txt in group_sends)
 
 
@@ -188,5 +189,5 @@ async def test_recheck_closed_request_rejected(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("закрыта или отменена" in txt for txt in group_sends)

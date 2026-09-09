@@ -5,6 +5,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import (
     MessageKind,
     MessageOut,
@@ -15,9 +19,6 @@ from app.db.models import (
     Supplier,
 )
 from app.services.request_service import create_request
-from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _employee_command_update(
@@ -167,13 +168,13 @@ async def test_bargain_happy_path_sends_template_and_sets_status(
     assert "85000" not in bargain_out.text
 
     supplier_sends = [
-        txt for cid, txt in mock_telegram.sent if cid == best_supplier.telegram_id
+        txt for cid, txt, *_ in mock_telegram.sent if cid == best_supplier.telegram_id
     ]
     assert len(supplier_sends) == 1
     assert "80000" in supplier_sends[0]
     assert "90000" not in supplier_sends[0]
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any(f"(#{best_supplier.id})" in txt for txt in group_sends)
 
 
@@ -197,7 +198,7 @@ async def test_bargain_missing_request(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("не найдена" in txt for txt in group_sends)
 
 
@@ -233,7 +234,7 @@ async def test_bargain_no_quotes(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("нет предложений" in txt for txt in group_sends)
 
 

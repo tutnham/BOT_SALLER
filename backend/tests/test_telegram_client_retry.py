@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+
 from app.telegram.client import TelegramClient, TelegramSendError
 
 

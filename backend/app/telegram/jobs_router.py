@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
@@ -15,11 +16,14 @@ from app.jobs import (
     run_morning_price,
     run_recheck_due,
 )
-from app.telegram.client import get_telegram_client
+from app.telegram.client import TelegramClientProtocol, get_telegram_client
 from app.telegram.deps import verify_webhook_secret
 from app.utils.job_lock import acquire_job_lock, release_job_lock
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+JobResult = dict[str, Any]
+JobRunner = Callable[[AsyncSession, TelegramClientProtocol], Awaitable[JobResult]]
 
 
 class DailyReportPayload(BaseModel):
@@ -29,8 +33,8 @@ class DailyReportPayload(BaseModel):
 async def _run_locked(
     session: AsyncSession,
     lock_name: str,
-    runner: Any,
-) -> Any:
+    runner: JobRunner,
+) -> JobResult:
     """Run a job under a distributed advisory lock; skip if already running."""
     if not await acquire_job_lock(session, lock_name):
         return {"status": "skipped", "reason": "already_running"}
@@ -44,22 +48,30 @@ async def _run_locked(
 async def daily_report_job(
     payload: DailyReportPayload,
     session: AsyncSession = Depends(get_db),
-) -> dict[str, int | str]:
+) -> JobResult:
+    async def _runner(
+        job_session: AsyncSession,
+        telegram: TelegramClientProtocol,
+    ) -> JobResult:
+        return dict(
+            await run_daily_report(
+                job_session,
+                telegram,
+                period=payload.period,
+            )
+        )
+
     return await _run_locked(
         session,
         f"daily-report-{payload.period}",
-        lambda session, telegram: run_daily_report(
-            session,
-            telegram,
-            period=payload.period,
-        ),
+        _runner,
     )
 
 
 @router.post("/morning-price", dependencies=[Depends(verify_webhook_secret)])
 async def morning_price_job(
     session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> JobResult:
     """Cron entry for §9.5 morning price pipeline. Always 200 when handled."""
     return await _run_locked(
         session,
@@ -71,7 +83,7 @@ async def morning_price_job(
 @router.post("/recheck-due", dependencies=[Depends(verify_webhook_secret)])
 async def recheck_due_job(
     session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> JobResult:
     """Cron entry for §9.4 recheck poller. Always 200 when handled."""
     return await _run_locked(
         session,
@@ -83,7 +95,7 @@ async def recheck_due_job(
 @router.post("/llm-billing-reminder", dependencies=[Depends(verify_webhook_secret)])
 async def llm_billing_reminder_job(
     session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> JobResult:
     """Cron entry for monthly LLM top-up reminder. Always 200 when handled."""
     return await _run_locked(
         session,

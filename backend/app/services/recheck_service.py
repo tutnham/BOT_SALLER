@@ -65,11 +65,14 @@ async def send_due_rechecks(
     """
     now = datetime.now(UTC)
     result = await session.execute(
-        select(Request).where(
+        select(Request)
+        .where(
             Request.status == RequestStatus.needs_recheck,
             Request.recheck_at.is_not(None),
             Request.recheck_at <= now,
         )
+        .order_by(Request.recheck_at.asc())
+        .limit(50)
     )
     due_requests = list(result.scalars().all())
 

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    Employee,
     MessageKind,
     MessageOut,
     Quote,
@@ -17,8 +18,6 @@ from app.db.models import (
     Request,
     RequestStatus,
     Supplier,
-    SupplierChat,
-    SupplierChatType,
 )
 from app.services.recheck_service import (
     InvalidRecheckHoursError,
@@ -43,10 +42,11 @@ class _MockTelegram:
 async def _due_request(
     db_session: AsyncSession,
     supplier: Supplier,
+    seed_employee: Employee,
 ) -> Request:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone 17 256GB",
         normalized_json={"model": "iPhone 17"},
         status=RequestStatus.needs_recheck,
@@ -63,15 +63,6 @@ async def _due_request(
             confidence=1.0,
         )
     )
-    db_session.add(
-        SupplierChat(
-            supplier_id=supplier.id,
-            chat_id=supplier.telegram_id,
-            chat_type=SupplierChatType.private,
-            active=True,
-            is_default=True,
-        )
-    )
     request.recheck_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.flush()
     return request
@@ -81,8 +72,9 @@ async def _due_request(
 async def test_send_due_rechecks_processes_due(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request = await _due_request(db_session, seed_suppliers[0])
+    request = await _due_request(db_session, seed_suppliers[0], seed_employee)
     supplier = seed_suppliers[0]
     telegram = _MockTelegram()
 
@@ -106,9 +98,10 @@ async def test_send_due_rechecks_processes_due(
 async def test_send_due_rechecks_partial_failure(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
+    seed_employee: Employee,
 ) -> None:
-    request1 = await _due_request(db_session, seed_suppliers[0])
-    request2 = await _due_request(db_session, seed_suppliers[1])
+    request1 = await _due_request(db_session, seed_suppliers[0], seed_employee)
+    request2 = await _due_request(db_session, seed_suppliers[1], seed_employee)
     fail_for = {seed_suppliers[0].telegram_id}
     telegram = _MockTelegram(fail_for=fail_for)
 
@@ -128,11 +121,12 @@ async def test_send_due_rechecks_partial_failure(
 @pytest.mark.asyncio
 async def test_send_due_rechecks_skips_without_quote(
     db_session: AsyncSession,
+    seed_employee: Employee,
 ) -> None:
     telegram = _MockTelegram()
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.needs_recheck,
@@ -150,10 +144,11 @@ async def test_send_due_rechecks_skips_without_quote(
 @pytest.mark.asyncio
 async def test_schedule_recheck_valid_hours(
     db_session: AsyncSession,
+    seed_employee: Employee,
 ) -> None:
     request = Request(
         group_chat_id=-100123,
-        employee_id=1,
+        employee_id=seed_employee.id,
         source_text="iPhone",
         normalized_json={"model": "iPhone"},
         status=RequestStatus.priced,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Protocol
 
@@ -273,7 +274,7 @@ class DefaultLLMClient:
             if response.status_code < 500:
                 break
             if attempt < 3:
-                continue
+                await asyncio.sleep(min(2.0, 0.2 * (2 ** (attempt - 1))))
         assert response is not None
         return response
 

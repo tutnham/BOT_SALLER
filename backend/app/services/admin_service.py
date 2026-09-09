@@ -67,9 +67,14 @@ class PriceChannelBusyError(Exception):
     """Telegram price channel already bound to another supplier."""
 
 
+ADMIN_LIST_LIMIT = 200
+
+
 async def list_employees(session: AsyncSession) -> list[Employee]:
     result = await session.execute(
-        select(Employee).order_by(Employee.name.asc(), Employee.id.asc())
+        select(Employee)
+        .order_by(Employee.name.asc(), Employee.id.asc())
+        .limit(ADMIN_LIST_LIMIT)
     )
     return list(result.scalars().all())
 
@@ -106,7 +111,9 @@ async def toggle_employee_active(
 
 async def list_suppliers(session: AsyncSession) -> list[Supplier]:
     result = await session.execute(
-        select(Supplier).order_by(Supplier.name.asc(), Supplier.id.asc())
+        select(Supplier)
+        .order_by(Supplier.name.asc(), Supplier.id.asc())
+        .limit(ADMIN_LIST_LIMIT)
     )
     return list(result.scalars().all())
 
@@ -172,9 +179,9 @@ async def _ensure_private_supplier_chat(
         )
         await session.flush()
 
-    # Remove default flag from any other private chat of the same supplier.
-    for c in chats:
-        if c.chat_id != telegram_id and c.is_default and c.chat_type == SupplierChatType.private:
+    refreshed = await list_supplier_chats(session, supplier.id)
+    for c in refreshed:
+        if c.chat_id != telegram_id and c.is_default:
             c.is_default = False
 
 
@@ -298,20 +305,19 @@ async def bind_pending_chat_as_supplier(
         raise SupplierNotFoundError(supplier_id)
 
     chat_type = SupplierChatType(pending.chat_type.value)
-    session.add(
-        SupplierChat(
-            supplier_id=supplier_id,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            title=pending.title,
-            is_default=False,
-            active=True,
-            bound_by_owner_id=bound_by_owner_id,
-        )
+    chat = SupplierChat(
+        supplier_id=supplier_id,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        title=pending.title,
+        is_default=False,
+        active=True,
+        bound_by_owner_id=bound_by_owner_id,
     )
+    session.add(chat)
     await session.delete(pending)
     await session.flush()
-    return supplier
+    return chat
 
 
 class TelegramIdConflictError(Exception):
@@ -339,11 +345,11 @@ async def _is_telegram_id_busy(
     if employee is not None:
         return True
 
+    supplier_filters = [Supplier.telegram_id == telegram_id]
+    if exclude_supplier_id is not None:
+        supplier_filters.append(Supplier.id != exclude_supplier_id)
     supplier = await session.execute(
-        select(Supplier).where(
-            Supplier.telegram_id == telegram_id,
-            Supplier.id != exclude_supplier_id if exclude_supplier_id is not None else True,
-        ).limit(1)
+        select(Supplier).where(*supplier_filters).limit(1)
     )
     if supplier.scalar_one_or_none() is not None:
         return True
@@ -509,18 +515,18 @@ async def bind_pending_chat_as_client_group(
         existing.active = True
         existing.title = title or existing.title or pending.title
         existing.bound_by_owner_id = bound_by_owner_id
+        group = existing
     else:
-        session.add(
-            ClientGroup(
-                chat_id=chat_id,
-                title=title or pending.title,
-                active=True,
-                bound_by_owner_id=bound_by_owner_id,
-            )
+        group = ClientGroup(
+            chat_id=chat_id,
+            title=title or pending.title,
+            active=True,
+            bound_by_owner_id=bound_by_owner_id,
         )
+        session.add(group)
     await session.delete(pending)
     await session.flush()
-    return existing
+    return group
 
 
 async def list_client_groups(session: AsyncSession) -> list[ClientGroup]:

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import AppSetting, BillingReminder, Owner
+from app.db.models import BillingReminder, Owner
 from app.jobs import run_llm_billing_reminder
 from app.services.app_settings_service import LLM_TOPUP_PRICE_TEXT_KEY, set_setting
 from app.telegram.client import TelegramSendError
@@ -61,7 +62,7 @@ async def test_reminder_records_sent_at_and_chat_ids(
     result = await run_llm_billing_reminder(db_session, mock_telegram)
 
     assert result["status"] == "ok"
-    row = await db_session.get(BillingReminder, 1)
+    row = await db_session.scalar(select(BillingReminder).limit(1))
     assert row is not None
     assert row.sent_at is not None
     assert row.chat_ids == [100100100]
@@ -122,7 +123,7 @@ async def test_reminder_releases_on_total_failure(
     assert result["status"] == "degraded"
 
     # Reservation should be released so a retry can proceed.
-    row = await db_session.get(BillingReminder, 1)
+    row = await db_session.scalar(select(BillingReminder).limit(1))
     assert row is None
 
 
@@ -133,6 +134,7 @@ async def test_reminder_destinations_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://platform.deepseek.com/top_up")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", 700700700)
     monkeypatch.setattr(settings, "admin_alert_chat_id", 400400400)
 
@@ -153,6 +155,7 @@ async def test_reminder_falls_back_to_configured_chat_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://platform.deepseek.com/top_up")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", 700700700)
     monkeypatch.setattr(settings, "admin_alert_chat_id", None)
 
@@ -167,18 +170,20 @@ async def test_reminder_period_key_in_configured_timezone(
     mock_telegram: MockTelegramClient,
     _monkeypatch_settings: None,
 ) -> None:
-    settings = get_settings()
+    get_settings()
 
     # 2026-08-31 23:30 UTC == 2026-09-01 02:30 MSK
     msk_just_after_midnight = datetime(2026, 9, 1, 2, 30, tzinfo=ZoneInfo("Europe/Moscow"))
-    utc_before_midnight = msk_just_after_midnight.astimezone(timezone.utc)
+    utc_before_midnight = msk_just_after_midnight.astimezone(UTC)
 
     with patch("app.jobs.datetime") as mock_dt:
         mock_dt.now.return_value = utc_before_midnight
         result = await run_llm_billing_reminder(db_session, mock_telegram)
 
     assert result["period_key"] == "2026-09"
-    assert (await db_session.get(BillingReminder, 1)).period_key == "2026-09"
+    row = await db_session.scalar(select(BillingReminder).limit(1))
+    assert row is not None
+    assert row.period_key == "2026-09"
 
 
 @pytest.mark.asyncio
@@ -188,6 +193,7 @@ async def test_reminder_no_destinations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
+    monkeypatch.setattr(settings, "llm_topup_payment_url", "https://example.com/pay")
     monkeypatch.setattr(settings, "llm_billing_reminder_chat_id", None)
     monkeypatch.setattr(settings, "admin_alert_chat_id", None)
 

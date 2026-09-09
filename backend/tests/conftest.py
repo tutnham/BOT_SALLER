@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import pytest
@@ -12,7 +14,7 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -31,7 +33,15 @@ os.environ.setdefault("PARSER_API_TOKEN", "test-parser-token")
 os.environ.setdefault("DEFAULT_MARKUP", "500")
 
 from app.config import get_settings  # noqa: E402
-from app.db.models import ClientGroup, Employee, MarkupRule, Owner, Supplier  # noqa: E402
+from app.db.models import (  # noqa: E402
+    ClientGroup,
+    Employee,
+    MarkupRule,
+    Owner,
+    Supplier,
+    SupplierChat,
+    SupplierChatType,
+)
 from app.db.session import get_db  # noqa: E402
 from app.llm.client import set_llm_client  # noqa: E402
 from app.main import app  # noqa: E402
@@ -42,6 +52,12 @@ WEBHOOK_SECRET = "test-webhook-secret"
 TELEGRAM_WEBHOOK_SECRET_TOKEN = "test-telegram-webhook-secret"
 PRICE_APPROVAL_CHAT_ID = -1001111111111
 PRICE_PUBLISH_CHAT_ID = -1002222222222
+_TG_UPDATE_IDS = itertools.count(50_000_000)
+
+
+def next_tg_update_id() -> int:
+    """Monotonic Telegram update_id so leaked update_log rows cannot collide."""
+    return next(_TG_UPDATE_IDS)
 
 
 
@@ -267,6 +283,23 @@ async def seed_suppliers(db_session: AsyncSession) -> list[Supplier]:
     ]
     db_session.add_all(suppliers)
     await db_session.flush()
+    for supplier in suppliers:
+        if (
+            supplier.telegram_id is None
+            or not supplier.active
+            or not supplier.dm_ok
+        ):
+            continue
+        db_session.add(
+            SupplierChat(
+                supplier_id=supplier.id,
+                chat_id=supplier.telegram_id,
+                chat_type=SupplierChatType.private,
+                active=True,
+                is_default=True,
+            )
+        )
+    await db_session.flush()
     return suppliers
 
 
@@ -317,8 +350,10 @@ async def webhook_client(
     mock_llm: MockLLMClient,
     seed_employee: Employee,
     seed_suppliers: list[Supplier],
+    seed_client_group: ClientGroup,
 ) -> AsyncGenerator[AsyncClient, None]:
     """HTTP client with DB session override and mocked Telegram."""
+    assert seed_client_group.active is True
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
@@ -394,8 +429,9 @@ async def engine(test_database_url: str) -> AsyncGenerator[AsyncEngine, None]:
     Avoids asyncpg 'Future attached to a different loop' when pytest-asyncio
     creates a new event loop per test.
     """
-    from app.db import session as session_mod
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db import session as session_mod
 
     eng = create_async_engine(test_database_url, poolclass=NullPool)
     session_mod._engine = eng
@@ -410,10 +446,21 @@ async def engine(test_database_url: str) -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest_asyncio.fixture
 async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    """Each test runs inside a connection-level transaction that is rolled back."""
+    """Rollback after each test; handler ``commit()`` only releases a SAVEPOINT."""
     async with engine.connect() as conn:
         trans = await conn.begin()
+        await conn.begin_nested()
         session = AsyncSession(bind=conn, expire_on_commit=False)
+        await session.execute(text("DELETE FROM update_log"))
+        await session.flush()
+
+        @event.listens_for(session.sync_session, "after_transaction_end")
+        def _restart_savepoint(sync_session, transaction) -> None:  # noqa: ARG001
+            if conn.closed:
+                return
+            if not conn.in_nested_transaction() and conn.sync_connection is not None:
+                conn.sync_connection.begin_nested()
+
         try:
             yield session
         finally:

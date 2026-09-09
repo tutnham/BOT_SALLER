@@ -46,6 +46,6 @@ def _flood_wait_seconds(exc: BaseException) -> int | None:
         return None
     for attr in ("value", "x"):
         val = getattr(exc, attr, None)
-        if isinstance(val, (int, float)):
+        if isinstance(val, int | float):
             return int(val)
     return None

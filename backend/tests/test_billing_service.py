@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import BillingReminder, Owner
+from app.db.models import BillingReminder
 from app.services.app_settings_service import LLM_TOPUP_PRICE_TEXT_KEY, set_setting
 from app.services.billing_service import (
     build_llm_billing_reminder_text,
@@ -115,8 +114,8 @@ async def test_period_key_uses_configured_timezone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(get_settings(), "tz", "Europe/Moscow")
-    utc_dt = datetime(2026, 9, 1, 0, 30, tzinfo=timezone.utc)
+    utc_dt = datetime(2026, 9, 1, 0, 30, tzinfo=UTC)
     assert period_key_for_datetime(utc_dt, get_settings()) == "2026-09"
 
-    utc_dt = datetime(2026, 8, 31, 21, 30, tzinfo=timezone.utc)
+    utc_dt = datetime(2026, 8, 31, 21, 30, tzinfo=UTC)
     assert period_key_for_datetime(utc_dt, get_settings()) == "2026-09"

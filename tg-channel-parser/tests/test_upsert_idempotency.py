@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.db.models import (
-    ParserChannel,
     ParserChannelPurpose,
     ParserContentType,
-    ParserStatus,
 )
 from app.mtproto.upsert import upsert_post
 from tests.conftest import make_message
@@ -51,7 +48,7 @@ async def test_upsert_idempotent_conflict_returns_none() -> None:
 
     async def execute(stmt: Any) -> Any:
         calls["n"] += 1
-        sql = str(stmt)
+        str(stmt)
         # first execute: select channel
         if calls["n"] == 1:
             return _ReturningResult(channel)

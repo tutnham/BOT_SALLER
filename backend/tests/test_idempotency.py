@@ -1,10 +1,11 @@
 """update_log idempotency helpers."""
 
 import pytest
-from app.db.models import UpdateLog
-from app.utils.idempotency import is_duplicate_update, mark_update_processed
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import UpdateLog
+from app.utils.idempotency import is_duplicate_update, mark_update_processed
 
 
 @pytest.mark.asyncio

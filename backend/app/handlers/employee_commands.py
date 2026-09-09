@@ -130,10 +130,14 @@ def _format_quotes_block(quotes: list[Quote]) -> str:
 def _format_deal_block(deal: Deal | None) -> str:
     if deal is None:
         return ""
-    supplier_label = format_supplier_label(
-        deal.chosen_supplier.name if deal.chosen_supplier else None,
-        deal.chosen_supplier_id,
-    )
+    chosen_id = deal.chosen_supplier_id
+    if chosen_id is None:
+        supplier_label = "—"
+    else:
+        supplier_label = format_supplier_label(
+            deal.chosen_supplier.name if deal.chosen_supplier else None,
+            chosen_id,
+        )
     final_price = deal.final_price
     price_text = f"{final_price} ₽" if final_price is not None else "—"
     return f"\nСделка: {supplier_label}, итог {price_text}"

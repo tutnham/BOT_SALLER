@@ -5,11 +5,12 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from app.db.models import Quote, QuoteSource, RequestStatus, Supplier
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Quote, QuoteSource, RequestStatus, Supplier
+from app.services.request_service import create_request
 
 
 def _supplier_reply_update(
@@ -86,7 +87,7 @@ async def test_recheck_changed_price_notifies_group(
     assert quote is not None
     assert quote.price_initial == Decimal("87000")
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("изменилась" in txt and "85000" in txt and "87000" in txt for txt in group_sends)
 
 
@@ -134,7 +135,7 @@ async def test_recheck_unchanged_price_no_change_spam(
     )
     assert resp.status_code == 200
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("85000" in txt for txt in group_sends)
     assert not any("изменилась" in txt for txt in group_sends)
 
@@ -204,6 +205,6 @@ async def test_recheck_low_confidence_no_silent_overwrite(
     assert quote is not None
     assert quote.price_initial == Decimal("85000")
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("неуверенное" in txt for txt in group_sends)
     assert not any("изменилась" in txt for txt in group_sends)

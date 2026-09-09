@@ -6,11 +6,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
-from app.api.pagination import paginate_rows
+from app.api.pagination import decode_cursor, encode_cursor
 from app.db.models import ParserContentType, ParserPost
 from app.db.session import get_db
 
@@ -59,16 +59,33 @@ async def list_posts(
     )
     if from_ is not None:
         stmt = stmt.where(ParserPost.post_date >= from_)
+    cursor_key: tuple[datetime, int] | None = None
+    if cursor is not None:
+        cursor_key = decode_cursor(cursor)
+        stmt = stmt.where(
+            tuple_(ParserPost.post_date, ParserPost.id) > cursor_key
+        )
+    stmt = stmt.limit(limit + 1)
     result = await db.execute(stmt)
     rows = list(result.scalars().all())
-    page_rows, next_cursor = paginate_rows(
-        rows,
-        limit=limit,
-        cursor=cursor,
-        get_post_date=lambda row: row.post_date,
-        get_row_id=lambda row: row.id,
+    # Stub sessions ignore SQL LIMIT/cursor; keep a Python slice for tests.
+    if cursor_key is not None:
+        rows = [
+            row
+            for row in rows
+            if (row.post_date, row.id) > cursor_key
+        ]
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+    next_cursor = (
+        encode_cursor(page_rows[-1].post_date, page_rows[-1].id)
+        if has_more and page_rows
+        else None
     )
-    return PostsPageOut(items=page_rows, next_cursor=next_cursor)
+    return PostsPageOut(
+        items=[PostOut.model_validate(row) for row in page_rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get(

@@ -35,7 +35,7 @@ jobs:
       WEBHOOK_SECRET: test-webhook-secret
       TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
       SCHEDULER_ENABLED: "false"
-      PYTHONPATH: backend
+      PYTHONPATH: ${{ github.workspace }}/backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,20 +47,39 @@ jobs:
           pip install -r backend/requirements.txt
           pip install ruff mypy
       - name: Ruff
-        run: ruff check --config backend/pyproject.toml backend/app backend/tests
+        working-directory: backend
+        run: ruff check app tests
       - name: Mypy
-        run: mypy backend/app --config-file backend/pyproject.toml
+        working-directory: backend
+        run: mypy app --config-file pyproject.toml
       - name: Pytest
-        run: pytest backend/tests -q --rootdir=backend
+        working-directory: backend
+        run: pytest tests -q
 
   tg-channel-parser:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: tg_parser_test
+          POSTGRES_USER: tg_parser
+          POSTGRES_PASSWORD: tg_parser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tg_parser -d tg_parser_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
+      DATABASE_URL: postgresql+asyncpg://tg_parser:tg_parser@localhost:5432/tg_parser_test
+      PARSER_TEST_DATABASE_URL: postgresql+asyncpg://tg_parser:tg_parser@localhost:5432/tg_parser_test
       API_AUTH_TOKEN: test-parser-api-token
       TELEGRAM_API_ID: "12345"
       TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef"
       TELEGRAM_SESSION_STRING: "test-session-string-not-real"
-      PYTHONPATH: tg-channel-parser
+      PYTHONPATH: ${{ github.workspace }}/tg-channel-parser
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,8 +91,14 @@ jobs:
           pip install -r tg-channel-parser/requirements.txt
           pip install ruff mypy
       - name: Ruff
-        run: ruff check --config tg-channel-parser/pyproject.toml tg-channel-parser/app tg-channel-parser/tests
+        working-directory: tg-channel-parser
+        run: ruff check app tests
       - name: Mypy
-        run: mypy tg-channel-parser/app --config-file tg-channel-parser/pyproject.toml
+        working-directory: tg-channel-parser
+        run: mypy app --config-file pyproject.toml
+      - name: Alembic upgrade
+        working-directory: tg-channel-parser
+        run: alembic upgrade head
       - name: Pytest
-        run: pytest tg-channel-parser/tests -q --rootdir=tg-channel-parser
+        working-directory: tg-channel-parser
+        run: pytest tests -q

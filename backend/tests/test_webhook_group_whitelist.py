@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import ClientGroup
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import ClientGroup
 
 
 def _employee_update(*, update_id: int, from_id: int, group_id: int, text: str) -> dict:
@@ -24,10 +25,9 @@ async def test_group_message_ignored_when_group_not_active(
     db_session: AsyncSession,
     seed_employee,
     seed_group_chat_id: int,
+    seed_client_group: ClientGroup,
 ) -> None:
-    db_session.add(
-        ClientGroup(chat_id=seed_group_chat_id, title="Inactive", active=False)
-    )
+    seed_client_group.active = False
     await db_session.flush()
 
     payload = _employee_update(

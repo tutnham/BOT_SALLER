@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import get_settings
 from app.db.models import Supplier
 from app.services.parser_client import ParserClientError, get_posts, list_channels
 from app.services.price_service import ingest_channel_prices
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

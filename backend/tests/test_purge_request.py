@@ -25,6 +25,7 @@ from app.db.models import (
     Supplier,
 )
 from app.telegram.keyboards import CallbackData
+from tests.conftest import next_tg_update_id
 
 OWNER_TG_ID = 300300300
 
@@ -46,10 +47,10 @@ def _callback_payload(
     callback_id: str,
     data: CallbackData,
     *,
-    update_id: int = 200,
+    update_id: int | None = None,
 ) -> dict:
     return {
-        "update_id": update_id,
+        "update_id": next_tg_update_id() if update_id is None else update_id,
         "callback_query": {
             "id": callback_id,
             "from": {"id": owner_id},

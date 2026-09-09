@@ -15,6 +15,7 @@ from app.db.models import (
 )
 from app.services import admin_service
 from app.telegram.keyboards import CallbackData
+from tests.conftest import next_tg_update_id
 
 OWNER_TG_ID = 300300300
 
@@ -28,7 +29,7 @@ def _callback_payload(
     message_id: int = 1,
 ) -> dict:
     return {
-        "update_id": 100,
+        "update_id": next_tg_update_id(),
         "callback_query": {
             "id": callback_id,
             "from": {"id": owner_id},

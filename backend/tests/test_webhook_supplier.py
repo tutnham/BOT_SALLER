@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageIn, MessageOut, RequestStatus, Supplier
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageIn, MessageOut, RequestStatus, Supplier
+from app.services.request_service import create_request
 
 
 def _supplier_reply_update(
@@ -75,7 +76,7 @@ async def test_supplier_reply_with_hash_n_forwards_to_group(
     assert msg_in.raw_text == "Есть, 85000 руб"
 
     group_sends = [
-        txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id
+        txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
     assert supplier.name in group_sends[0]
@@ -114,7 +115,7 @@ async def test_unbound_supplier_reply_saves_null_request_and_prompts(
     assert msg_in.request_id is None
 
     dm_sends = [
-        txt for cid, txt in mock_telegram.sent if cid == supplier.telegram_id
+        txt for cid, txt, *_ in mock_telegram.sent if cid == supplier.telegram_id
     ]
     assert len(dm_sends) == 1
     assert "#N" in dm_sends[0]
@@ -211,4 +212,4 @@ async def test_supplier_cannot_bind_foreign_request_id(
     )
     assert msg_in is not None
     assert msg_in.request_id is None
-    assert any(cid == foreign_supplier.telegram_id for cid, _ in mock_telegram.sent)
+    assert any(cid == foreign_supplier.telegram_id for cid, *_ in mock_telegram.sent)

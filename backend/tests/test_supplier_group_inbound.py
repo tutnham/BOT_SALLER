@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select
-
 from app.db.models import Employee, MessageIn, Supplier, SupplierChat, SupplierChatType
-from app.services.admin_service import add_supplier
 
 SUPPLIER_TG_ID = 200200201
 
@@ -48,7 +46,7 @@ async def test_supplier_reply_in_bound_group(
             chat_id=group_id,
             chat_type=SupplierChatType.supergroup,
             active=True,
-            is_default=True,
+            is_default=False,
         )
     )
     await db_session.flush()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.parsers.regex_parser import parse_supplier_reply
 
 

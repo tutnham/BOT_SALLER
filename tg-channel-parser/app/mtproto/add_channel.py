@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 
 from app.config import get_settings
 from app.db.models import ParserChannelPurpose
@@ -28,11 +27,14 @@ async def _run(channel: str, purpose: ParserChannelPurpose) -> int:
     await client.start()
     try:
         chat = await with_flood_wait(lambda: client.get_chat(channel))
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            raise RuntimeError("telegram_chat_id_missing")
         factory = get_session_factory()
         async with factory() as session:
             row = await upsert_channel(
                 session,
-                channel_id=chat.id,
+                channel_id=int(chat_id),
                 username=getattr(chat, "username", None),
                 title=getattr(chat, "title", None),
                 purpose=purpose,

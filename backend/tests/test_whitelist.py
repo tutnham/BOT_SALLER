@@ -1,9 +1,10 @@
 """Whitelist helpers against owners / employees / suppliers."""
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import Employee, Owner, Supplier
 from app.utils.whitelist import is_employee, is_owner, is_supplier
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

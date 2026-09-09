@@ -30,7 +30,12 @@ class RfqTarget:
 async def chat_role(session: AsyncSession, chat_id: int) -> ChatRole:
     """Classify a chat id as client group, supplier chat, or unknown."""
     result = await session.execute(
-        select(ClientGroup.id).where(ClientGroup.chat_id == chat_id).limit(1)
+        select(ClientGroup.id)
+        .where(
+            ClientGroup.chat_id == chat_id,
+            ClientGroup.active.is_(True),
+        )
+        .limit(1)
     )
     if result.scalar_one_or_none() is not None:
         return "client_group"
@@ -73,10 +78,23 @@ async def resolve_rfq_targets(session: AsyncSession) -> list[RfqTarget]:
 
 async def resolve_target_chat(session: AsyncSession, supplier_id: int) -> int | None:
     """Return the active default chat for a supplier, or fall back to private DM."""
-    supplier = await session.get(Supplier, supplier_id)
-    if supplier is None:
+    exists = await session.get(Supplier, supplier_id)
+    if exists is None:
         return None
-    return _resolve_default_chat(supplier)
+    result = await session.execute(
+        select(SupplierChat).where(
+            SupplierChat.supplier_id == supplier_id,
+            SupplierChat.active.is_(True),
+        )
+    )
+    chats = list(result.scalars().all())
+    defaults = [c for c in chats if c.is_default]
+    if defaults:
+        return defaults[0].chat_id
+    private = [c for c in chats if c.chat_type == SupplierChatType.private]
+    if len(private) == 1:
+        return private[0].chat_id
+    return None
 
 
 async def resolve_supplier_by_chat(
@@ -108,15 +126,3 @@ def _resolve_default_chat(supplier: Supplier) -> int | None:
         return private[0].chat_id
 
     return None
-
-
-async def is_client_group_active(session: AsyncSession, chat_id: int) -> bool:
-    """Backward-compatible client group check.
-
-    If no client groups are configured at all, any group is allowed (legacy
-    behaviour). Once at least one group exists, only registered active groups
-    are accepted.
-    """
-    from app.utils.whitelist import is_client_group_active as _legacy_check
-
-    return await _legacy_check(session, chat_id)

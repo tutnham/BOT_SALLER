@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     listener_reload_interval_seconds: float = 30.0
     media_max_retries: int = 3
     media_retry_backoff_base_seconds: float = 5.0
+    task_stale_processing_minutes: int = 15
+    max_media_bytes: int = 50 * 1024 * 1024
 
     # API
     api_auth_token: str = Field(min_length=1)

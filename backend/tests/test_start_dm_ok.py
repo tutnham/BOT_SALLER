@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageIn, Owner, Supplier
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageIn, Owner, Supplier
 
 
 def _private_update(
@@ -47,7 +48,7 @@ async def test_owner_start_sets_dm_ok(
 
     await db_session.refresh(owner)
     assert owner.dm_ok is True
-    assert any("Доступ к отчётам открыт" in txt for _, txt in mock_telegram.sent)
+    assert any("Доступ к отчётам открыт" in txt for _, txt, *_ in mock_telegram.sent)
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,7 @@ async def test_supplier_start_sets_dm_ok_without_messages_in(
 
     await db_session.refresh(supplier)
     assert supplier.dm_ok is True
-    assert any("поставщик" in txt.lower() for _, txt in mock_telegram.sent)
+    assert any("поставщик" in txt.lower() for _, txt, *_ in mock_telegram.sent)
 
     messages_in = await db_session.scalars(select(MessageIn))
     assert list(messages_in) == []

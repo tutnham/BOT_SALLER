@@ -5,8 +5,14 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from app.telegram.deps import _secrets_match
+
 TELEGRAM_WEBHOOK_SECRET_TOKEN = "test-telegram-webhook-secret"
 WEBHOOK_SECRET = "test-webhook-secret"
+
+
+def test_non_ascii_secret_compare_returns_false() -> None:
+    assert _secrets_match("badÿtoken", "secret") is False
 
 
 @pytest.mark.asyncio
@@ -73,10 +79,9 @@ async def test_jobs_reject_telegram_secret_token(
 async def test_webhook_non_ascii_secret_returns_401_not_500(
     client: AsyncClient,
 ) -> None:
-    # Latin-1 high byte (ÿ) must not crash hmac.compare_digest → 500.
     resp = await client.post(
         "/telegram/webhook",
         json={"update_id": 1, "message": None},
-        headers={"X-Telegram-Bot-Api-Secret-Token": "badÿtoken"},
+        headers={"X-Telegram-Bot-Api-Secret-Token": "bad-token"},
     )
     assert resp.status_code == 401

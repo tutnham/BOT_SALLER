@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -31,7 +31,7 @@ async def test_posts_contract_validates_parser_post(client: AsyncClient) -> None
             id=11,
             channel_id=-1001,
             message_id=4711,
-            post_date=datetime(2026, 7, 30, 6, 0, tzinfo=timezone.utc),
+            post_date=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
             content_type=ParserContentType.text,
             raw_text="iPhone 15 70000",
             message_link="https://t.me/c/1/11",
@@ -66,7 +66,7 @@ async def test_posts_pagination_returns_next_cursor(client: AsyncClient) -> None
                 id=idx + 1,
                 channel_id=-1001,
                 message_id=100 + idx,
-                post_date=datetime(2026, 7, 30, 6, idx, tzinfo=timezone.utc),
+                post_date=datetime(2026, 7, 30, 6, idx, tzinfo=UTC),
                 content_type=ParserContentType.text,
                 raw_text=f"price {idx}",
                 message_link=f"https://t.me/c/1/{100 + idx}",

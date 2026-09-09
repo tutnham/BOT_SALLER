@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     webhook_max_body_bytes: int = 262_144
     max_message_text_len: int = 4000
-    docs_enabled: bool = True
+    docs_enabled: bool = False
 
     @staticmethod
     def _parse_csv_chat_ids(raw: str | None) -> list[int]:

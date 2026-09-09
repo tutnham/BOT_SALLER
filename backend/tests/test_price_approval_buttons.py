@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import ClientGroup, Owner, PriceListDraft
-from app.telegram.keyboards import CallbackData
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.conftest import PRICE_PUBLISH_CHAT_ID, MockTelegramClient
+from app.db.models import Owner, PriceListDraft
+from app.telegram.keyboards import CallbackData
+from tests.conftest import PRICE_PUBLISH_CHAT_ID, MockTelegramClient, next_tg_update_id
 
 
 def _price_callback_payload(
@@ -21,7 +21,7 @@ def _price_callback_payload(
     message_id: int = 42,
 ) -> dict:
     return {
-        "update_id": 920001,
+        "update_id": next_tg_update_id(),
         "callback_query": {
             "id": callback_id,
             "from": {"id": from_id},

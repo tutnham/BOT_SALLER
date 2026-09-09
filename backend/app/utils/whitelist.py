@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ClientGroup, Employee, Owner, Supplier
+from app.db.models import Employee, Owner, Supplier
 
 
 async def is_owner(session: AsyncSession, telegram_id: int) -> bool:
@@ -41,23 +41,6 @@ async def is_supplier(
     if require_active:
         stmt = stmt.where(Supplier.active.is_(True))
     result = await session.execute(stmt.limit(1))
-    return result.scalar_one_or_none() is not None
-
-
-async def is_client_group_active(session: AsyncSession, chat_id: int) -> bool:
-    """True when group chat is registered and active.
-
-    Backward-compatible fallback: if no groups configured yet, allow all groups.
-    """
-    total = await session.execute(select(ClientGroup.id).limit(1))
-    if total.scalar_one_or_none() is None:
-        return True
-    result = await session.execute(
-        select(ClientGroup.id).where(
-            ClientGroup.chat_id == chat_id,
-            ClientGroup.active.is_(True),
-        )
-    )
     return result.scalar_one_or_none() is not None
 
 

@@ -7,6 +7,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import (
     MessageKind,
     MessageOut,
@@ -18,9 +22,6 @@ from app.db.models import (
 )
 from app.services.request_service import create_request
 from app.telegram.client import TelegramSendError
-from httpx import AsyncClient
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def _due_request(
@@ -198,7 +199,7 @@ async def test_recheck_due_skip_without_quote(
     await db_session.refresh(request)
     assert request.recheck_at is None
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("пропущена" in txt for txt in group_sends)
 
 

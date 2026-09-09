@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import MessageOut, Request, RequestStatus
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import MessageOut, Request, RequestStatus
 
 
 def _group_ask_update(

@@ -26,6 +26,9 @@ supplier_chat_type = sa.Enum(
 
 
 def upgrade() -> None:
+    # Alembic default alembic_version.version_num is VARCHAR(32). This revision id is 37 chars.
+    op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
+
     # Add supplier-level RFQ on/off toggle
     op.add_column(
         "suppliers",

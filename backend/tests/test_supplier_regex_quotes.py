@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from app.db.models import Quote, Supplier
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Quote, Supplier
+from app.services.request_service import create_request
 
 
 def _supplier_reply_update(
@@ -79,7 +80,7 @@ async def test_confident_reply_creates_quote_and_structured_message(
     assert quote.confidence >= 0.75
 
     group_sends = [
-        txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id
+        txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
     assert "Наличие:" in group_sends[0]
@@ -132,7 +133,7 @@ async def test_low_confidence_no_quote_low_confidence_template(
     assert quote is None
 
     group_sends = [
-        txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id
+        txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
     assert "[распознавание неуверенное]" in group_sends[0]

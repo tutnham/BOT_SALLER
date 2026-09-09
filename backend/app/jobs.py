@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from loguru import logger
@@ -157,7 +157,7 @@ async def run_llm_billing_reminder(
             "reason": "no_destinations",
         }
 
-    period_key = period_key_for_datetime(datetime.now(timezone.utc), settings)
+    period_key = period_key_for_datetime(datetime.now(UTC), settings)
     reminder_id = await reserve_reminder(session, period_key)
     if reminder_id is None:
         return {

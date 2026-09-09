@@ -5,12 +5,13 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from app.db.models import Deal, Quote, QuoteSource, RequestStatus, Supplier
-from app.parsers.nl_commands import parse_nl_command
-from app.services.request_service import create_request
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Deal, Quote, QuoteSource, RequestStatus, Supplier
+from app.parsers.nl_commands import parse_nl_command
+from app.services.request_service import create_request
 
 
 def _group_nl_update(
@@ -106,7 +107,7 @@ async def test_nl_deal_incomplete_args_clarifies(
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    group_sends = [txt for cid, txt in mock_telegram.sent if cid == seed_group_chat_id]
+    group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
     assert any("Укажите заявку, поставщика и цену" in txt for txt in group_sends)
 
     deals = await db_session.scalars(select(Deal))
