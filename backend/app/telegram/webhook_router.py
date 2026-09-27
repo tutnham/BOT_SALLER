@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.session import get_db
 from app.handlers.admin_menu import handle_admin_callback, handle_admin_message
+from app.handlers.business_events import (
+    handle_business_connection,
+    handle_business_message,
+    handle_deleted_business_messages,
+    handle_edited_business_message,
+)
 from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
 from app.handlers.llm_billing_commands import handle_set_llm_price
@@ -48,6 +54,10 @@ class TelegramWebhookUpdate(BaseModel):
     message: dict[str, Any] | None = None
     callback_query: dict[str, Any] | None = None
     my_chat_member: dict[str, Any] | None = None
+    business_connection: dict[str, Any] | None = None
+    business_message: dict[str, Any] | None = None
+    edited_business_message: dict[str, Any] | None = None
+    deleted_business_messages: dict[str, Any] | None = None
 
 
 def _get_message(update: dict[str, Any]) -> dict[str, Any] | None:
@@ -224,6 +234,18 @@ async def _route_update(
         return await _route_callback(session, update["callback_query"])
     if update.get("my_chat_member") is not None:
         return await _route_my_chat_member(session, update["my_chat_member"])
+    if update.get("business_connection") is not None:
+        return await handle_business_connection(session, update["business_connection"])
+    if update.get("business_message") is not None:
+        return await handle_business_message(
+            session,
+            update["business_message"],
+            telegram=get_telegram_client(),
+        )
+    if update.get("edited_business_message") is not None:
+        return await handle_edited_business_message(update["edited_business_message"])
+    if update.get("deleted_business_messages") is not None:
+        return await handle_deleted_business_messages(update["deleted_business_messages"])
 
     message = _get_message(update)
     if message is not None:
