@@ -53,4 +53,4 @@ This repository houses a dual-service architecture designed to automate hardware
 
 - This repository contains **`backend/`** (Zakupki-Bot) and **`tg-channel-parser/`** (MTProto microservice).
 - Production: backend on Coolify + Supabase; parser on Coolify as private Compose stack (see `СЕРВИСЫ.md`).
-- **Telegram Business channel:** включается в BotFather (Business Mode) + подключение бота к Premium-аккаунту клиента. Код — ветки `business_*` в backend (`business_connections`, `supplier_chats.business_dm`, webhook `business_connection` / `business_message`). MTProto не используется.
+- **Telegram Business channel:** BotFather Business Mode + Premium на аккаунте клиента. Код — backend (`business_connections`, `supplier_chats.business_dm`, webhook). Пошаговый запуск в проде: `TELEGRAM_BUSINESS_SETUP.md`. MTProto не используется.

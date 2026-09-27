@@ -176,7 +176,7 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 - Backend и PostgreSQL должны быть доступны только локально (`127.0.0.1`) и публиковаться наружу через reverse proxy.
 - Применить конфиг `deploy/nginx.conf.example` (rate limits для `/telegram/webhook` и `/jobs/*`, `client_max_body_size 256k`).
 - Использовать только непустые секреты в `.env` (`POSTGRES_PASSWORD`, `WEBHOOK_SECRET`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`).
-- Перед запуском в проде применить миграции: `alembic upgrade head`.
+- Перед запуском в проде применить миграции: `alembic upgrade head` (backend, session Postgres :5432). Канал Telegram Business: см. `TELEGRAM_BUSINESS_SETUP.md` (миграция `0008`, `setWebhook`, BotFather).
 
 ---
 
