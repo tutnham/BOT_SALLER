@@ -140,6 +140,10 @@ async def _dispatch_callback(
         await _send_main_menu(session, telegram, chat_id, message_id=message_id)
         return
 
+    if action == "business_status":
+        await _send_business_status(session, telegram, chat_id, message_id=message_id)
+        return
+
     if action == "suppliers":
         await _send_supplier_list(session, telegram, chat_id, cd.page, message_id=message_id)
         return
@@ -532,6 +536,7 @@ async def _send_main_menu(
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],
+        [menu_button("Business", "business_status")],
     ]
     await _send_or_edit(
         telegram,
@@ -539,6 +544,55 @@ async def _send_main_menu(
         text=render_template("admin_main_menu"),
         message_id=message_id,
         markup=inline_keyboard(rows),
+    )
+
+
+def _yn(value: bool) -> str:
+    return "да" if value else "нет"
+
+
+async def _send_business_status(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    connections = await admin_service.list_business_connections(session)
+    if connections:
+        connections_block = "\n".join(
+            (
+                f"аккаунт {row.tg_user_id}: enabled={_yn(row.is_enabled)}, "
+                f"can_reply={_yn(row.can_reply)}, "
+                f"can_read={_yn(row.can_read_messages)}"
+            )
+            for row in connections
+        )
+    else:
+        connections_block = "нет"
+
+    pairs = await admin_service.list_business_dm_suppliers(session)
+    if pairs:
+        suppliers_block = "\n".join(
+            (
+                f"{supplier.name} (#{supplier.id}): chat_id={chat.chat_id} "
+                f"active={_yn(chat.active)} default={_yn(chat.is_default)}"
+            )
+            for supplier, chat in pairs
+        )
+    else:
+        suppliers_block = "нет"
+
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template(
+            "admin_business_status",
+            connections_block=connections_block,
+            suppliers_block=suppliers_block,
+        ),
+        message_id=message_id,
+        markup=inline_keyboard([[menu_button("В меню", "main_menu")]]),
     )
 
 

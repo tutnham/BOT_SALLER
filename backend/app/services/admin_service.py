@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     AdminDialog,
+    BusinessConnection,
     ClientGroup,
     Employee,
     Owner,
@@ -248,6 +249,7 @@ async def set_supplier_default_chat(
         select(SupplierChat).where(
             SupplierChat.supplier_id == supplier_id,
             SupplierChat.chat_id == chat_id,
+            SupplierChat.chat_type != SupplierChatType.business_dm,
         )
     )
     chat = result.scalar_one_or_none()
@@ -273,6 +275,7 @@ async def toggle_chat_active(
         select(SupplierChat).where(
             SupplierChat.supplier_id == supplier_id,
             SupplierChat.chat_id == chat_id,
+            SupplierChat.chat_type != SupplierChatType.business_dm,
         )
     )
     chat = result.scalar_one_or_none()
@@ -648,4 +651,23 @@ async def unbind_supplier_price_channel(
     supplier.price_channel_username = None
     await session.flush()
     return supplier
+
+
+async def list_business_connections(session: AsyncSession) -> list[BusinessConnection]:
+    result = await session.execute(
+        select(BusinessConnection).order_by(BusinessConnection.tg_user_id.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_business_dm_suppliers(
+    session: AsyncSession,
+) -> list[tuple[Supplier, SupplierChat]]:
+    result = await session.execute(
+        select(Supplier, SupplierChat)
+        .join(SupplierChat, SupplierChat.supplier_id == Supplier.id)
+        .where(SupplierChat.chat_type == SupplierChatType.business_dm)
+        .order_by(Supplier.id.asc(), SupplierChat.id.asc())
+    )
+    return [(row[0], row[1]) for row in result.all()]
 
