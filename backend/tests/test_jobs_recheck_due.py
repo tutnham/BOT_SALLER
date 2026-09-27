@@ -230,10 +230,22 @@ async def test_recheck_due_one_failure_does_not_abort_batch(
 
     original_send = mock_telegram.send_message
 
-    async def flaky_send(chat_id: int, text: str, *, parse_mode: str | None = None) -> int:
+    async def flaky_send(
+        chat_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        business_connection_id: str | None = None,
+        **kwargs: object,
+    ) -> int:
         if chat_id == seed_suppliers[0].telegram_id and f"#{bad.id}" in text:
             raise TelegramSendError("temporary failure")
-        return await original_send(chat_id, text, parse_mode=parse_mode)
+        return await original_send(
+            chat_id,
+            text,
+            parse_mode=parse_mode,
+            business_connection_id=business_connection_id,
+        )
 
     mock_telegram.send_message = AsyncMock(side_effect=flaky_send)
 

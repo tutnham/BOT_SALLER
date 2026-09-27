@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MessageIn, Owner, Supplier
+from app.db.models import MessageIn, Owner, Supplier, SupplierChat, SupplierChatType
 
 
 def _private_update(
@@ -109,6 +109,42 @@ async def test_supplier_start_sets_dm_ok_without_messages_in(
 
     messages_in = await db_session.scalars(select(MessageIn))
     assert list(messages_in) == []
+
+
+@pytest.mark.asyncio
+async def test_supplier_start_still_sets_dm_ok_when_business_dm_exists(
+    webhook_client: AsyncClient,
+    db_session: AsyncSession,
+    seed_suppliers: list[Supplier],
+    mock_telegram,
+) -> None:
+    supplier = seed_suppliers[3]
+    supplier.dm_ok = False
+    db_session.add(
+        SupplierChat(
+            supplier_id=supplier.id,
+            chat_id=supplier.telegram_id or 0,
+            chat_type=SupplierChatType.business_dm,
+            business_connection_id="bc_start",
+            active=True,
+            is_default=False,
+        )
+    )
+    await db_session.flush()
+    mock_telegram.sent.clear()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_private_update(
+            update_id=55009,
+            from_id=supplier.telegram_id or 0,
+            text="/start",
+        ),
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.dm_ok is True
 
 
 @pytest.mark.asyncio

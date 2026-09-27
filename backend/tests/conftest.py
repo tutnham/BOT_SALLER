@@ -27,8 +27,9 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://zakupki:changeme@127.0.0.1:5432/zakupki",
 )
-os.environ.setdefault("PRICE_APPROVAL_CHAT_ID", "-1001111111111")
-os.environ.setdefault("PRICE_PUBLISH_CHAT_IDS", "-1002222222222")
+os.environ["PRICE_APPROVAL_CHAT_ID"] = "-1001111111111"
+os.environ["PRICE_APPROVAL_CHAT_IDS"] = "-1001111111111"
+os.environ["PRICE_PUBLISH_CHAT_IDS"] = "-1002222222222"
 os.environ.setdefault("PARSER_API_TOKEN", "test-parser-token")
 os.environ.setdefault("DEFAULT_MARKUP", "500")
 
@@ -67,6 +68,7 @@ class MockTelegramClient:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str, dict[str, Any] | None]] = []
         self.parse_modes: list[str | None] = []
+        self.business_connection_ids: list[str | None] = []
         self.answer_callbacks: list[tuple[str, str | None, bool]] = []
         self.edited: list[tuple[int, int, str, dict[str, Any] | None]] = []
         self.chats: dict[int, dict[str, Any]] = {}
@@ -79,10 +81,12 @@ class MockTelegramClient:
         *,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+        business_connection_id: str | None = None,
     ) -> int:
         self._next_id += 1
         self.sent.append((chat_id, text, reply_markup))
         self.parse_modes.append(parse_mode)
+        self.business_connection_ids.append(business_connection_id)
         return self._next_id
 
     async def answer_callback_query(

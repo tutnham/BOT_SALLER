@@ -198,4 +198,6 @@ async def test_start_bargain_telegram_failure_is_unavailable(
             )
         )
     ).scalars().all()
-    assert outs == []
+    assert len(outs) == 1
+    assert outs[0].send_status == "failed"
+    assert outs[0].tg_message_id is None

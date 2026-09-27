@@ -29,3 +29,4 @@ Always place code in its designated location based on its responsibility:
 
 1. **Money Type Safety:** Monetary values must use `Decimal` end-to-end. Do not parse or store money via `float`.
 2. **Repository Scope:** `backend/` and `tg-channel-parser/` live in this repository. Deploy parser as a separate Coolify Compose resource; never merge databases or MTProto code into backend.
+3. **Telegram Business channel:** BotFather Business Mode + Premium connection on the client account; implementation lives in backend business branches (`handlers/business_events.py`, `routing_service`, `supplier_delivery`). Do not add MTProto for this channel.

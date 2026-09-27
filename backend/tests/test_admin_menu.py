@@ -108,6 +108,7 @@ async def test_main_menu_has_employees_button(
     markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
     callbacks = _callback_data_from_markup(markup)
     assert any("employees" in data for data in callbacks)
+    assert any("business_status" in data for data in callbacks)
 
 
 @pytest.mark.asyncio
