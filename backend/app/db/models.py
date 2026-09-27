@@ -11,12 +11,14 @@ from sqlalchemy import (
     REAL,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
     func,
@@ -58,6 +60,11 @@ class MessageKind(str, enum.Enum):
     ask = "ask"
     bargain = "bargain"
     recheck = "recheck"
+
+
+class MessageSendStatus(str, enum.Enum):
+    sent = "sent"
+    failed = "failed"
 
 
 def _pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
@@ -137,28 +144,60 @@ class Supplier(Base):
     )
 
 
+class BusinessConnection(Base):
+    """Telegram Business bot connection to a client's Premium account."""
+
+    __tablename__ = "business_connections"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    business_connection_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    can_reply: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("false")
+    )
+    can_read_messages: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("false")
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
+    raw_rights: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class SupplierChatType(str, enum.Enum):
     private = "private"
     group = "group"
     supergroup = "supergroup"
+    business_dm = "business_dm"
 
 
 class SupplierChat(Base):
     __tablename__ = "supplier_chats"
     __table_args__ = (
+        UniqueConstraint("chat_id", "chat_type", name="uq_supplier_chats_chat_id_type"),
         Index(
             "ix_supplier_chats_default",
             "supplier_id",
             unique=True,
             postgresql_where=sa_text("is_default = true"),
         ),
+        Index("ix_supplier_chats_business_connection_id", "business_connection_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     supplier_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("suppliers.id"), nullable=False
     )
-    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_type: Mapped[SupplierChatType] = mapped_column(
         _pg_enum(SupplierChatType, "supplier_chat_type"),
         nullable=False,
@@ -171,6 +210,7 @@ class SupplierChat(Base):
         Boolean, nullable=False, server_default=sa_text("true")
     )
     bound_by_owner_id: Mapped[int | None] = mapped_column(BigInteger)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -275,6 +315,10 @@ class MessageOut(Base):
     __tablename__ = "messages_out"
     __table_args__ = (
         UniqueConstraint("chat_id", "tg_message_id"),
+        CheckConstraint(
+            "send_status IN ('sent', 'failed')",
+            name="ck_messages_out_send_status",
+        ),
         Index("ix_messages_out_request_id", "request_id"),
     )
 
@@ -285,10 +329,17 @@ class MessageOut(Base):
     supplier_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("suppliers.id"), nullable=False
     )
-    tg_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tg_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[MessageKind] = mapped_column(message_kind_enum, nullable=False)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
+    send_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=sa_text("'sent'"),
+    )
+    error_text: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -314,6 +365,7 @@ class MessageIn(Base):
     )
     tg_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
