@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db.models import (
     MessageIn,
     MessageOut,
+    MessageSendStatus,
     Quote,
     QuoteSource,
     Request,
@@ -58,6 +59,7 @@ async def _supplier_has_access_to_request(
             exists().where(
                 MessageOut.request_id == request_id,
                 MessageOut.supplier_id == supplier_id,
+                MessageOut.send_status == MessageSendStatus.sent.value,
             )
         )
     )
@@ -110,6 +112,7 @@ async def _find_last_request_for_supplier(
         .join(MessageOut, MessageOut.request_id == Request.id)
         .where(
             MessageOut.supplier_id == supplier_id,
+            MessageOut.send_status == MessageSendStatus.sent.value,
             Request.status.in_(_ACTIVE_STATUSES),
         )
         .order_by(Request.created_at.desc())
@@ -124,6 +127,7 @@ async def handle_reply(
     message: dict,
     *,
     telegram: TelegramClientProtocol,
+    business_connection_id: str | None = None,
 ) -> str:
     """
     Process supplier private message: bind request, log ``messages_in``, parse regex.
@@ -163,6 +167,7 @@ async def handle_reply(
                 supplier_id=supplier.id,
                 tg_message_id=int(message_id),
                 chat_id=int(chat_id),
+                business_connection_id=business_connection_id,
                 raw_text=raw_text,
             )
         )
@@ -176,6 +181,7 @@ async def handle_reply(
         await telegram.send_message(
             int(chat_id),
             render_template("price_received"),
+            business_connection_id=business_connection_id,
         )
         return "ok"
 
@@ -206,6 +212,7 @@ async def handle_reply(
             supplier_id=supplier.id,
             tg_message_id=int(message_id),
             chat_id=int(chat_id),
+            business_connection_id=business_connection_id,
             raw_text=raw_text,
         )
     )
@@ -215,6 +222,7 @@ async def handle_reply(
         await telegram.send_message(
             int(chat_id),
             render_template("supplier_need_reply"),
+            business_connection_id=business_connection_id,
         )
         return "ok"
 
@@ -222,6 +230,7 @@ async def handle_reply(
         await telegram.send_message(
             int(chat_id),
             render_template("request_not_open", request_id=request.id),
+            business_connection_id=business_connection_id,
         )
         return "ok"
 
