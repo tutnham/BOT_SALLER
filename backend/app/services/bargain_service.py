@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MessageKind, MessageOut, Request, RequestStatus, Supplier
 from app.services.deal_service import RequestNotFoundError, SupplierNotFoundError
 from app.services.quote_service import select_best_quote
-from app.services.routing_service import resolve_target_chat
-from app.telegram.client import TelegramClientProtocol, TelegramSendError
+from app.services.routing_service import resolve_target
+from app.services.supplier_delivery import deliver, is_sent
+from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
 
 BARGAIN_ALLOWED_STATUSES = (
@@ -68,8 +69,8 @@ async def start_bargain(
     if not supplier.active:
         raise SupplierUnavailableError(supplier.id)
 
-    chat_id = await resolve_target_chat(session, supplier.id)
-    if chat_id is None:
+    target = await resolve_target(session, supplier.id)
+    if target is None:
         raise SupplierUnavailableError(supplier.id)
 
     # Commit status change before the external side-effect so a Telegram
@@ -84,19 +85,17 @@ async def start_bargain(
         request_id=request.id,
         target_price=target_price,
     )
-    try:
-        message_id = await telegram.send_message(chat_id, text)
-    except TelegramSendError as exc:
-        raise SupplierUnavailableError(supplier.id) from exc
-
-    outbound = MessageOut(
-        request_id=request.id,
+    outbound = await deliver(
+        session,
+        telegram,
         supplier_id=supplier.id,
-        tg_message_id=message_id,
-        chat_id=chat_id,
+        chat_id=target.chat_id,
         text=text,
         kind=MessageKind.bargain,
+        request_id=request.id,
+        business_connection_id=target.business_connection_id,
     )
-    session.add(outbound)
-    await session.flush()
+    if not is_sent(outbound):
+        await session.commit()
+        raise SupplierUnavailableError(supplier.id)
     return outbound

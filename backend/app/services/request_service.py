@@ -8,7 +8,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageKind, MessageOut, Request, RequestStatus
+from app.db.models import MessageKind, Request, RequestStatus
 from app.llm.client import (
     LLMProviderError,
     get_llm_client,
@@ -17,6 +17,7 @@ from app.llm.client import (
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.request_normalizer import parse_request_text
 from app.services.routing_service import RfqTarget, resolve_rfq_targets
+from app.services.supplier_delivery import deliver, is_sent
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -156,43 +157,58 @@ async def create_request(
     await session.commit()
 
     sent_count = 0
-    sent_messages: list[tuple[int, int, int, str]] = []  # (supplier_id, chat_id, message_id, text)
+    failed_lines: list[str] = []
 
     for target in targets:
         supplier = target.supplier
-        chat_id = target.chat_id
         text = render_template(
             "ask",
             request_id=request.id,
             normalized_json=normalized_json,
         )
-        try:
-            message_id = await telegram.send_message(chat_id, text)
-        except TelegramSendError as exc:
+        outbound = await deliver(
+            session,
+            telegram,
+            supplier_id=supplier.id,
+            chat_id=target.chat_id,
+            text=text,
+            kind=MessageKind.ask,
+            request_id=request.id,
+            business_connection_id=target.business_connection_id,
+        )
+        if is_sent(outbound):
+            sent_count += 1
+        else:
             logger.warning(
                 "Failed to send ask to supplier_id={} chat_id={}: {}",
                 supplier.id,
-                chat_id,
-                exc,
+                target.chat_id,
+                outbound.error_text,
             )
-            continue
-
-        sent_messages.append((supplier.id, chat_id, message_id, text))
-        sent_count += 1
+            failed_lines.append(
+                f"{supplier.name} (#{supplier.id}): {outbound.error_text or 'send_failed'}"
+            )
 
     if sent_count >= 1:
         request.status = RequestStatus.awaiting_answers
 
-    for supplier_id, chat_id, message_id, text in sent_messages:
-        session.add(
-            MessageOut(
-                request_id=request.id,
-                supplier_id=supplier_id,
-                tg_message_id=message_id,
-                chat_id=chat_id,
-                text=text,
-                kind=MessageKind.ask,
+    if failed_lines:
+        try:
+            await telegram.send_message(
+                request.group_chat_id,
+                render_template(
+                    "supplier_delivery_failed",
+                    request_id=request.id,
+                    kind="ask",
+                    failed_block="\n".join(failed_lines),
+                ),
             )
-        )
+        except TelegramSendError as exc:
+            logger.warning(
+                "Failed to notify group about partial ask delivery request_id={}: {}",
+                request.id,
+                exc,
+            )
+
     await session.flush()
     return request, sent_count

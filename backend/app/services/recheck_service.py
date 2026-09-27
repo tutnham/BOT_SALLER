@@ -9,10 +9,11 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MessageKind, MessageOut, Request, RequestStatus
+from app.db.models import MessageKind, Request, RequestStatus
 from app.services.deal_service import RequestNotFoundError, RequestNotOpenError
 from app.services.quote_service import select_best_quote
-from app.services.routing_service import resolve_target_chat
+from app.services.routing_service import resolve_target
+from app.services.supplier_delivery import deliver, is_failed_business_peer, is_sent
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -109,8 +110,8 @@ async def send_due_rechecks(
                     )
                 skipped += 1
             else:
-                chat_id = await resolve_target_chat(session, supplier.id)
-                if chat_id is None:
+                target = await resolve_target(session, supplier.id)
+                if target is None:
                     logger.warning(
                         "Recheck skip request_id={}: no chat for supplier_id={}",
                         request.id,
@@ -120,20 +121,48 @@ async def send_due_rechecks(
                     skipped += 1
                     continue
                 text = render_template("recheck", request_id=request.id)
-                message_id = await telegram.send_message(chat_id, text)
-                session.add(
-                    MessageOut(
-                        request_id=request.id,
-                        supplier_id=supplier.id,
-                        tg_message_id=message_id,
-                        chat_id=chat_id,
-                        text=text,
-                        kind=MessageKind.recheck,
-                    )
+                outbound = await deliver(
+                    session,
+                    telegram,
+                    supplier_id=supplier.id,
+                    chat_id=target.chat_id,
+                    text=text,
+                    kind=MessageKind.recheck,
+                    request_id=request.id,
+                    business_connection_id=target.business_connection_id,
                 )
-                # Keep status needs_recheck until human closes/cancels/deals.
-                request.recheck_at = None
-                processed += 1
+                if not is_sent(outbound):
+                    if is_failed_business_peer(outbound):
+                        request.recheck_at = None
+                        try:
+                            await telegram.send_message(
+                                request.group_chat_id,
+                                render_template(
+                                    "supplier_delivery_failed",
+                                    request_id=request.id,
+                                    kind="recheck",
+                                    failed_block=(
+                                        f"{supplier.name} (#{supplier.id}): "
+                                        f"{outbound.error_text or 'send_failed'}"
+                                    ),
+                                ),
+                            )
+                        except TelegramSendError as notify_exc:
+                            logger.warning(
+                                "Failed to notify group about recheck peer miss "
+                                "request_id={}: {}",
+                                request.id,
+                                notify_exc,
+                            )
+                        skipped += 1
+                    else:
+                        raise TelegramSendError(
+                            outbound.error_text or "telegram_request_failed"
+                        )
+                else:
+                    # Keep status needs_recheck until human closes/cancels/deals.
+                    request.recheck_at = None
+                    processed += 1
         except Exception as exc:
             logger.warning(
                 "Recheck failed request_id={}: {}",

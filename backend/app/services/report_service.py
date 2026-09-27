@@ -128,7 +128,7 @@ async def _collect_metrics(
         await session.execute(
             select(func.count(MessageOut.id))
             .join(Request, Request.id == MessageOut.request_id)
-            .where(*request_filters)
+            .where(*request_filters, MessageOut.send_status == "sent")
         )
     ).scalar_one()
 

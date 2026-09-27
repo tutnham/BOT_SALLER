@@ -101,6 +101,14 @@ TEMPLATES: dict[str, str] = {
         "Заявка #{request_id}: повторная проверка пропущена — "
         "нет доступного поставщика"
     ),
+    "supplier_delivery_failed": (
+        "Заявка #{request_id}: не доставлено ({kind}):\n{failed_block}"
+    ),
+    "admin_business_status": (
+        "Telegram Business\n\n"
+        "Подключения:\n{connections_block}\n\n"
+        "Поставщики с business_dm:\n{suppliers_block}"
+    ),
     "price_changed": (
         "Цена по заявке #{request_id} изменилась: было {old_price} ₽, "
         "стало {new_price} ₽"
@@ -391,6 +399,14 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name in {"price_draft", "price_list_published"}:
         kwargs.setdefault("items_block", kwargs.get("items_block") or "—")
+
+    if name == "supplier_delivery_failed":
+        kwargs.setdefault("failed_block", kwargs.get("failed_block") or "—")
+        kwargs.setdefault("kind", kwargs.get("kind") or "ask")
+
+    if name == "admin_business_status":
+        kwargs.setdefault("connections_block", kwargs.get("connections_block") or "нет")
+        kwargs.setdefault("suppliers_block", kwargs.get("suppliers_block") or "нет")
 
     if name == "admin_supplier_detail":
         kwargs.setdefault("telegram_id", "—")

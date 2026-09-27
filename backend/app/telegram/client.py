@@ -34,6 +34,7 @@ class TelegramClientProtocol(Protocol):
         *,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+        business_connection_id: str | None = None,
     ) -> int:
         """Send text message; return ``message_id``."""
         ...
@@ -158,6 +159,7 @@ class TelegramClient:
         *,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
+        business_connection_id: str | None = None,
     ) -> int:
         """Send text message; return ``message_id``."""
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
@@ -165,6 +167,8 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if business_connection_id is not None:
+            payload["business_connection_id"] = business_connection_id
         result = await self._request("sendMessage", payload, throttle_chat_id=chat_id)
         if not isinstance(result, dict) or "message_id" not in result:
             raise TelegramSendError("telegram_empty_send_result")
@@ -229,6 +233,14 @@ class TelegramClient:
                 return None
             raise
         return result if isinstance(result, dict) else None
+
+
+def is_business_peer_missing(exc: TelegramSendError) -> bool:
+    """True when Bot API rejects send because the peer is outside the 24h window."""
+    if exc.status_code != 400:
+        return False
+    description = (exc.description or "").lower()
+    return "recently" in description or "business_peer_usage_missing" in description
 
 
 def _extract_retry_after_seconds(payload: dict[str, Any]) -> float | None:
