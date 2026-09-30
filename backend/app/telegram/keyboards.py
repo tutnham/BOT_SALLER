@@ -119,3 +119,12 @@ def inline_keyboard(rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
 
 def menu_button(text: str, action: str, arg: int = 0, page: int = 0) -> dict[str, Any]:
     return button(text, cd=CallbackData(namespace="admin", action=action, arg=arg, page=page))
+
+
+def reply_keyboard(rows: list[list[str]]) -> dict[str, Any]:
+    """Persistent reply keyboard. Stays under the input in a private chat."""
+    return {
+        "keyboard": [[{"text": label} for label in row] for row in rows],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }

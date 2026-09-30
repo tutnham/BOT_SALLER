@@ -9,6 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Supplier, SupplierBindToken
 from app.services import admin_service
 from app.telegram.client import TelegramClientProtocol
+from app.telegram.home_buttons import (
+    OWNER_MARKUP,
+    OWNER_MENU,
+    OWNER_REPORT_DAY,
+    OWNER_REPORT_WEEK,
+)
+from app.telegram.keyboards import reply_keyboard
 from app.templates.messages_ru import render_template
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import (
@@ -96,7 +103,20 @@ async def handle_start(
     if owner is not None:
         owner.dm_ok = True
         await session.flush()
-        await telegram.send_message(cid, render_template("owner_start_ok"))
+        await telegram.send_message(
+            cid,
+            render_template("owner_start_ok"),
+            reply_markup=reply_keyboard(
+                [
+                    [OWNER_MENU],
+                    [OWNER_REPORT_DAY, OWNER_REPORT_WEEK],
+                    [OWNER_MARKUP],
+                ]
+            ),
+        )
+        from app.handlers.admin_menu import _send_main_menu
+
+        await _send_main_menu(session, telegram, cid)
         return "ok"
 
     supplier = await get_supplier_by_telegram_id(session, tid)
@@ -108,7 +128,13 @@ async def handle_start(
 
     employee = await get_employee_by_telegram_id(session, tid, require_active=True)
     if employee is not None:
-        await telegram.send_message(cid, render_template("help"))
+        from app.telegram.home_buttons import EMP_MY_REQUESTS, EMP_NEW_REQUEST
+
+        await telegram.send_message(
+            cid,
+            render_template("employee_start_ok"),
+            reply_markup=reply_keyboard([[EMP_NEW_REQUEST], [EMP_MY_REQUESTS]]),
+        )
         return "ok"
 
     return "ignored"
