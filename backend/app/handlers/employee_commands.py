@@ -765,6 +765,19 @@ async def handle_employee_message(
         return "ignored"
     is_private_chat = chat_type == "private"
 
+    from app.handlers.employee_home import handle_employee_home_text
+
+    if await handle_employee_home_text(
+        session,
+        message,
+        chat_id=int(chat_id),
+        employee_id=employee.id,
+        telegram_id=int(telegram_id),
+        is_private_chat=is_private_chat,
+        telegram=telegram,
+    ):
+        return "ok"
+
     if is_help_command(message):
         await telegram.send_message(int(chat_id), render_template("help"))
         return "ok"

@@ -24,6 +24,7 @@ from app.telegram.keyboards import (
     menu_button,
     paginated_keyboard,
 )
+from app.telegram.home_buttons import OWNER_MENU
 from app.templates.messages_ru import render_template
 from app.utils.telegram import (
     extract_message_text,
@@ -101,7 +102,7 @@ async def handle_admin_message(
             session, dialog, owner_id, chat_id, message, telegram
         )
 
-    if text.startswith("/menu") or text.startswith("/admin") or text.startswith("/"):
+    if text == OWNER_MENU or text.startswith("/menu") or text.startswith("/admin") or text.startswith("/"):
         await _send_main_menu(session, telegram, chat_id)
         return "ok"
 
@@ -161,6 +162,24 @@ async def _dispatch_callback(
 
     if action == "main_menu":
         await _send_main_menu(session, telegram, chat_id, message_id=message_id)
+        return
+
+    if action == "report_day":
+        from app.handlers.owner_commands import send_owner_report
+
+        await send_owner_report(session, chat_id=chat_id, period="day", telegram=telegram)
+        return
+
+    if action == "report_week":
+        from app.handlers.owner_commands import send_owner_report
+
+        await send_owner_report(session, chat_id=chat_id, period="week", telegram=telegram)
+        return
+
+    if action == "markup_list":
+        from app.handlers.owner_commands import send_markup_list
+
+        await send_markup_list(session, chat_id=chat_id, telegram=telegram)
         return
 
     if action == "requests":
@@ -737,6 +756,11 @@ async def _send_main_menu(
         [menu_button("Заявки", "requests", page=0)],
         [menu_button("Поставщики", "suppliers", page=0)],
         [menu_button("Сотрудники", "employees", page=0)],
+        [
+            menu_button("Отчёт за день", "report_day"),
+            menu_button("Отчёт за неделю", "report_week"),
+        ],
+        [menu_button("Наценки", "markup_list")],
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],

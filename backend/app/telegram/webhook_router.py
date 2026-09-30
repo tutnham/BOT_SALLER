@@ -20,6 +20,8 @@ from app.handlers.business_events import (
 )
 from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
+from app.handlers.employee_home import employee_waiting_text, handle_employee_callback
+from app.telegram.home_buttons import EMPLOYEE_BUTTONS, OWNER_BUTTONS, OWNER_MENU
 from app.handlers.llm_billing_commands import handle_set_llm_price
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.price_approval import handle_price_callback, handle_price_command
@@ -35,6 +37,7 @@ from app.telegram.keyboards import CallbackData
 from app.utils.idempotency import is_duplicate_update, mark_update_processed
 from app.utils.telegram import extract_message_text
 from app.utils.whitelist import (
+    is_employee,
     is_owner,
     is_supplier,
     resolve_price_approver,
@@ -143,7 +146,13 @@ async def _route_message(
             return "ignored"
         role = await chat_role(session, int(chat_id))
         if role == "client_group":
-            if text.startswith("/") or _is_nl_gated_group_message(message):
+            waiting = await employee_waiting_text(session, int(from_id))
+            if (
+                text.startswith("/")
+                or _is_nl_gated_group_message(message)
+                or text in EMPLOYEE_BUTTONS
+                or waiting
+            ):
                 return await handle_employee_message(session, message, telegram=telegram)
             return "ignored"
         if role == "supplier_chat":
@@ -171,6 +180,31 @@ async def _route_message(
                 )
 
         if await is_owner(session, int(from_id)):
+            if text in OWNER_BUTTONS and not text.startswith("/"):
+                if text == OWNER_MENU:
+                    return await handle_admin_message(session, message, telegram=telegram)
+                from app.handlers.owner_commands import send_markup_list, send_owner_report
+                from app.telegram.home_buttons import (
+                    OWNER_MARKUP,
+                    OWNER_REPORT_DAY,
+                    OWNER_REPORT_WEEK,
+                )
+
+                if text == OWNER_REPORT_DAY:
+                    await send_owner_report(
+                        session, chat_id=int(chat["id"]), period="day", telegram=telegram
+                    )
+                    return "ok"
+                if text == OWNER_REPORT_WEEK:
+                    await send_owner_report(
+                        session, chat_id=int(chat["id"]), period="week", telegram=telegram
+                    )
+                    return "ok"
+                if text == OWNER_MARKUP:
+                    await send_markup_list(
+                        session, chat_id=int(chat["id"]), telegram=telegram
+                    )
+                    return "ok"
             if text.startswith("/menu") or text.startswith("/admin"):
                 return await handle_admin_message(session, message, telegram=telegram)
             if text.startswith("/set_llm_price"):
@@ -184,6 +218,9 @@ async def _route_message(
                 return await handle_admin_message(session, message, telegram=telegram)
             if await admin_service.get_dialog(session, int(from_id)) is not None:
                 return await handle_admin_message(session, message, telegram=telegram)
+
+        if await is_employee(session, int(from_id)):
+            return await handle_employee_message(session, message, telegram=telegram)
 
     return "ignored"
 
@@ -209,6 +246,11 @@ async def _route_callback(
             await telegram.answer_callback_query(callback_id, text="Нет доступа")
             return "ignored"
         return await handle_admin_callback(session, callback_query)
+
+    if cd.namespace == "emp":
+        return await handle_employee_callback(
+            session, callback_query, telegram=telegram
+        )
 
     if cd.namespace == "price":
         if await resolve_price_approver(session, int(from_id)) is None:

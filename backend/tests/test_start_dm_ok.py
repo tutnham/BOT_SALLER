@@ -48,7 +48,15 @@ async def test_owner_start_sets_dm_ok(
 
     await db_session.refresh(owner)
     assert owner.dm_ok is True
-    assert any("Доступ к отчётам открыт" in txt for _, txt, *_ in mock_telegram.sent)
+    assert any("Вы владелец." in txt for _, txt, *_ in mock_telegram.sent)
+    markup = mock_telegram.sent[0][2]
+    assert markup is not None
+    labels = [
+        button["text"]
+        for row in markup["keyboard"]
+        for button in row
+    ]
+    assert "Меню" in labels
 
 
 @pytest.mark.asyncio

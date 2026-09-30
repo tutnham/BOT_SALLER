@@ -425,3 +425,27 @@ async def handle_owner_message(
         parse_mode=TELEGRAM_HTML_PARSE_MODE,
     )
     return "ok"
+
+
+async def send_owner_report(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    period: str,
+    telegram: TelegramClientProtocol,
+) -> None:
+    report_text = await build_report(session, period=period, request_id=None)
+    await telegram.send_message(
+        chat_id,
+        report_text,
+        parse_mode=TELEGRAM_HTML_PARSE_MODE,
+    )
+
+
+async def send_markup_list(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    telegram: TelegramClientProtocol,
+) -> None:
+    await _handle_markup_list(session, chat_id=chat_id, telegram=telegram)
