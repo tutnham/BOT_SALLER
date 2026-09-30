@@ -10,16 +10,23 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     AdminDialog,
     BusinessConnection,
     ClientGroup,
+    Deal,
     Employee,
+    MessageIn,
+    MessageOut,
     Owner,
+    ParsedItem,
     PendingChat,
+    PriceListDraft,
+    Quote,
+    RawPrice,
     Request,
     Supplier,
     SupplierBindToken,
@@ -54,6 +61,15 @@ class EmployeeNotFoundError(Exception):
 
 class DuplicateEmployeeTelegramIdError(Exception):
     """Employee with this telegram_id already exists."""
+
+
+class EmployeeHasRequestsError(Exception):
+    """Employee still owns requests and cannot be hard-deleted."""
+
+    def __init__(self, employee_id: int, request_count: int) -> None:
+        super().__init__(employee_id)
+        self.employee_id = employee_id
+        self.request_count = request_count
 
 
 class BindTokenResult(str, enum.Enum):
@@ -109,6 +125,68 @@ async def toggle_employee_active(
     employee.active = not employee.active
     await session.flush()
     return employee
+
+
+async def delete_employee(session: AsyncSession, employee_id: int) -> Employee:
+    """Hard-delete an employee who has no requests."""
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        raise EmployeeNotFoundError(employee_id)
+
+    count = int(
+        (
+            await session.execute(
+                select(func.count(Request.id)).where(Request.employee_id == employee_id)
+            )
+        ).scalar_one()
+    )
+    if count:
+        raise EmployeeHasRequestsError(employee_id, count)
+
+    await session.execute(
+        update(PriceListDraft)
+        .where(PriceListDraft.approved_by == employee_id)
+        .values(approved_by=None)
+    )
+    await session.delete(employee)
+    await session.flush()
+    return employee
+
+
+async def delete_supplier(session: AsyncSession, supplier_id: int) -> Supplier:
+    """Hard-delete a supplier and dependent rows; leave requests themselves."""
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+
+    raw_ids = (
+        await session.execute(
+            select(RawPrice.id).where(RawPrice.supplier_id == supplier_id)
+        )
+    ).scalars().all()
+    if raw_ids:
+        await session.execute(
+            delete(ParsedItem).where(ParsedItem.raw_price_id.in_(raw_ids))
+        )
+        await session.execute(delete(RawPrice).where(RawPrice.supplier_id == supplier_id))
+
+    await session.execute(delete(Quote).where(Quote.supplier_id == supplier_id))
+    await session.execute(delete(MessageIn).where(MessageIn.supplier_id == supplier_id))
+    await session.execute(delete(MessageOut).where(MessageOut.supplier_id == supplier_id))
+    await session.execute(
+        update(Deal)
+        .where(Deal.chosen_supplier_id == supplier_id)
+        .values(chosen_supplier_id=None)
+    )
+    await session.execute(
+        delete(SupplierChat).where(SupplierChat.supplier_id == supplier_id)
+    )
+    await session.execute(
+        delete(SupplierBindToken).where(SupplierBindToken.supplier_id == supplier_id)
+    )
+    await session.delete(supplier)
+    await session.flush()
+    return supplier
 
 
 async def list_suppliers(session: AsyncSession) -> list[Supplier]:

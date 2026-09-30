@@ -959,3 +959,88 @@ async def test_request_menu_cancel_and_purge(
     gone = await db_session.get(Request, request_id)
     assert gone is None
 
+
+@pytest.mark.asyncio
+async def test_delete_employee_without_requests(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+) -> None:
+    extra = Employee(name="Временный", telegram_id=701701701, active=True)
+    db_session.add(extra)
+    await db_session.flush()
+    extra_id = extra.id
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_del",
+            CallbackData(namespace="admin", action="emp_del", arg=extra_id),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    assert await db_session.get(Employee, extra_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_employee_blocked_when_has_requests(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_employee: Employee,
+    seed_group_chat_id: int,
+    mock_telegram,
+) -> None:
+    db_session.add(
+        Request(
+            group_chat_id=seed_group_chat_id,
+            employee_id=seed_employee.id,
+            source_text="MacBook",
+            status=RequestStatus.open,
+        )
+    )
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_emp_blocked",
+            CallbackData(namespace="admin", action="emp_del", arg=seed_employee.id),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    assert await db_session.get(Employee, seed_employee.id) is not None
+    last_text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    assert "заявок" in last_text
+
+
+@pytest.mark.asyncio
+async def test_delete_supplier_from_menu(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_suppliers: list[Supplier],
+) -> None:
+    supplier = seed_suppliers[3]
+    supplier_id = supplier.id
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_sup_del",
+            CallbackData(namespace="admin", action="sup_del", arg=supplier_id),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    assert await db_session.get(Supplier, supplier_id) is None
+
+

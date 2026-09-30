@@ -254,6 +254,59 @@ async def _dispatch_callback(
         await _send_employee_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
         return
 
+    if action == "emp_del_ask":
+        employee = await session.get(Employee, cd.arg)
+        if employee is None:
+            await _send_employee_list(session, telegram, chat_id, 0, message_id=message_id)
+            return
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template(
+                "admin_employee_delete_confirm",
+                employee_id=employee.id,
+                employee_name=employee.name or "—",
+            ),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [menu_button("Удалить", "emp_del", employee.id)],
+                    [menu_button("Отмена", "employee_detail", employee.id)],
+                ]
+            ),
+        )
+        return
+
+    if action == "emp_del":
+        try:
+            employee = await admin_service.delete_employee(session, cd.arg)
+        except admin_service.EmployeeNotFoundError:
+            await _send_employee_list(session, telegram, chat_id, 0, message_id=message_id)
+            return
+        except admin_service.EmployeeHasRequestsError as exc:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template(
+                    "admin_employee_has_requests",
+                    employee_id=exc.employee_id,
+                    count=exc.request_count,
+                ),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("К сотруднику", "employee_detail", cd.arg)]]
+                ),
+            )
+            return
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_employee_deleted", employee_id=employee.id),
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К сотрудникам", "employees")]]),
+        )
+        return
+
     if action == "supplier_detail":
         await _send_supplier_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
         return
@@ -297,6 +350,44 @@ async def _dispatch_callback(
     if action == "supplier_toggle_rfq":
         await admin_service.toggle_supplier_rfq(session, cd.arg)
         await _send_supplier_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
+        return
+
+    if action == "sup_del_ask":
+        supplier = await session.get(Supplier, cd.arg)
+        if supplier is None:
+            await _send_supplier_list(session, telegram, chat_id, 0, message_id=message_id)
+            return
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template(
+                "admin_supplier_delete_confirm",
+                supplier_id=supplier.id,
+                supplier_name=supplier.name or "—",
+            ),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [menu_button("Удалить", "sup_del", supplier.id)],
+                    [menu_button("Отмена", "supplier_detail", supplier.id)],
+                ]
+            ),
+        )
+        return
+
+    if action == "sup_del":
+        try:
+            supplier = await admin_service.delete_supplier(session, cd.arg)
+        except admin_service.SupplierNotFoundError:
+            await _send_supplier_list(session, telegram, chat_id, 0, message_id=message_id)
+            return
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_supplier_deleted", supplier_id=supplier.id),
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К поставщикам", "suppliers")]]),
+        )
         return
 
     if action == "supplier_chats":
@@ -876,6 +967,7 @@ async def _send_employee_detail(
                 employee_id,
             ),
         ],
+        [menu_button("Удалить", "emp_del_ask", employee_id)],
         [menu_button("К списку", "employees", page=0), menu_button("В меню", "main_menu")],
     ]
     await _send_or_edit(
@@ -940,6 +1032,7 @@ async def _send_supplier_detail(
         [
             menu_button("Чаты поставщика", "supplier_chats", supplier_id),
         ],
+        [menu_button("Удалить", "sup_del_ask", supplier_id)],
         [menu_button("К списку", "suppliers", page=0), menu_button("В меню", "main_menu")],
     ]
     await _send_or_edit(

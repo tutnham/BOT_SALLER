@@ -319,6 +319,19 @@ TEMPLATES: dict[str, str] = {
         "Не удалось определить ID отправителя (скрыт настройками приватности). "
         "Пришлите числовой ID из @userinfobot."
     ),
+    "admin_employee_delete_confirm": (
+        "Удалить сотрудника #{employee_id} {employee_name}?"
+    ),
+    "admin_employee_deleted": "Сотрудник #{employee_id} удалён.",
+    "admin_employee_has_requests": (
+        "Нельзя удалить сотрудника #{employee_id}: на нём {count} заявок. "
+        "Сначала удалите заявки в разделе «Заявки»."
+    ),
+    "admin_supplier_delete_confirm": (
+        "Удалить поставщика #{supplier_id} {supplier_name}? "
+        "Его чаты, котировки и прайсы тоже удалятся."
+    ),
+    "admin_supplier_deleted": "Поставщик #{supplier_id} удалён.",
     "admin_dialog_expired": "Сессия устарела. Начните сначала через /menu.",
     "admin_unknown_command": "Неизвестная команда. Используйте /menu",
     "admin_error": "Ошибка: {detail}",
