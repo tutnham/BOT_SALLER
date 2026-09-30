@@ -328,6 +328,39 @@ async def toggle_supplier_rfq(
     return supplier
 
 
+async def list_supplier_categories(session: AsyncSession, supplier_id: int) -> set[str]:
+    result = await session.execute(
+        select(SupplierCategory.category).where(SupplierCategory.supplier_id == supplier_id)
+    )
+    return set(result.scalars().all())
+
+
+async def toggle_supplier_category(
+    session: AsyncSession,
+    supplier_id: int,
+    category: str,
+) -> set[str]:
+    """Turn one product category on or off for RFQ routing."""
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        raise SupplierNotFoundError(supplier_id)
+    allowed = {item.value for item in ProductCategory}
+    if category not in allowed:
+        raise ValueError(f"unknown category: {category}")
+    existing = await session.scalar(
+        select(SupplierCategory).where(
+            SupplierCategory.supplier_id == supplier_id,
+            SupplierCategory.category == category,
+        )
+    )
+    if existing is None:
+        session.add(SupplierCategory(supplier_id=supplier_id, category=category))
+    else:
+        await session.delete(existing)
+    await session.flush()
+    return await list_supplier_categories(session, supplier_id)
+
+
 async def set_supplier_default_chat(
     session: AsyncSession,
     supplier_id: int,

@@ -11,9 +11,11 @@ from app.db.models import (
     AdminDialog,
     Employee,
     Owner,
+    ProductCategory,
     Request,
     RequestStatus,
     Supplier,
+    SupplierCategory,
     SupplierChat,
     SupplierChatType,
 )
@@ -479,6 +481,51 @@ async def test_toggle_supplier_rfq(
 
     await db_session.refresh(supplier)
     assert supplier.rfq_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_supplier_category_toggle_from_menu(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_suppliers: list[Supplier],
+) -> None:
+    supplier = seed_suppliers[0]
+    open_payload = _callback_payload(
+        OWNER_TG_ID,
+        "cb_cats",
+        CallbackData(namespace="admin", action="sup_cat", arg=supplier.id),
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook", json=open_payload, headers=webhook_headers
+    )
+    assert resp.json()["status"] == "ok"
+
+    toggle_payload = _callback_payload(
+        OWNER_TG_ID,
+        "cb_cat_tog",
+        CallbackData(
+            namespace="admin",
+            action="sup_cat_tog",
+            arg=supplier.id,
+            page=1,
+        ),
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook", json=toggle_payload, headers=webhook_headers
+    )
+    assert resp.json()["status"] == "ok"
+
+    rows = (
+        await db_session.execute(
+            select(SupplierCategory.category).where(
+                SupplierCategory.supplier_id == supplier.id
+            )
+        )
+    ).scalars().all()
+    assert ProductCategory.samsung.value not in set(rows)
+    assert ProductCategory.apple.value in set(rows)
 
 
 @pytest.mark.asyncio

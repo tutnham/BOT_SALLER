@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Employee, PendingChat, RequestStatus, Supplier
+from app.db.models import Employee, PendingChat, ProductCategory, RequestStatus, Supplier
 from app.services import admin_service, parser_client, purge_service
 from app.services.deal_service import RequestNotFoundError, RequestNotOpenError, cancel_request
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
@@ -42,6 +42,18 @@ _REQUEST_STATUS_LABELS = {
     RequestStatus.cancelled: "отменена",
 }
 _MAX_REQUEST_SNIPPET = 48
+_CATEGORY_ORDER: tuple[ProductCategory, ...] = (
+    ProductCategory.apple,
+    ProductCategory.samsung,
+    ProductCategory.power_station,
+    ProductCategory.other,
+)
+_CATEGORY_LABELS = {
+    ProductCategory.apple: "Apple",
+    ProductCategory.samsung: "Samsung",
+    ProductCategory.power_station: "Электростанции",
+    ProductCategory.other: "Прочее",
+}
 
 
 def _cb(action: str, arg: int = 0, page: int = 0) -> CallbackData:
@@ -350,6 +362,27 @@ async def _dispatch_callback(
     if action == "supplier_toggle_rfq":
         await admin_service.toggle_supplier_rfq(session, cd.arg)
         await _send_supplier_detail(session, telegram, chat_id, cd.arg, message_id=message_id)
+        return
+
+    if action == "sup_cat":
+        await _send_supplier_categories(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
+        return
+
+    if action == "sup_cat_tog":
+        if 0 <= cd.page < len(_CATEGORY_ORDER):
+            category = _CATEGORY_ORDER[cd.page]
+            try:
+                await admin_service.toggle_supplier_category(
+                    session, cd.arg, category.value
+                )
+            except admin_service.SupplierNotFoundError:
+                await _send_supplier_list(session, telegram, chat_id, 0, message_id=message_id)
+                return
+        await _send_supplier_categories(
+            session, telegram, chat_id, cd.arg, message_id=message_id
+        )
         return
 
     if action == "sup_del_ask":
@@ -985,6 +1018,15 @@ def _supplier_price_channel_label(supplier: Supplier) -> str:
     return supplier.price_channel_username or str(supplier.price_channel_id)
 
 
+def _categories_label(enabled: set[str]) -> str:
+    labels = [
+        _CATEGORY_LABELS[category]
+        for category in _CATEGORY_ORDER
+        if category.value in enabled
+    ]
+    return ", ".join(labels) if labels else "—"
+
+
 async def _send_supplier_detail(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
@@ -998,6 +1040,7 @@ async def _send_supplier_detail(
         await _send_supplier_list(session, telegram, chat_id, 0, message_id=message_id)
         return
 
+    enabled = await admin_service.list_supplier_categories(session, supplier.id)
     text = render_template(
         "admin_supplier_detail",
         supplier_id=supplier.id,
@@ -1007,6 +1050,7 @@ async def _send_supplier_detail(
         telegram_id=supplier.telegram_id or "—",
         dm_ok=supplier.dm_ok,
         price_channel_label=_supplier_price_channel_label(supplier),
+        categories_label=_categories_label(enabled),
     )
     rows = [
         [
@@ -1015,6 +1059,9 @@ async def _send_supplier_detail(
         ],
         [
             menu_button("📤 RFQ вкл" if supplier.rfq_enabled else "📤 RFQ выкл", "supplier_toggle_rfq", supplier_id),
+        ],
+        [
+            menu_button("📂 Категории", "sup_cat", supplier_id),
         ],
         [
             menu_button("📡 Канал прайса", "supplier_channel", supplier_id),
@@ -1039,6 +1086,46 @@ async def _send_supplier_detail(
         telegram,
         chat_id=chat_id,
         text=text,
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_supplier_categories(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    supplier_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        await _send_supplier_list(session, telegram, chat_id, 0, message_id=message_id)
+        return
+    enabled = await admin_service.list_supplier_categories(session, supplier_id)
+    rows: list[list[dict[str, Any]]] = []
+    for index, category in enumerate(_CATEGORY_ORDER):
+        mark = "✅" if category.value in enabled else "❌"
+        rows.append(
+            [
+                menu_button(
+                    f"{mark} {_CATEGORY_LABELS[category]}",
+                    "sup_cat_tog",
+                    supplier_id,
+                    page=index,
+                )
+            ]
+        )
+    rows.append([menu_button("К поставщику", "supplier_detail", supplier_id)])
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template(
+            "admin_supplier_categories",
+            supplier_id=supplier.id,
+            supplier_name=supplier.name,
+        ),
         message_id=message_id,
         markup=inline_keyboard(rows),
     )

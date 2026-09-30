@@ -216,7 +216,13 @@ TEMPLATES: dict[str, str] = {
         "RFQ включён: {rfq_enabled}\n"
         "Telegram ID: {telegram_id}\n"
         "ЛС открыт (dm_ok): {dm_ok}\n"
-        "Канал прайса: {price_channel_label}"
+        "Канал прайса: {price_channel_label}\n"
+        "Категории заявок: {categories_label}"
+    ),
+    "admin_supplier_categories": (
+        "Категории поставщика #{supplier_id} {supplier_name}\n\n"
+        "Заявка уходит только по включённым категориям.\n"
+        "Нажмите строку, чтобы включить или выключить."
     ),
     "admin_supplier_channel_pick": (
         "Выберите канал прайса для поставщика #{supplier_id}:\n"
@@ -454,5 +460,6 @@ def render_template(name: str, **kwargs: Any) -> str:
         kwargs.setdefault("telegram_id", "—")
         kwargs.setdefault("dm_ok", "—")
         kwargs.setdefault("price_channel_label", "не привязан")
+        kwargs.setdefault("categories_label", "—")
 
     return TEMPLATES[name].format(**kwargs)
