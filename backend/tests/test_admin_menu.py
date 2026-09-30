@@ -11,6 +11,8 @@ from app.db.models import (
     AdminDialog,
     Employee,
     Owner,
+    Request,
+    RequestStatus,
     Supplier,
     SupplierChat,
     SupplierChatType,
@@ -109,6 +111,7 @@ async def test_main_menu_has_employees_button(
     callbacks = _callback_data_from_markup(markup)
     assert any("employees" in data for data in callbacks)
     assert any("business_status" in data for data in callbacks)
+    assert any("requests" in data for data in callbacks)
 
 
 @pytest.mark.asyncio
@@ -890,3 +893,69 @@ async def test_clear_supplier_telegram_id_deactivates_private_chat(
     assert supplier.dm_ok is False
     assert chat.active is False
     assert chat.is_default is False
+
+
+@pytest.mark.asyncio
+async def test_request_menu_cancel_and_purge(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_employee: Employee,
+    seed_group_chat_id: int,
+    mock_telegram,
+) -> None:
+    request = Request(
+        group_chat_id=seed_group_chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro 256",
+        status=RequestStatus.awaiting_answers,
+    )
+    db_session.add(request)
+    await db_session.flush()
+    request_id = request.id
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_req_list",
+            CallbackData(namespace="admin", action="requests", arg=0, page=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    callbacks = _callback_data_from_markup(markup)
+    assert any(f"req_detail:{request_id}:" in data for data in callbacks)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_req_cancel",
+            CallbackData(
+                namespace="admin", action="req_cancel", arg=request_id, page=0
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(request)
+    assert request.status is RequestStatus.cancelled
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_req_purge",
+            CallbackData(
+                namespace="admin", action="req_purge", arg=request_id, page=0
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    gone = await db_session.get(Request, request_id)
+    assert gone is None
+

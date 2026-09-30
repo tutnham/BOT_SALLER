@@ -268,3 +268,36 @@ async def test_business_message_idempotent_replay(
     assert count == 1
     in_count = await db_session.scalar(select(func.count()).select_from(MessageIn))
     assert in_count == 1
+
+
+@pytest.mark.asyncio
+async def test_business_message_without_request_stays_silent(
+    webhook_client: AsyncClient,
+    db_session: AsyncSession,
+    webhook_headers: dict[str, str],
+    mock_telegram,
+) -> None:
+    await _seed_connection(db_session)
+    await add_supplier(db_session, name="BizSilent", telegram_id=620006)
+    mock_telegram.sent.clear()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_business_message_update(
+            update_id=62006,
+            from_id=620006,
+            text="Привет, прайс на сегодня",
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    msg_in = await db_session.scalar(
+        select(MessageIn).where(MessageIn.tg_message_id == 620060)
+    )
+    assert msg_in is not None
+    assert msg_in.request_id is None
+    assert msg_in.business_connection_id == "bc_msg"
+
+    dm_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == 620006]
+    assert dm_sends == []

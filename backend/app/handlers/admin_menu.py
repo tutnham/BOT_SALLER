@@ -13,8 +13,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Employee, PendingChat, Supplier
+from app.db.models import Employee, PendingChat, RequestStatus, Supplier
 from app.services import admin_service, parser_client, purge_service
+from app.services.deal_service import RequestNotFoundError, RequestNotOpenError, cancel_request
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
 from app.telegram.keyboards import (
     CallbackData,
@@ -31,6 +32,16 @@ from app.utils.telegram import (
 from app.utils.whitelist import get_owner_by_telegram_id
 
 _PAGE_SIZE = 8
+_REQUEST_STATUS_LABELS = {
+    RequestStatus.open: "новая",
+    RequestStatus.awaiting_answers: "ждём ответы",
+    RequestStatus.priced: "есть цены",
+    RequestStatus.bargaining: "торг",
+    RequestStatus.needs_recheck: "перепроверка",
+    RequestStatus.closed: "закрыта",
+    RequestStatus.cancelled: "отменена",
+}
+_MAX_REQUEST_SNIPPET = 48
 
 
 def _cb(action: str, arg: int = 0, page: int = 0) -> CallbackData:
@@ -138,6 +149,74 @@ async def _dispatch_callback(
 
     if action == "main_menu":
         await _send_main_menu(session, telegram, chat_id, message_id=message_id)
+        return
+
+    if action == "requests":
+        await _send_request_list(session, telegram, chat_id, cd.page, message_id=message_id)
+        return
+
+    if action == "req_detail":
+        await _send_request_detail(
+            session, telegram, chat_id, cd.arg, list_page=cd.page, message_id=message_id
+        )
+        return
+
+    if action == "req_cancel":
+        try:
+            await cancel_request(session, request_id=cd.arg)
+        except RequestNotFoundError:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("purge_request_not_found", request_id=cd.arg),
+                message_id=message_id,
+                markup=inline_keyboard([[menu_button("К заявкам", "requests")]]),
+            )
+            return
+        except RequestNotOpenError:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_request_already_done", request_id=cd.arg),
+                message_id=message_id,
+                markup=inline_keyboard(
+                    [[menu_button("К заявке", "req_detail", cd.arg, cd.page)]]
+                ),
+            )
+            return
+        await _send_request_detail(
+            session, telegram, chat_id, cd.arg, list_page=cd.page, message_id=message_id
+        )
+        return
+
+    if action == "req_purge_ask":
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_request_purge_confirm", request_id=cd.arg),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [menu_button("Удалить", "req_purge", cd.arg, cd.page)],
+                    [menu_button("Отмена", "req_detail", cd.arg, cd.page)],
+                ]
+            ),
+        )
+        return
+
+    if action == "req_purge":
+        deleted = await purge_service.hard_delete_request(session, cd.arg)
+        text = render_template(
+            "purge_request_ok" if deleted else "purge_request_not_found",
+            request_id=cd.arg,
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=text,
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К заявкам", "requests", page=cd.page)]]),
+        )
         return
 
     if action == "business_status":
@@ -531,6 +610,7 @@ async def _send_main_menu(
 ) -> None:
     count = await _pending_count(session)
     rows = [
+        [menu_button("Заявки", "requests", page=0)],
         [menu_button("Поставщики", "suppliers", page=0)],
         [menu_button("Сотрудники", "employees", page=0)],
         [menu_button("Клиентские беседы", "client_groups")],
@@ -542,6 +622,107 @@ async def _send_main_menu(
         telegram,
         chat_id=chat_id,
         text=render_template("admin_main_menu"),
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+def _request_snippet(source_text: str) -> str:
+    text = " ".join((source_text or "").split())
+    if len(text) <= _MAX_REQUEST_SNIPPET:
+        return text or "—"
+    return text[: _MAX_REQUEST_SNIPPET - 1] + "…"
+
+
+def _request_status_label(status: RequestStatus) -> str:
+    return _REQUEST_STATUS_LABELS.get(status, status.value)
+
+
+def _request_is_open(status: RequestStatus) -> bool:
+    return status not in (RequestStatus.closed, RequestStatus.cancelled)
+
+
+async def _send_request_list(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    page: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    requests = await admin_service.list_requests(session)
+    if not requests:
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_requests_empty"),
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("В меню", "main_menu")]]),
+        )
+        return
+
+    items = [
+        (
+            f"#{row.id} {_request_status_label(row.status)} · {_request_snippet(row.source_text)}",
+            _cb("req_detail", arg=row.id, page=page),
+        )
+        for row in requests
+    ]
+    rows = paginated_keyboard(
+        items,
+        page=page,
+        page_size=_PAGE_SIZE,
+        nav_callback=_cb("requests", page=0),
+    )
+    rows.append([menu_button("В меню", "main_menu")])
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template("admin_requests_list"),
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_request_detail(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    request_id: int,
+    *,
+    list_page: int = 0,
+    message_id: int | None = None,
+) -> None:
+    request = await admin_service.get_request(session, request_id)
+    if request is None:
+        await _send_request_list(
+            session, telegram, chat_id, list_page, message_id=message_id
+        )
+        return
+
+    rows: list[list[dict[str, Any]]] = []
+    if _request_is_open(request.status):
+        rows.append(
+            [menu_button("Завершить", "req_cancel", request.id, list_page)]
+        )
+    rows.append(
+        [menu_button("Удалить", "req_purge_ask", request.id, list_page)]
+    )
+    rows.append(
+        [
+            menu_button("К заявкам", "requests", page=list_page),
+            menu_button("В меню", "main_menu"),
+        ]
+    )
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template(
+            "admin_request_detail",
+            request_id=request.id,
+            status_label=_request_status_label(request.status),
+            source_text=request.source_text or "—",
+        ),
         message_id=message_id,
         markup=inline_keyboard(rows),
     )

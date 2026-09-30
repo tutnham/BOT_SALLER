@@ -20,6 +20,7 @@ from app.db.models import (
     Employee,
     Owner,
     PendingChat,
+    Request,
     Supplier,
     SupplierBindToken,
     SupplierChat,
@@ -651,6 +652,16 @@ async def unbind_supplier_price_channel(
     supplier.price_channel_username = None
     await session.flush()
     return supplier
+
+
+async def list_requests(session: AsyncSession) -> list[Request]:
+    """Newest requests first for the owner menu."""
+    result = await session.execute(select(Request).order_by(Request.id.desc()))
+    return list(result.scalars().all())
+
+
+async def get_request(session: AsyncSession, request_id: int) -> Request | None:
+    return await session.get(Request, request_id)
 
 
 async def list_business_connections(session: AsyncSession) -> list[BusinessConnection]:

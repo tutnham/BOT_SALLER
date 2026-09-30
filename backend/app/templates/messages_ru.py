@@ -165,7 +165,7 @@ TEMPLATES: dict[str, str] = {
         "/cancel {id} — отменить заявку (статус cancelled, данные в БД)\n"
         "/approve_price {draft_id} — утвердить черновик прайса (employee или owner)\n"
         "/reject_price {draft_id} — отклонить черновик прайса (employee или owner)\n"
-        "/menu — управление поставщиками, сотрудниками, беседами и каналами (owner)\n"
+        "/menu — заявки, поставщики, сотрудники, беседы и каналы (owner)\n"
         "/purge_request {id} — удалить заявку из БД навсегда (owner, с подтверждением)\n"
         "/purge_old {days} [limit] [--confirm] — очистка старых cancelled/closed (owner)\n"
         "/help — эта справка"
@@ -174,6 +174,19 @@ TEMPLATES: dict[str, str] = {
     "admin_main_menu": (
         "Администрирование бота\n\n"
         "Выбирайте раздел:"
+    ),
+    "admin_requests_list": "Заявки (новые сверху):",
+    "admin_requests_empty": "Заявок пока нет.",
+    "admin_request_detail": (
+        "Заявка #{request_id}\n"
+        "Статус: {status_label}\n"
+        "Текст: {source_text}"
+    ),
+    "admin_request_purge_confirm": (
+        "Удалить заявку #{request_id} навсегда? Сообщения и котировки тоже удалятся."
+    ),
+    "admin_request_already_done": (
+        "Заявка #{request_id} уже закрыта или отменена."
     ),
     "admin_supplier_list": "Список поставщиков:",
     "admin_supplier_detail": (

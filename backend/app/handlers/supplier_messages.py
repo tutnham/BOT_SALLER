@@ -219,11 +219,9 @@ async def handle_reply(
     await session.flush()
 
     if request is None:
-        await telegram.send_message(
-            int(chat_id),
-            render_template("supplier_need_reply"),
-            business_connection_id=business_connection_id,
-        )
+        # Ordinary supplier DM/group chatter is not an RFQ reply. Stay silent:
+        # sending supplier_need_reply into Business personal chats floods the
+        # owner's conversation with the supplier.
         return "ok"
 
     if request.status in (RequestStatus.closed, RequestStatus.cancelled):
