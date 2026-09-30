@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Quote, QuoteSource, RequestStatus, Supplier
+from app.db.models import MessageKind, MessageOut, Quote, QuoteSource, RequestStatus, Supplier
 from app.services.request_service import create_request
 
 
@@ -18,20 +18,46 @@ def _supplier_reply_update(
     update_id: int,
     supplier_telegram_id: int,
     text: str,
-    reply_to_text: str | None = None,
+    reply_to_message_id: int,
+    reply_to_text: str,
 ) -> dict:
     message: dict = {
         "message_id": update_id * 10,
         "from": {"id": supplier_telegram_id, "first_name": "Supplier"},
         "chat": {"id": supplier_telegram_id, "type": "private"},
         "text": text,
-    }
-    if reply_to_text is not None:
-        message["reply_to_message"] = {
-            "message_id": update_id * 10 - 1,
+        "reply_to_message": {
+            "message_id": reply_to_message_id,
             "text": reply_to_text,
-        }
+        },
+    }
     return {"update_id": update_id, "message": message}
+
+
+async def _seed_recheck_outbound(
+    db_session: AsyncSession,
+    *,
+    request_id: int,
+    supplier_id: int,
+    supplier_telegram_id: int,
+    reply_message_id: int,
+) -> str:
+    recheck_text = (
+        f"Уточните, пожалуйста, актуальна ли цена по заявке #{request_id}?"
+    )
+    db_session.add(
+        MessageOut(
+            request_id=request_id,
+            supplier_id=supplier_id,
+            tg_message_id=reply_message_id,
+            chat_id=supplier_telegram_id,
+            text=recheck_text,
+            kind=MessageKind.recheck,
+            send_status="sent",
+        )
+    )
+    await db_session.flush()
+    return recheck_text
 
 
 @pytest.mark.asyncio
@@ -65,11 +91,20 @@ async def test_recheck_changed_price_notifies_group(
     mock_telegram.sent.clear()
 
     assert supplier.telegram_id is not None
+    reply_message_id = 53001 * 10 - 1
+    recheck_text = await _seed_recheck_outbound(
+        db_session,
+        request_id=request.id,
+        supplier_id=supplier.id,
+        supplier_telegram_id=int(supplier.telegram_id),
+        reply_message_id=reply_message_id,
+    )
     payload = _supplier_reply_update(
         update_id=53001,
         supplier_telegram_id=supplier.telegram_id,
         text="Сейчас 87000",
-        reply_to_text=f"Уточните, пожалуйста, актуальна ли цена по заявке #{request.id}?",
+        reply_to_message_id=reply_message_id,
+        reply_to_text=recheck_text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -122,11 +157,20 @@ async def test_recheck_unchanged_price_no_change_spam(
     mock_telegram.sent.clear()
 
     assert supplier.telegram_id is not None
+    reply_message_id = 53002 * 10 - 1
+    recheck_text = await _seed_recheck_outbound(
+        db_session,
+        request_id=request.id,
+        supplier_id=supplier.id,
+        supplier_telegram_id=int(supplier.telegram_id),
+        reply_message_id=reply_message_id,
+    )
     payload = _supplier_reply_update(
         update_id=53002,
         supplier_telegram_id=supplier.telegram_id,
         text="Цена та же 85000",
-        reply_to_text=f"Уточните, пожалуйста, актуальна ли цена по заявке #{request.id}?",
+        reply_to_message_id=reply_message_id,
+        reply_to_text=recheck_text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -183,11 +227,20 @@ async def test_recheck_low_confidence_no_silent_overwrite(
     }
 
     assert supplier.telegram_id is not None
+    reply_message_id = 53003 * 10 - 1
+    recheck_text = await _seed_recheck_outbound(
+        db_session,
+        request_id=request.id,
+        supplier_id=supplier.id,
+        supplier_telegram_id=int(supplier.telegram_id),
+        reply_message_id=reply_message_id,
+    )
     payload = _supplier_reply_update(
         update_id=53003,
         supplier_telegram_id=supplier.telegram_id,
         text="ну примерно как обычно по рынку",
-        reply_to_text=f"Уточните, пожалуйста, актуальна ли цена по заявке #{request.id}?",
+        reply_to_message_id=reply_message_id,
+        reply_to_text=recheck_text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -206,5 +259,5 @@ async def test_recheck_low_confidence_no_silent_overwrite(
     assert quote.price_initial == Decimal("85000")
 
     group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
-    assert any("неуверенное" in txt for txt in group_sends)
+    assert any("Комментарий:" in txt for txt in group_sends)
     assert not any("изменилась" in txt for txt in group_sends)

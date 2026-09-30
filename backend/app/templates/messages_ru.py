@@ -5,13 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 TEMPLATES: dict[str, str] = {
-    "ask": (
-        "Запрос #{request_id}\n"
-        "{model} {storage} {color} {region} {sim}\n"
-        "Количество: {qty}\n"
-        "Уточните, пожалуйста: наличие, актуальную цену, минимальную цену продажи.\n"
-        "Ответьте на это сообщение (reply)."
-    ),
+    "ask": ("Запрос #{request_id}\n{source_text}"),
     "bargain": (
         "По заявке #{request_id} — есть возможность сделать цену {target_price} ₽?\n"
         "Ответьте на это сообщение (reply)."
@@ -26,16 +20,17 @@ TEMPLATES: dict[str, str] = {
         "Пожалуйста, ответьте на сообщение с номером заявки (#N)"
     ),
     "supplier_quote_parsed": (
-        "От: {supplier_label} · Заявка #{request_id}\n"
+        "По вашему запросу · Заявка #{request_id}\n"
         "Наличие: {available_text}\n"
         "Цена: {price_text}\n"
-        "Кол-во: {qty_text}\n"
-        "{raw_text}"
+        "Кол-во: {qty_text}"
     ),
     "supplier_low_confidence": (
-        "От: {supplier_label} · Заявка #{request_id}\n"
-        "[распознавание неуверенное]\n"
-        "{raw_text}"
+        "По вашему запросу · Заявка #{request_id}\n"
+        "Наличие: —\n"
+        "Цена: —\n"
+        "Кол-во: —\n"
+        "Комментарий: {raw_text}"
     ),
     "deal_closed": (
         "Заявка #{request_id} закрыта. Поставщик: {supplier_label}. "
@@ -354,8 +349,6 @@ TEMPLATES: dict[str, str] = {
 
 _SUPPLIER_LABEL_TEMPLATES = frozenset(
     {
-        "supplier_quote_parsed",
-        "supplier_low_confidence",
         "deal_closed",
         "setprice_ok",
         "bargain_sent",
@@ -409,10 +402,7 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name == "ask":
         kwargs.setdefault("request_id", kwargs.get("request_id", ""))
-        for field in ("model", "storage", "color", "region", "sim"):
-            kwargs.setdefault(field, _format_field(normalized.get(field)))
-        qty = normalized.get("qty")
-        kwargs.setdefault("qty", str(qty) if qty is not None else "—")
+        kwargs.setdefault("source_text", (kwargs.get("source_text") or "").strip())
 
     if name == "supplier_quote_parsed":
         kwargs.setdefault("available_text", _format_available(kwargs.pop("available", None)))

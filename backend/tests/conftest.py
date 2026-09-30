@@ -61,6 +61,25 @@ def next_tg_update_id() -> int:
     return next(_TG_UPDATE_IDS)
 
 
+async def load_supplier_outbound(
+    session: AsyncSession,
+    *,
+    request_id: int,
+    supplier_id: int,
+) -> "MessageOut":
+    from app.db.models import MessageOut
+    from sqlalchemy import select
+
+    outbound = await session.scalar(
+        select(MessageOut).where(
+            MessageOut.request_id == request_id,
+            MessageOut.supplier_id == supplier_id,
+        )
+    )
+    assert outbound is not None
+    assert outbound.tg_message_id is not None
+    return outbound
+
 
 class MockTelegramClient:
     """Records outbound messages; returns monotonic fake message ids."""

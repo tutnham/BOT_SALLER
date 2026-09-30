@@ -164,7 +164,7 @@ async def create_request(
         text = render_template(
             "ask",
             request_id=request.id,
-            normalized_json=normalized_json,
+            source_text=source_text,
         )
         outbound = await deliver(
             session,

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Quote, Supplier
 from app.services.request_service import create_request
+from tests.conftest import load_supplier_outbound
 
 
 def _supplier_reply_update(
@@ -14,6 +15,7 @@ def _supplier_reply_update(
     update_id: int,
     supplier_telegram_id: int,
     text: str,
+    reply_to_message_id: int,
     reply_to_text: str,
 ) -> dict:
     return {
@@ -23,7 +25,10 @@ def _supplier_reply_update(
             "from": {"id": supplier_telegram_id, "first_name": "Supplier"},
             "chat": {"id": supplier_telegram_id, "type": "private"},
             "text": text,
-            "reply_to_message": {"message_id": update_id * 10 - 1, "text": reply_to_text},
+            "reply_to_message": {
+                "message_id": reply_to_message_id,
+                "text": reply_to_text,
+            },
         },
     }
 
@@ -60,12 +65,16 @@ async def test_ambiguous_reply_uses_llm_and_writes_llm_source(
 
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
+    outbound = await load_supplier_outbound(
+        db_session, request_id=request.id, supplier_id=supplier.id
+    )
 
     payload = _supplier_reply_update(
         update_id=51001,
         supplier_telegram_id=supplier.telegram_id,
         text="Уточню позже, но да",
-        reply_to_text=f"Запрос #{request.id}",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -115,19 +124,24 @@ async def test_same_text_hits_cache_and_skips_second_llm_call(
 
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
+    outbound = await load_supplier_outbound(
+        db_session, request_id=request.id, supplier_id=supplier.id
+    )
     text = "Сейчас точных цифр нет, но подтверждаю"
 
     first = _supplier_reply_update(
         update_id=51002,
         supplier_telegram_id=supplier.telegram_id,
         text=text,
-        reply_to_text=f"Запрос #{request.id}",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     second = _supplier_reply_update(
         update_id=51003,
         supplier_telegram_id=supplier.telegram_id,
         text=text,
-        reply_to_text=f"Запрос #{request.id}",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     headers = {"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"}
     assert (await webhook_client.post("/telegram/webhook", json=first, headers=headers)).status_code == 200
@@ -158,12 +172,16 @@ async def test_regex_price_reply_skips_llm(
 
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
+    outbound = await load_supplier_outbound(
+        db_session, request_id=request.id, supplier_id=supplier.id
+    )
 
     payload = _supplier_reply_update(
         update_id=51004,
         supplier_telegram_id=supplier.telegram_id,
         text="Есть, 65000 руб, кол-во 2",
-        reply_to_text=f"Запрос #{request.id}",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",

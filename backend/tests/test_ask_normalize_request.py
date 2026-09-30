@@ -168,5 +168,7 @@ async def test_ask_template_has_request_id_no_competitor_prices(
     ]
     assert supplier_sends
     assert all(f"Запрос #{request.id}" in txt for txt in supplier_sends)
+    assert all(source in txt for txt in supplier_sends)
+    assert all("Уточните, пожалуйста" not in txt for txt in supplier_sends)
     assert all("85000" not in txt for txt in supplier_sends)
     assert all("82000" not in txt for txt in supplier_sends)

@@ -93,6 +93,8 @@ async def test_employee_ask_creates_request_and_messages_out(
     ]
     assert len(supplier_sends) == seed_supplier_count
     assert all(f"Запрос #{request.id}" in txt for _, txt in supplier_sends)
+    assert all("iPhone 17 Pro 256" in txt for _, txt in supplier_sends)
+    assert all("Уточните, пожалуйста" not in txt for _, txt in supplier_sends)
 
 
 @pytest.mark.asyncio

@@ -47,6 +47,7 @@ def _business_message_update(
     from_id: int,
     text: str,
     connection_id: str = "bc_msg",
+    reply_to_message_id: int | None = None,
     reply_to_text: str | None = None,
     sender_business_bot: bool = False,
 ) -> dict:
@@ -59,11 +60,11 @@ def _business_message_update(
     }
     if sender_business_bot:
         message["sender_business_bot"] = {"id": 1, "is_bot": True}
-    if reply_to_text is not None:
+    if reply_to_message_id is not None:
         message["reply_to_message"] = {
-            "message_id": update_id * 10 - 1,
+            "message_id": reply_to_message_id,
             "from": {"id": 1, "is_bot": True},
-            "text": reply_to_text,
+            "text": reply_to_text or "",
         }
     return {"update_id": update_id, "business_message": message}
 
@@ -106,6 +107,7 @@ async def test_business_message_reply_creates_quote(
             update_id=62001,
             from_id=620001,
             text="Есть, 77000 руб",
+            reply_to_message_id=1,
             reply_to_text=f"Запрос #{request.id}",
         ),
         headers=webhook_headers,
@@ -136,7 +138,7 @@ async def test_business_message_reply_creates_quote(
 
 
 @pytest.mark.asyncio
-async def test_business_message_without_reply_uses_last_request(
+async def test_business_message_without_reply_does_not_bind_request(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
     webhook_headers: dict[str, str],
@@ -177,8 +179,7 @@ async def test_business_message_without_reply_uses_last_request(
     )
     assert resp.json()["status"] == "ok"
     quote = await db_session.scalar(select(Quote).where(Quote.request_id == request.id))
-    assert quote is not None
-    assert quote.supplier_id == supplier.id
+    assert quote is None
 
 
 @pytest.mark.asyncio
@@ -254,6 +255,7 @@ async def test_business_message_idempotent_replay(
         update_id=62005,
         from_id=620003,
         text="Есть, 66000 руб",
+        reply_to_message_id=3,
         reply_to_text=f"Запрос #{request.id}",
     )
     first = await webhook_client.post(

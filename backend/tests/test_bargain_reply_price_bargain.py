@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Deal,
+    MessageKind,
+    MessageOut,
     Quote,
     QuoteSource,
     RequestStatus,
@@ -24,7 +26,8 @@ def _supplier_reply_update(
     update_id: int,
     supplier_telegram_id: int,
     text: str,
-    reply_to_text: str | None = None,
+    reply_to_message_id: int,
+    reply_to_text: str,
 ) -> dict:
     message: dict = {
         "message_id": update_id * 10,
@@ -32,11 +35,10 @@ def _supplier_reply_update(
         "chat": {"id": supplier_telegram_id, "type": "private"},
         "text": text,
     }
-    if reply_to_text is not None:
-        message["reply_to_message"] = {
-            "message_id": update_id * 10 - 1,
-            "text": reply_to_text,
-        }
+    message["reply_to_message"] = {
+        "message_id": reply_to_message_id,
+        "text": reply_to_text,
+    }
     return {"update_id": update_id, "message": message}
 
 
@@ -71,11 +73,29 @@ async def test_bargain_reply_sets_price_bargain_no_deal(
     mock_telegram.sent.clear()
 
     assert supplier.telegram_id is not None
+    bargain_reply_id = 51001 * 10 - 1
+    bargain_text = (
+        f"По заявке #{request.id} — есть возможность сделать цену 80000 ₽?"
+    )
+    db_session.add(
+        MessageOut(
+            request_id=request.id,
+            supplier_id=supplier.id,
+            tg_message_id=bargain_reply_id,
+            chat_id=int(supplier.telegram_id),
+            text=bargain_text,
+            kind=MessageKind.bargain,
+            send_status="sent",
+        )
+    )
+    await db_session.flush()
+
     payload = _supplier_reply_update(
         update_id=51001,
         supplier_telegram_id=supplier.telegram_id,
         text="Могу 80000",
-        reply_to_text=f"По заявке #{request.id} — есть возможность сделать цену 80000 ₽?",
+        reply_to_message_id=bargain_reply_id,
+        reply_to_text=bargain_text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",

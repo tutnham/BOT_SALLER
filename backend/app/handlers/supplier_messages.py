@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -33,7 +33,6 @@ from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
 from app.utils.whitelist import get_supplier_by_telegram_id
 
-_REQUEST_ID_RE = re.compile(r"#(\d+)")
 _PRICE_LIST_MARKER_RE = re.compile(
     r"^(?:/price|#?прайс)\b[\s:,-]*(.*)$",
     re.IGNORECASE | re.DOTALL,
@@ -46,24 +45,6 @@ _ACTIVE_STATUSES = (
     RequestStatus.priced,
     RequestStatus.open,
 )
-
-
-async def _supplier_has_access_to_request(
-    session: AsyncSession,
-    *,
-    supplier_id: int,
-    request_id: int,
-) -> bool:
-    result = await session.execute(
-        select(
-            exists().where(
-                MessageOut.request_id == request_id,
-                MessageOut.supplier_id == supplier_id,
-                MessageOut.send_status == MessageSendStatus.sent.value,
-            )
-        )
-    )
-    return bool(result.scalar())
 
 
 async def _parse_with_llm_cache(
@@ -93,32 +74,37 @@ async def _parse_with_llm_cache(
     return parsed
 
 
-def _extract_request_id_from_reply(reply_to_message: dict | None) -> int | None:
-    if not reply_to_message:
-        return None
-    text = reply_to_message.get("text") or reply_to_message.get("caption") or ""
-    match = _REQUEST_ID_RE.search(text)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-async def _find_last_request_for_supplier(
+async def _resolve_request_from_outbound_reply(
     session: AsyncSession,
+    *,
     supplier_id: int,
+    message: dict,
 ) -> Request | None:
-    stmt = (
-        select(Request)
-        .join(MessageOut, MessageOut.request_id == Request.id)
-        .where(
+    """Bind supplier reply only to a prior bot ``messages_out`` row (strict reply)."""
+    reply_to = message.get("reply_to_message")
+    if not reply_to:
+        return None
+    reply_message_id = reply_to.get("message_id")
+    if reply_message_id is None:
+        return None
+
+    outbound = await session.scalar(
+        select(MessageOut).where(
             MessageOut.supplier_id == supplier_id,
+            MessageOut.tg_message_id == int(reply_message_id),
             MessageOut.send_status == MessageSendStatus.sent.value,
+            MessageOut.request_id.isnot(None),
+        )
+    )
+    if outbound is None or outbound.request_id is None:
+        return None
+
+    result = await session.execute(
+        select(Request).where(
+            Request.id == outbound.request_id,
             Request.status.in_(_ACTIVE_STATUSES),
         )
-        .order_by(Request.created_at.desc())
-        .limit(1)
     )
-    result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -185,26 +171,11 @@ async def handle_reply(
         )
         return "ok"
 
-    request_id = _extract_request_id_from_reply(message.get("reply_to_message"))
-    request: Request | None = None
-
-    if request_id is not None:
-        if await _supplier_has_access_to_request(
-            session,
-            supplier_id=supplier.id,
-            request_id=request_id,
-        ):
-            result = await session.execute(
-                select(Request).where(
-                    Request.id == request_id,
-                    Request.status.in_(_ACTIVE_STATUSES),
-                )
-            )
-            request = result.scalar_one_or_none()
-        else:
-            request = None
-    else:
-        request = await _find_last_request_for_supplier(session, supplier.id)
+    request = await _resolve_request_from_outbound_reply(
+        session,
+        supplier_id=supplier.id,
+        message=message,
+    )
 
     session.add(
         MessageIn(
@@ -268,19 +239,14 @@ async def handle_reply(
     if quote is not None:
         forward_text = render_template(
             "supplier_quote_parsed",
-            supplier_name=supplier.name,
-            supplier_id=supplier.id,
             request_id=request.id,
             available=parsed.available,
             price=parsed.price,
             qty=parsed.qty,
-            raw_text=raw_text,
         )
     else:
         forward_text = render_template(
             "supplier_low_confidence",
-            supplier_name=supplier.name,
-            supplier_id=supplier.id,
             request_id=request.id,
             raw_text=raw_text,
         )

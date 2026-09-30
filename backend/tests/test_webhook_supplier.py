@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MessageIn, MessageOut, RequestStatus, Supplier
 from app.services.request_service import create_request
+from tests.conftest import load_supplier_outbound
 
 
 def _supplier_reply_update(
@@ -16,6 +17,7 @@ def _supplier_reply_update(
     update_id: int,
     supplier_telegram_id: int,
     text: str,
+    reply_to_message_id: int | None = None,
     reply_to_text: str | None = None,
 ) -> dict:
     message: dict = {
@@ -24,10 +26,10 @@ def _supplier_reply_update(
         "chat": {"id": supplier_telegram_id, "type": "private"},
         "text": text,
     }
-    if reply_to_text is not None:
+    if reply_to_message_id is not None:
         message["reply_to_message"] = {
-            "message_id": update_id * 10 - 1,
-            "text": reply_to_text,
+            "message_id": reply_to_message_id,
+            "text": reply_to_text or "",
         }
     return {"update_id": update_id, "message": message}
 
@@ -53,12 +55,16 @@ async def test_supplier_reply_with_hash_n_forwards_to_group(
 
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
+    outbound = await load_supplier_outbound(
+        db_session, request_id=request.id, supplier_id=supplier.id
+    )
 
     payload = _supplier_reply_update(
         update_id=20001,
         supplier_telegram_id=supplier.telegram_id,
         text="Есть, 85000 руб",
-        reply_to_text=f"Запрос #{request.id}\nmodel text",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -79,9 +85,10 @@ async def test_supplier_reply_with_hash_n_forwards_to_group(
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
-    assert supplier.name in group_sends[0]
-    assert f"(#{supplier.id})" in group_sends[0]
+    assert supplier.name not in group_sends[0]
+    assert f"(#{supplier.id})" not in group_sends[0]
     assert f"Заявка #{request.id}" in group_sends[0]
+    assert "По вашему запросу" in group_sends[0]
     assert "85000" in group_sends[0]
 
 
@@ -121,7 +128,7 @@ async def test_unbound_supplier_reply_saves_null_request_and_stays_silent(
 
 
 @pytest.mark.asyncio
-async def test_supplier_fallback_to_last_active_request(
+async def test_supplier_without_reply_does_not_bind_last_request(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
     seed_employee,
@@ -159,15 +166,12 @@ async def test_supplier_fallback_to_last_active_request(
         select(MessageIn).where(MessageIn.tg_message_id == payload["message"]["message_id"])
     )
     assert msg_in is not None
-    assert msg_in.request_id == request.id
+    assert msg_in.request_id is None
 
-    out_exists = await db_session.scalar(
-        select(MessageOut.id).where(
-            MessageOut.request_id == request.id,
-            MessageOut.supplier_id == supplier.id,
-        )
-    )
-    assert out_exists is not None
+    group_sends = [
+        txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
+    ]
+    assert group_sends == []
 
 
 @pytest.mark.asyncio
@@ -192,11 +196,16 @@ async def test_supplier_cannot_bind_foreign_request_id(
     foreign_supplier = seed_suppliers[3]
     assert foreign_supplier.telegram_id is not None
 
+    own_supplier = seed_suppliers[0]
+    outbound = await load_supplier_outbound(
+        db_session, request_id=request.id, supplier_id=own_supplier.id
+    )
     payload = _supplier_reply_update(
         update_id=20004,
         supplier_telegram_id=foreign_supplier.telegram_id,
         text="Есть, 91000",
-        reply_to_text=f"Запрос #{request.id}",
+        reply_to_message_id=outbound.tg_message_id,
+        reply_to_text=outbound.text,
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
