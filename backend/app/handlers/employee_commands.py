@@ -849,17 +849,25 @@ async def handle_employee_message(
         await telegram.send_message(int(chat_id), render_template("ask_empty"))
         return "ok"
 
-    request, sent_count = await create_request(
+    outcome = await create_request(
         session,
         group_chat_id=int(chat_id),
         employee_id=employee.id,
         source_text=text_req,
         telegram=telegram,
     )
-    ack = render_template(
-        "ask_sent",
-        request_id=request.id,
-        N=sent_count,
-    )
+    if len(outcome.requests) == 1:
+        ack = render_template(
+            "ask_sent",
+            request_id=outcome.requests[0].id,
+            N=outcome.sent_count,
+        )
+    else:
+        ids = ", ".join(f"#{item.id}" for item in outcome.requests)
+        ack = render_template(
+            "ask_sent_multi",
+            request_ids=ids,
+            N=outcome.sent_count,
+        )
     await telegram.send_message(int(chat_id), ack)
     return "ok"

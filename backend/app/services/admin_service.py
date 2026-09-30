@@ -14,6 +14,8 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    ProductCategory,
+    SupplierCategory,
     AdminDialog,
     BusinessConnection,
     ClientGroup,
@@ -25,11 +27,13 @@ from app.db.models import (
     ParsedItem,
     PendingChat,
     PriceListDraft,
+    ProductCategory,
     Quote,
     RawPrice,
     Request,
     Supplier,
     SupplierBindToken,
+    SupplierCategory,
     SupplierChat,
     SupplierChatType,
 )
@@ -274,6 +278,11 @@ async def add_supplier(
 ) -> Supplier:
     supplier = Supplier(name=name, telegram_id=telegram_id, active=True, rfq_enabled=True)
     session.add(supplier)
+    await session.flush()
+    for category in ProductCategory:
+        session.add(
+            SupplierCategory(supplier_id=supplier.id, category=category.value)
+        )
     await session.flush()
     if telegram_id is not None:
         await _ensure_private_supplier_chat(

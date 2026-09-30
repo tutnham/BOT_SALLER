@@ -116,6 +116,13 @@ class Employee(Base):
     requests: Mapped[list[Request]] = relationship(back_populates="employee")
 
 
+class ProductCategory(str, enum.Enum):
+    apple = "apple"
+    samsung = "samsung"
+    power_station = "power_station"
+    other = "other"
+
+
 class Supplier(Base):
     __tablename__ = "suppliers"
 
@@ -142,6 +149,27 @@ class Supplier(Base):
         back_populates="supplier",
         cascade="all, delete-orphan",
     )
+    categories: Mapped[list[SupplierCategory]] = relationship(
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
+
+
+class SupplierCategory(Base):
+    __tablename__ = "supplier_categories"
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('apple', 'samsung', 'power_station', 'other')",
+            name="ck_supplier_categories_category",
+        ),
+    )
+
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id", ondelete="CASCADE"), primary_key=True
+    )
+    category: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    supplier: Mapped[Supplier] = relationship(back_populates="categories")
 
 
 class BusinessConnection(Base):
@@ -320,6 +348,7 @@ class MessageOut(Base):
             name="ck_messages_out_send_status",
         ),
         Index("ix_messages_out_request_id", "request_id"),
+        Index("ix_messages_out_supplier_request", "supplier_id", "request_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -367,6 +396,9 @@ class MessageIn(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     business_connection_id: Mapped[str | None] = mapped_column(Text)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    bind_method: Mapped[str | None] = mapped_column(Text)
+    bind_status: Mapped[str | None] = mapped_column(Text)
+    bind_score: Mapped[float | None] = mapped_column(REAL)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -393,6 +425,11 @@ class Quote(Base):
     condition: Mapped[str | None] = mapped_column(Text)
     source: Mapped[QuoteSource] = mapped_column(quote_source_enum, nullable=False)
     confidence: Mapped[float | None] = mapped_column(REAL)
+    markup_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    price_final: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    markup_rule_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("markup_rules.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -405,6 +442,7 @@ class Quote(Base):
 
     request: Mapped[Request] = relationship(back_populates="quotes")
     supplier: Mapped[Supplier] = relationship()
+    markup_rule: Mapped[MarkupRule | None] = relationship()
 
 
 class Deal(Base):
@@ -480,6 +518,9 @@ class ParsedItem(Base):
 
 class MarkupRule(Base):
     __tablename__ = "markup_rules"
+    __table_args__ = (
+        UniqueConstraint("rule_key", name="uq_markup_rules_rule_key"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     category: Mapped[str] = mapped_column(Text, nullable=False)
@@ -489,6 +530,11 @@ class MarkupRule(Base):
     active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("true")
     )
+    rule_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    brand: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PriceListDraft(Base):

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     admin_alert_chat_id: int | None = None
     analytics_chat_id: int | None = None
     confidence_threshold: float = 0.75
+    supplier_bind_min_score: int = 3
+    supplier_bind_min_margin: int = 2
+    supplier_reply_max_age_hours: int | None = None
+    suppliers_without_categories_policy: str = "skip_and_notify"
     tz: str = "Europe/Moscow"
     # Used for NL synonym @mention gating in groups (Phase 5). Optional.
     telegram_bot_username: str | None = None

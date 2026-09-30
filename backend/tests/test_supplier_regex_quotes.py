@@ -92,7 +92,7 @@ async def test_confident_reply_creates_quote_and_structured_message(
     assert "Наличие:" in group_sends[0]
     assert "Цена:" in group_sends[0]
     assert "Кол-во:" in group_sends[0]
-    assert "85000" in group_sends[0]
+    assert "85500" in group_sends[0]
 
 
 @pytest.mark.asyncio

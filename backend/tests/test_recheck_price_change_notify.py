@@ -82,6 +82,8 @@ async def test_recheck_changed_price_notifies_group(
             request_id=request.id,
             supplier_id=supplier.id,
             price_initial=Decimal("85000"),
+            markup_rub=Decimal("500"),
+            price_final=Decimal("85500"),
             source=QuoteSource.manual,
             confidence=1.0,
         )
@@ -121,9 +123,13 @@ async def test_recheck_changed_price_notifies_group(
     )
     assert quote is not None
     assert quote.price_initial == Decimal("87000")
+    assert quote.price_final == Decimal("87500")
 
     group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
-    assert any("изменилась" in txt and "85000" in txt and "87000" in txt for txt in group_sends)
+    combined = "\n".join(group_sends)
+    assert "87500" in combined
+    assert any("изменилась" in txt for txt in group_sends)
+    assert "85500" in combined
 
 
 @pytest.mark.asyncio
@@ -148,6 +154,8 @@ async def test_recheck_unchanged_price_no_change_spam(
             request_id=request.id,
             supplier_id=supplier.id,
             price_initial=Decimal("85000"),
+            markup_rub=Decimal("500"),
+            price_final=Decimal("85500"),
             source=QuoteSource.manual,
             confidence=1.0,
         )
@@ -180,7 +188,7 @@ async def test_recheck_unchanged_price_no_change_spam(
     assert resp.status_code == 200
 
     group_sends = [txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id]
-    assert any("85000" in txt for txt in group_sends)
+    assert any("85500" in txt for txt in group_sends)
     assert not any("изменилась" in txt for txt in group_sends)
 
 

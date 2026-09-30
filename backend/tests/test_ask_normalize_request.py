@@ -44,6 +44,7 @@ async def test_regex_normalize_without_llm(
     assert normalized["color"] == "чёрный"
     assert normalized["qty"] == 2
     assert normalized["confidence"] >= 0.75
+    assert normalized.get("category") == "apple"
 
 
 @pytest.mark.asyncio

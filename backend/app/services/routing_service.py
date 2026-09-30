@@ -14,10 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.db.models import (
     BusinessConnection,
     ClientGroup,
     Supplier,
+    SupplierCategory,
     SupplierChat,
     SupplierChatType,
 )
@@ -174,23 +176,40 @@ def _pick_target(
     return default_target or business
 
 
-async def resolve_rfq_targets(session: AsyncSession) -> list[RfqTarget]:
-    """Return active suppliers that should receive an RFQ and their target chat.
-
-    Conditions:
-      * supplier.active = true
-      * supplier.rfq_enabled = true
-      * supplier has a resolvable active route (default chat, private DM, or business_dm)
-    """
+async def resolve_rfq_targets(
+    session: AsyncSession,
+    *,
+    category: str | None = None,
+) -> tuple[list[RfqTarget], list[Supplier]]:
+    """Return RFQ targets for ``category`` and suppliers skipped (no categories)."""
     result = await session.execute(
         select(Supplier)
         .where(
             Supplier.active.is_(True),
             Supplier.rfq_enabled.is_(True),
         )
-        .options(selectinload(Supplier.chats))
+        .options(selectinload(Supplier.chats), selectinload(Supplier.categories))
     )
     suppliers = list(result.scalars().all())
+    skipped_no_categories: list[Supplier] = []
+    if category is not None:
+        filtered: list[Supplier] = []
+        for supplier in suppliers:
+            cats = {row.category for row in supplier.categories}
+            if not cats:
+                skipped_no_categories.append(supplier)
+                continue
+            if category in cats:
+                filtered.append(supplier)
+        suppliers = filtered
+    elif get_settings().suppliers_without_categories_policy == "skip_and_notify":
+        filtered = []
+        for supplier in suppliers:
+            if supplier.categories:
+                filtered.append(supplier)
+            else:
+                skipped_no_categories.append(supplier)
+        suppliers = filtered
     connection_ids = [
         chat.business_connection_id
         for supplier in suppliers
@@ -212,7 +231,7 @@ async def resolve_rfq_targets(session: AsyncSession) -> list[RfqTarget]:
                     business_connection_id=picked.business_connection_id,
                 )
             )
-    return targets
+    return targets, skipped_no_categories
 
 
 async def resolve_target(session: AsyncSession, supplier_id: int) -> RouteTarget | None:

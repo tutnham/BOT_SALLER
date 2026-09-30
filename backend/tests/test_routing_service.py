@@ -18,7 +18,7 @@ from app.services.routing_service import (
 @pytest.mark.asyncio
 async def test_resolve_rfq_targets_default_private_dm(db_session: AsyncSession) -> None:
     supplier = await add_supplier(db_session, name="Test Supplier", telegram_id=1000)
-    targets = await resolve_rfq_targets(db_session)
+    targets, _skipped = await resolve_rfq_targets(db_session)
     assert len(targets) == 1
     assert targets[0].supplier.id == supplier.id
     assert targets[0].chat_id == 1000
@@ -39,7 +39,7 @@ async def test_resolve_rfq_targets_uses_default_group(db_session: AsyncSession) 
     await db_session.flush()
     await set_supplier_default_chat(db_session, supplier.id, -1001)
 
-    targets = await resolve_rfq_targets(db_session)
+    targets, _skipped = await resolve_rfq_targets(db_session)
     assert len(targets) == 1
     assert targets[0].chat_id == -1001
 
@@ -53,7 +53,7 @@ async def test_resolve_rfq_targets_skip_inactive_and_disabled(db_session: AsyncS
     s3.rfq_enabled = False
     await db_session.flush()
 
-    targets = await resolve_rfq_targets(db_session)
+    targets, _skipped = await resolve_rfq_targets(db_session)
     assert {t.supplier.id for t in targets} == {s1.id}
 
 
