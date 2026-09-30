@@ -39,7 +39,9 @@ from app.db.models import (  # noqa: E402
     Employee,
     MarkupRule,
     Owner,
+    ProductCategory,
     Supplier,
+    SupplierCategory,
     SupplierChat,
     SupplierChatType,
 )
@@ -143,6 +145,16 @@ class MockLLMClient:
         self.normalize_calls = 0
         self.price_calls = 0
         self.report_calls = 0
+        self.classify_product_calls = 0
+        self.classify_supplier_reply_calls = 0
+        self.classify_product_result = {"category": "unknown", "confidence": 0.0}
+        self.classify_supplier_reply_result = {
+            "related": False,
+            "request_id": None,
+            "price": None,
+            "currency": None,
+            "confidence": 0.0,
+        }
         self.parse_result = {
             "available": None,
             "qty": None,
@@ -212,6 +224,18 @@ class MockLLMClient:
         if self.raise_report is not None:
             raise self.raise_report
         return self.report_result
+
+    async def classify_product(self, raw_text: str):
+        from app.llm.schemas import ProductClassification
+
+        self.classify_product_calls += 1
+        return ProductClassification.model_validate(self.classify_product_result)
+
+    async def classify_supplier_reply(self, raw_text: str, candidates: list):
+        from app.llm.schemas import SupplierReplyBinding
+
+        self.classify_supplier_reply_calls += 1
+        return SupplierReplyBinding.model_validate(self.classify_supplier_reply_result)
 
 
 @pytest.fixture
@@ -322,6 +346,14 @@ async def seed_suppliers(db_session: AsyncSession) -> list[Supplier]:
                 is_default=True,
             )
         )
+    for supplier in suppliers:
+        for category in ProductCategory:
+            db_session.add(
+                SupplierCategory(
+                    supplier_id=supplier.id,
+                    category=category.value,
+                )
+            )
     await db_session.flush()
     return suppliers
 
@@ -352,8 +384,16 @@ async def seed_channel_supplier(db_session: AsyncSession) -> Supplier:
 
 @pytest_asyncio.fixture
 async def seed_markup_rules(db_session: AsyncSession) -> list[MarkupRule]:
+    from sqlalchemy import select
+
     from app.services.markup_service import seed_markup_rule_rows
 
+    result = await db_session.execute(
+        select(MarkupRule).where(MarkupRule.model_pattern.isnot(None))
+    )
+    existing = list(result.scalars().all())
+    if existing:
+        return existing
     rules = seed_markup_rule_rows()
     db_session.add_all(rules)
     await db_session.flush()

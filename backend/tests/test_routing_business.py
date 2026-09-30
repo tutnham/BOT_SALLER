@@ -192,7 +192,7 @@ async def test_rfq_targets_include_business_only_supplier(
         )
     )
     await db_session.flush()
-    targets = await resolve_rfq_targets(db_session)
+    targets, _skipped = await resolve_rfq_targets(db_session)
     matched = [t for t in targets if t.supplier.id == supplier.id]
     assert len(matched) == 1
     assert matched[0].kind == "business_dm"

@@ -28,6 +28,18 @@ from app.llm.prompts.parse_price_list import (
 from app.llm.prompts.parse_price_list import (
     build_user_prompt as build_price_list_user_prompt,
 )
+from app.llm.prompts.classify_product import (
+    SYSTEM_PROMPT as CLASSIFY_PRODUCT_SYSTEM_PROMPT,
+)
+from app.llm.prompts.classify_product import (
+    build_user_prompt as build_classify_product_user_prompt,
+)
+from app.llm.prompts.classify_supplier_reply import (
+    SYSTEM_PROMPT as CLASSIFY_SUPPLIER_REPLY_SYSTEM_PROMPT,
+)
+from app.llm.prompts.classify_supplier_reply import (
+    build_user_prompt as build_classify_supplier_reply_user_prompt,
+)
 from app.llm.prompts.parse_supplier_reply import (
     SYSTEM_PROMPT as SUPPLIER_SYSTEM_PROMPT,
 )
@@ -38,8 +50,12 @@ from app.llm.schemas import (
     NormalizedRequest,
     ParsedPriceList,
     ParsedSupplierReply,
+    ProductClassification,
     ReportMetrics,
+    SupplierReplyBinding,
     validate_price_list_payload,
+    validate_product_classification,
+    validate_supplier_reply_binding,
 )
 
 
@@ -55,6 +71,16 @@ class LLMClientProtocol(Protocol):
         ...
 
     async def parse_price_list(self, raw_text: str) -> ParsedPriceList:
+        ...
+
+    async def classify_product(self, raw_text: str) -> ProductClassification:
+        ...
+
+    async def classify_supplier_reply(
+        self,
+        raw_text: str,
+        candidates: list[dict[str, Any]],
+    ) -> SupplierReplyBinding:
         ...
 
     async def format_report(self, metrics: dict[str, Any]) -> str:
@@ -110,6 +136,26 @@ class DefaultLLMClient:
             expect_json=True,
         )
         return validate_price_list_payload(payload)
+
+    async def classify_product(self, raw_text: str) -> ProductClassification:
+        payload = await self._call_json(
+            system_prompt=CLASSIFY_PRODUCT_SYSTEM_PROMPT,
+            user_prompt=build_classify_product_user_prompt(raw_text),
+            expect_json=True,
+        )
+        return validate_product_classification(payload)
+
+    async def classify_supplier_reply(
+        self,
+        raw_text: str,
+        candidates: list[dict[str, Any]],
+    ) -> SupplierReplyBinding:
+        payload = await self._call_json(
+            system_prompt=CLASSIFY_SUPPLIER_REPLY_SYSTEM_PROMPT,
+            user_prompt=build_classify_supplier_reply_user_prompt(raw_text, candidates),
+            expect_json=True,
+        )
+        return validate_supplier_reply_binding(payload)
 
     async def format_report(self, metrics: dict[str, Any]) -> str:
         validated = ReportMetrics.model_validate(metrics)

@@ -16,6 +16,32 @@ TEMPLATES: dict[str, str] = {
     ),
     "ask_empty": "Нужен текст запроса или reply на сообщение клиента",
     "ask_sent": "Запрос #{request_id} отправлен {N} поставщикам",
+    "ask_sent_multi": "Запросы {request_ids} отправлены ({N} доставок поставщикам)",
+    "ask_no_suppliers": (
+        "Заявка #{request_id}: нет поставщиков для категории «{category}». "
+        "Оператор уведомлён."
+    ),
+    "alert_suppliers_without_categories": (
+        "Поставщики без категорий (рассылка пропущена): {names}"
+    ),
+    "alert_unknown_product_category": (
+        "Заявка #{request_id}: не удалось определить категорию товара.\n{source_text}"
+    ),
+    "alert_no_suppliers_for_category": (
+        "Заявка #{request_id}, категория {category}: нет подходящих поставщиков.\n"
+        "{source_text}"
+    ),
+    "alert_unbound_supplier_message": (
+        "Непривязанное сообщение поставщика #{supplier_id} (messages_in #{message_in_id}):\n"
+        "{raw_text}\n\nКандидаты: {candidates_block}\n\n/bind {message_in_id} <request_id>"
+    ),
+    "markup_rules_list": "Правила наценки:\n{rules_block}",
+    "markup_rule_updated": "Наценка {rule_key} = {amount} ₽",
+    "markup_rule_not_found": "Правило {rule_key} не найдено",
+    "supplier_categories_list": "Категории поставщиков:\n{lines}",
+    "supplier_category_updated": "Поставщик #{supplier_id}: категории {categories}",
+    "bind_ok": "Сообщение #{message_in_id} привязано к заявке #{request_id}",
+    "bind_failed": "Не удалось привязать: {reason}",
     "supplier_need_reply": (
         "Пожалуйста, ответьте на сообщение с номером заявки (#N)"
     ),

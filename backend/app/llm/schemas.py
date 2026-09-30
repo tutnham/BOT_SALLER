@@ -21,6 +21,19 @@ class NormalizedRequest(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class ProductClassification(BaseModel):
+    category: str
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+
+
+class SupplierReplyBinding(BaseModel):
+    related: bool = False
+    request_id: int | None = None
+    price: Decimal | None = None
+    currency: str | None = None
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+
+
 class ParsedSupplierReply(BaseModel):
     """Schema from TECH DOC §8.3."""
 
@@ -51,6 +64,24 @@ class ParsedPriceList(BaseModel):
     """Schema from TECH DOC §8.2."""
 
     items: list[ParsedPriceItem] = Field(default_factory=list)
+
+
+def validate_product_classification(payload: Any) -> ProductClassification:
+    if not isinstance(payload, dict):
+        return ProductClassification(category="unknown", confidence=0.0)
+    try:
+        return ProductClassification.model_validate(payload)
+    except ValidationError:
+        return ProductClassification(category="unknown", confidence=0.0)
+
+
+def validate_supplier_reply_binding(payload: Any) -> SupplierReplyBinding:
+    if not isinstance(payload, dict):
+        return SupplierReplyBinding(related=False, confidence=0.0)
+    try:
+        return SupplierReplyBinding.model_validate(payload)
+    except ValidationError:
+        return SupplierReplyBinding(related=False, confidence=0.0)
 
 
 def validate_price_list_payload(payload: Any) -> ParsedPriceList:

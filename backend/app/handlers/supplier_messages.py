@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Any
 
+from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -17,6 +20,7 @@ from app.db.models import (
     QuoteSource,
     Request,
     RequestStatus,
+    Supplier,
 )
 from app.llm.client import (
     LLMProviderError,
@@ -26,8 +30,13 @@ from app.llm.client import (
 from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.regex_parser import parse_supplier_reply
+from app.services.alert_service import notify_operators
 from app.services.price_service import insert_raw_price
-from app.services.quote_service import upsert_quote
+from app.services.quote_service import display_price_for_group, upsert_quote
+from app.services.reply_binding_service import (
+    BindingDecision,
+    resolve_binding,
+)
 from app.services.routing_service import resolve_supplier_by_chat
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import render_template
@@ -108,6 +117,171 @@ async def _resolve_request_from_outbound_reply(
     return result.scalar_one_or_none()
 
 
+async def _insert_message_in_idempotent(
+    session: AsyncSession,
+    *,
+    supplier_id: int,
+    chat_id: int,
+    message_id: int,
+    raw_text: str,
+    business_connection_id: str | None,
+    request_id: int | None,
+    bind_method: str | None,
+    bind_status: str | None,
+    bind_score: float | None,
+) -> MessageIn | None:
+    stmt = (
+        insert(MessageIn)
+        .values(
+            request_id=request_id,
+            supplier_id=supplier_id,
+            tg_message_id=message_id,
+            chat_id=chat_id,
+            business_connection_id=business_connection_id,
+            raw_text=raw_text,
+            bind_method=bind_method,
+            bind_status=bind_status,
+            bind_score=bind_score,
+        )
+        .on_conflict_do_nothing(index_elements=["chat_id", "tg_message_id"])
+        .returning(MessageIn.id)
+    )
+    new_id = (await session.execute(stmt)).scalar_one_or_none()
+    if new_id is None:
+        return None
+    row = await session.get(MessageIn, new_id)
+    await session.flush()
+    return row
+
+
+async def process_bound_supplier_reply(
+    session: AsyncSession,
+    *,
+    request: Request,
+    supplier: Supplier,
+    raw_text: str,
+    message_in: MessageIn,
+    telegram: TelegramClientProtocol,
+    business_connection_id: str | None,
+    chat_id: int,
+    bind_method: str,
+) -> None:
+    """Parse supplier text, upsert quote, notify employee group."""
+    message_in.bind_method = bind_method
+    message_in.bind_status = "bound"
+    message_in.request_id = request.id
+    await session.flush()
+
+    if request.status in (RequestStatus.closed, RequestStatus.cancelled):
+        await telegram.send_message(
+            int(chat_id),
+            render_template("request_not_open", request_id=request.id),
+            business_connection_id=business_connection_id,
+        )
+        return
+
+    parsed: Any = parse_supplier_reply(raw_text)
+    source = QuoteSource.regex
+    if parsed.price is None and parsed.qty is None:
+        parsed = await _parse_with_llm_cache(session, raw_text)
+        source = QuoteSource.llm
+
+    existing = await session.execute(
+        select(Quote).where(
+            Quote.request_id == request.id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    existing_quote = existing.scalar_one_or_none()
+    previous_price_initial = (
+        existing_quote.price_initial if existing_quote is not None else None
+    )
+    previous_price_final = display_price_for_group(existing_quote)
+
+    is_bargain = request.status is RequestStatus.bargaining
+    quote = await upsert_quote(
+        session,
+        request.id,
+        supplier.id,
+        price=parsed.price,
+        qty=parsed.qty,
+        available=parsed.available,
+        condition=parsed.condition,
+        source=source,
+        confidence=parsed.confidence,
+        bargain=is_bargain,
+    )
+
+    if quote is not None:
+        forward_text = render_template(
+            "supplier_quote_parsed",
+            request_id=request.id,
+            available=parsed.available,
+            price=display_price_for_group(quote),
+            qty=parsed.qty,
+        )
+    else:
+        forward_text = render_template(
+            "supplier_low_confidence",
+            request_id=request.id,
+            raw_text=raw_text,
+        )
+
+    await telegram.send_message(request.group_chat_id, forward_text)
+
+    if (
+        quote is not None
+        and request.status is RequestStatus.needs_recheck
+        and parsed.price is not None
+        and previous_price_initial is not None
+        and parsed.price != previous_price_initial
+    ):
+        new_final = display_price_for_group(quote)
+        if (
+            previous_price_final is not None
+            and new_final is not None
+            and previous_price_final != new_final
+        ):
+            await telegram.send_message(
+                request.group_chat_id,
+                render_template(
+                    "price_changed",
+                    request_id=request.id,
+                    old_price=previous_price_final,
+                    new_price=new_final,
+                ),
+            )
+
+
+async def _notify_unbound(
+    session: AsyncSession,
+    *,
+    message_in: MessageIn,
+    supplier: Supplier,
+    raw_text: str,
+    candidates: list[Request],
+    telegram: TelegramClientProtocol,
+) -> None:
+    if not candidates:
+        block = "—"
+    else:
+        block = "\n".join(
+            f"#{request.id} {(request.normalized_json or {}).get('model', '')}"
+            for request in candidates
+        )
+    await notify_operators(
+        session,
+        render_template(
+            "alert_unbound_supplier_message",
+            supplier_id=supplier.id,
+            message_in_id=message_in.id,
+            raw_text=raw_text[:500],
+            candidates_block=block,
+        ),
+        telegram=telegram,
+    )
+
+
 async def handle_reply(
     session: AsyncSession,
     message: dict,
@@ -120,6 +294,8 @@ async def handle_reply(
 
     Returns webhook status ``ok``.
     """
+    from app.services.reply_binding_service import load_open_requests_for_supplier
+
     from_user = message.get("from") or {}
     telegram_id = from_user.get("id")
     chat = message.get("chat") or {}
@@ -147,17 +323,20 @@ async def handle_reply(
     price_match = _PRICE_LIST_MARKER_RE.match(raw_text.strip())
     if price_match is not None:
         price_body = (price_match.group(1) or "").strip() or raw_text.strip()
-        session.add(
-            MessageIn(
-                request_id=None,
-                supplier_id=supplier.id,
-                tg_message_id=int(message_id),
-                chat_id=int(chat_id),
-                business_connection_id=business_connection_id,
-                raw_text=raw_text,
-            )
+        row = await _insert_message_in_idempotent(
+            session,
+            supplier_id=supplier.id,
+            chat_id=int(chat_id),
+            message_id=int(message_id),
+            raw_text=raw_text,
+            business_connection_id=business_connection_id,
+            request_id=None,
+            bind_method="none",
+            bind_status="ignored",
+            bind_score=None,
         )
-        await session.flush()
+        if row is None:
+            return "ok"
         await insert_raw_price(
             session,
             supplier_id=supplier.id,
@@ -171,104 +350,100 @@ async def handle_reply(
         )
         return "ok"
 
-    request = await _resolve_request_from_outbound_reply(
+    reply_request = await _resolve_request_from_outbound_reply(
         session,
         supplier_id=supplier.id,
         message=message,
     )
-
-    session.add(
-        MessageIn(
-            request_id=request.id if request else None,
-            supplier_id=supplier.id,
-            tg_message_id=int(message_id),
-            chat_id=int(chat_id),
-            business_connection_id=business_connection_id,
-            raw_text=raw_text,
-        )
-    )
-    await session.flush()
-
-    if request is None:
-        # Ordinary supplier DM/group chatter is not an RFQ reply. Stay silent:
-        # sending supplier_need_reply into Business personal chats floods the
-        # owner's conversation with the supplier.
-        return "ok"
-
-    if request.status in (RequestStatus.closed, RequestStatus.cancelled):
-        await telegram.send_message(
-            int(chat_id),
-            render_template("request_not_open", request_id=request.id),
-            business_connection_id=business_connection_id,
-        )
-        return "ok"
-
-    parsed: Any = parse_supplier_reply(raw_text)
-    source = QuoteSource.regex
-    if parsed.price is None and parsed.qty is None:
-        parsed = await _parse_with_llm_cache(session, raw_text)
-        source = QuoteSource.llm
-
-    # Snapshot price_initial before upsert for recheck change notification (§9.4).
-    existing = await session.execute(
-        select(Quote).where(
-            Quote.request_id == request.id,
-            Quote.supplier_id == supplier.id,
-        )
-    )
-    existing_quote = existing.scalar_one_or_none()
-    previous_price_initial = (
-        existing_quote.price_initial if existing_quote is not None else None
-    )
-
-    # Bargaining replies write price_bargain only; leave price_initial intact (§9.3).
-    is_bargain = request.status is RequestStatus.bargaining
-    quote = await upsert_quote(
+    decision: BindingDecision = await resolve_binding(
         session,
-        request.id,
-        supplier.id,
-        price=parsed.price,
-        qty=parsed.qty,
-        available=parsed.available,
-        condition=parsed.condition,
-        source=source,
-        confidence=parsed.confidence,
-        bargain=is_bargain,
+        supplier=supplier,
+        message=message,
+        raw_text=raw_text,
+        reply_request=reply_request,
     )
 
-    if quote is not None:
-        forward_text = render_template(
-            "supplier_quote_parsed",
-            request_id=request.id,
-            available=parsed.available,
-            price=parsed.price,
-            qty=parsed.qty,
+    message_in = await _insert_message_in_idempotent(
+        session,
+        supplier_id=supplier.id,
+        chat_id=int(chat_id),
+        message_id=int(message_id),
+        raw_text=raw_text,
+        business_connection_id=business_connection_id,
+        request_id=decision.request.id if decision.request else None,
+        bind_method=decision.method if decision.status == "bound" else "none",
+        bind_status=decision.status,
+        bind_score=decision.score,
+    )
+    if message_in is None:
+        logger.info(
+            "supplier_message duplicate chat_id={} message_id={}",
+            chat_id,
+            message_id,
         )
-    else:
-        forward_text = render_template(
-            "supplier_low_confidence",
-            request_id=request.id,
+        return "ok"
+
+    if decision.status == "ignored":
+        logger.info(
+            "supplier_message ignored supplier_id={} reason={}",
+            supplier.id,
+            decision.ignored_reason,
+        )
+        return "ok"
+
+    if decision.request is None:
+        candidates = await load_open_requests_for_supplier(session, supplier=supplier)
+        await _notify_unbound(
+            session,
+            message_in=message_in,
+            supplier=supplier,
             raw_text=raw_text,
+            candidates=candidates,
+            telegram=telegram,
         )
+        return "ok"
 
-    await telegram.send_message(request.group_chat_id, forward_text)
+    await process_bound_supplier_reply(
+        session,
+        request=decision.request,
+        supplier=supplier,
+        raw_text=raw_text,
+        message_in=message_in,
+        telegram=telegram,
+        business_connection_id=business_connection_id,
+        chat_id=int(chat_id),
+        bind_method=decision.method,
+    )
+    return "ok"
 
-    # Recheck price-change notify: compare against previous price_initial only.
-    if (
-        quote is not None
-        and request.status is RequestStatus.needs_recheck
-        and parsed.price is not None
-        and previous_price_initial is not None
-        and parsed.price != previous_price_initial
-    ):
-        await telegram.send_message(
-            request.group_chat_id,
-            render_template(
-                "price_changed",
-                request_id=request.id,
-                old_price=previous_price_initial,
-                new_price=parsed.price,
-            ),
-        )
 
+async def manual_bind_message(
+    session: AsyncSession,
+    *,
+    message_in_id: int,
+    request_id: int,
+    telegram: TelegramClientProtocol,
+) -> str:
+    """Owner manual bind of unbound supplier message."""
+    message_in = await session.get(MessageIn, message_in_id)
+    if message_in is None:
+        return "not_found"
+    request = await session.get(Request, request_id)
+    if request is None:
+        return "request_not_found"
+    supplier = await session.get(Supplier, message_in.supplier_id)
+    if supplier is None:
+        return "supplier_not_found"
+
+    await process_bound_supplier_reply(
+        session,
+        request=request,
+        supplier=supplier,
+        raw_text=message_in.raw_text,
+        message_in=message_in,
+        telegram=telegram,
+        business_connection_id=message_in.business_connection_id,
+        chat_id=message_in.chat_id,
+        bind_method="manual",
+    )
     return "ok"

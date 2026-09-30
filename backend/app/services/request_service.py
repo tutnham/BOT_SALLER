@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -16,12 +17,26 @@ from app.llm.client import (
 )
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.request_normalizer import parse_request_text
+from app.services.alert_service import notify_operators
+from app.services.product_classifier import resolve_product_category, split_positions
 from app.services.routing_service import RfqTarget, resolve_rfq_targets
 from app.services.supplier_delivery import deliver, is_sent
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
 _NORMALIZE_KIND = "normalize_request"
+
+
+@dataclass(frozen=True)
+class CreateRequestOutcome:
+    requests: list[Request]
+    sent_count: int
+
+    def __iter__(self):
+        """Backward-compatible unpack: primary request, sent_count."""
+        primary = self.requests[0] if self.requests else None
+        yield primary
+        yield self.sent_count
 
 
 async def load_request_for_employee(
@@ -88,76 +103,114 @@ async def build_normalized_json(
     threshold = settings.confidence_threshold
 
     if deterministic.get("confidence", 0.0) >= threshold:
-        return deterministic
+        normalized = deterministic
+    else:
+        cached = await get_cached(session, kind=_NORMALIZE_KIND, raw_text=source_text)
+        if cached is not None:
+            parsed = validate_normalized_request_payload(cached)
+            llm_payload = parsed.model_dump(mode="json")
+            if parsed.confidence >= threshold and parsed.model.strip():
+                normalized = _merge_normalized(deterministic, llm_payload)
+            else:
+                normalized = _build_fallback_normalized(source_text, deterministic)
+        else:
+            llm = get_llm_client()
+            try:
+                parsed = await llm.normalize_request(source_text)
+            except LLMProviderError:
+                normalized = _build_fallback_normalized(source_text, deterministic)
+            else:
+                llm_payload = parsed.model_dump(mode="json")
+                model_used = settings.llm_model or settings.llm_provider
+                await set_cached(
+                    session,
+                    kind=_NORMALIZE_KIND,
+                    raw_text=source_text,
+                    result_json=llm_payload,
+                    model_used=model_used,
+                )
+                if parsed.confidence >= threshold and parsed.model.strip():
+                    normalized = _merge_normalized(deterministic, llm_payload)
+                else:
+                    normalized = _build_fallback_normalized(source_text, deterministic)
 
-    cached = await get_cached(session, kind=_NORMALIZE_KIND, raw_text=source_text)
-    if cached is not None:
-        parsed = validate_normalized_request_payload(cached)
-        llm_payload = parsed.model_dump(mode="json")
-        if parsed.confidence >= threshold and parsed.model.strip():
-            return _merge_normalized(deterministic, llm_payload)
-        return _build_fallback_normalized(source_text, deterministic)
-
-    llm = get_llm_client()
-    try:
-        parsed = await llm.normalize_request(source_text)
-    except LLMProviderError:
-        return _build_fallback_normalized(source_text, deterministic)
-
-    llm_payload = parsed.model_dump(mode="json")
-    model_used = settings.llm_model or settings.llm_provider
-    await set_cached(
-        session,
-        kind=_NORMALIZE_KIND,
-        raw_text=source_text,
-        result_json=llm_payload,
-        model_used=model_used,
-    )
-
-    if parsed.confidence >= threshold and parsed.model.strip():
-        return _merge_normalized(deterministic, llm_payload)
-    return _build_fallback_normalized(source_text, deterministic)
+    category = await resolve_product_category(session, source_text)
+    normalized["category"] = category
+    return normalized
 
 
-async def get_eligible_suppliers(session: AsyncSession) -> list[RfqTarget]:
-    """Suppliers that can receive an RFQ and their resolved target chat."""
-    return await resolve_rfq_targets(session)
-
-
-async def create_request(
+async def get_eligible_suppliers(
     session: AsyncSession,
     *,
-    group_chat_id: int,
-    employee_id: int,
+    category: str | None = None,
+) -> list[RfqTarget]:
+    """Suppliers that can receive an RFQ and their resolved target chat."""
+    targets, _skipped = await resolve_rfq_targets(session, category=category)
+    return targets
+
+
+async def _broadcast_request(
+    session: AsyncSession,
+    *,
+    request: Request,
     source_text: str,
+    category: str,
     telegram: TelegramClientProtocol,
-) -> tuple[Request, int]:
-    """
-    Create request, broadcast ``ask`` to eligible suppliers, update status.
-
-    The request row is committed before any Telegram sends so a failure
-    cannot silently roll back an already delivered supplier message.
-
-    Returns:
-        (request, successful_send_count)
-    """
-    normalized_json = await build_normalized_json(session, source_text)
-    request = Request(
-        group_chat_id=group_chat_id,
-        employee_id=employee_id,
-        source_text=source_text,
-        normalized_json=normalized_json,
-        status=RequestStatus.open,
-    )
-    session.add(request)
-    await session.flush()
-
-    targets = await get_eligible_suppliers(session)
-    # Commit business state before external side-effects (Telegram sends).
-    await session.commit()
-
+) -> tuple[int, list[str]]:
+    targets, skipped_no_categories = await resolve_rfq_targets(session, category=category)
     sent_count = 0
     failed_lines: list[str] = []
+
+    if skipped_no_categories:
+        names = ", ".join(f"{s.name} (#{s.id})" for s in skipped_no_categories)
+        await notify_operators(
+            session,
+            render_template(
+                "alert_suppliers_without_categories",
+                names=names,
+            ),
+            telegram=telegram,
+        )
+
+    if category == "unknown":
+        await notify_operators(
+            session,
+            render_template(
+                "alert_unknown_product_category",
+                request_id=request.id,
+                source_text=source_text,
+            ),
+            telegram=telegram,
+        )
+        return 0, failed_lines
+
+    if not targets:
+        await notify_operators(
+            session,
+            render_template(
+                "alert_no_suppliers_for_category",
+                request_id=request.id,
+                category=category,
+                source_text=source_text,
+            ),
+            telegram=telegram,
+        )
+        try:
+            await telegram.send_message(
+                request.group_chat_id,
+                render_template(
+                    "ask_no_suppliers",
+                    request_id=request.id,
+                    category=category,
+                ),
+            )
+        except TelegramSendError as exc:
+            logger.warning(
+                "Failed to notify group about missing suppliers request_id={}: {}",
+                request.id,
+                exc,
+            )
+        return 0, failed_lines
 
     for target in targets:
         supplier = target.supplier
@@ -188,27 +241,71 @@ async def create_request(
             failed_lines.append(
                 f"{supplier.name} (#{supplier.id}): {outbound.error_text or 'send_failed'}"
             )
+    return sent_count, failed_lines
 
-    if sent_count >= 1:
-        request.status = RequestStatus.awaiting_answers
 
-    if failed_lines:
-        try:
-            await telegram.send_message(
-                request.group_chat_id,
-                render_template(
-                    "supplier_delivery_failed",
-                    request_id=request.id,
-                    kind="ask",
-                    failed_block="\n".join(failed_lines),
-                ),
-            )
-        except TelegramSendError as exc:
-            logger.warning(
-                "Failed to notify group about partial ask delivery request_id={}: {}",
-                request.id,
-                exc,
-            )
+async def create_request(
+    session: AsyncSession,
+    *,
+    group_chat_id: int,
+    employee_id: int,
+    source_text: str,
+    telegram: TelegramClientProtocol,
+) -> CreateRequestOutcome:
+    """
+    Create one or more requests (multi-position split), broadcast ``ask``.
+
+    Commits before Telegram sends.
+    """
+    segments = split_positions(source_text)
+    created: list[Request] = []
+    total_sent = 0
+
+    for segment in segments:
+        normalized_json = await build_normalized_json(session, segment)
+        category = str(normalized_json.get("category") or "unknown")
+        request = Request(
+            group_chat_id=group_chat_id,
+            employee_id=employee_id,
+            source_text=segment,
+            normalized_json=normalized_json,
+            status=RequestStatus.open,
+        )
+        session.add(request)
+        await session.flush()
+        created.append(request)
+
+    await session.commit()
+
+    for request in created:
+        category = str((request.normalized_json or {}).get("category") or "unknown")
+        sent_count, failed_lines = await _broadcast_request(
+            session,
+            request=request,
+            source_text=request.source_text,
+            category=category,
+            telegram=telegram,
+        )
+        total_sent += sent_count
+        if sent_count >= 1:
+            request.status = RequestStatus.awaiting_answers
+        if failed_lines:
+            try:
+                await telegram.send_message(
+                    request.group_chat_id,
+                    render_template(
+                        "supplier_delivery_failed",
+                        request_id=request.id,
+                        kind="ask",
+                        failed_block="\n".join(failed_lines),
+                    ),
+                )
+            except TelegramSendError as exc:
+                logger.warning(
+                    "Failed to notify group about partial ask delivery request_id={}: {}",
+                    request.id,
+                    exc,
+                )
 
     await session.flush()
-    return request, sent_count
+    return CreateRequestOutcome(requests=created, sent_count=total_sent)

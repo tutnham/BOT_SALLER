@@ -26,7 +26,7 @@ from app.llm.schemas import (
 )
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
 from app.services.alert_service import send_admin_alert
-from app.services.markup_service import classify_category, load_rules, resolve_markup
+from app.services.markup_service import apply_markup, load_rules
 from app.services.parser_client import ParserClientError, get_posts
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard
@@ -344,18 +344,17 @@ def build_draft_items(
             )
             continue
 
-        category = classify_category(row.get("model"))
-        markup = resolve_markup(rules, category, default_markup)
-        if markup is None:
-            logger.warning(
-                "No markup rule for category={} sku_key={}",
-                category,
-                row.get("sku_key"),
-            )
-            continue
-
         min_price = Decimal(str(row["min_price"]))
-        our_price = min_price + markup
+        product = {
+            "model": row.get("model"),
+            "storage": row.get("storage"),
+        }
+        our_price, _markup, _rule_id, _key = apply_markup(
+            min_price,
+            product,
+            rules,
+            default=default_markup,
+        )
         title = format_sku_title(
             model=row.get("model"),
             storage=row.get("storage"),

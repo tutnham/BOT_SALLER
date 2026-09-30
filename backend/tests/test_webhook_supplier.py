@@ -89,7 +89,7 @@ async def test_supplier_reply_with_hash_n_forwards_to_group(
     assert f"(#{supplier.id})" not in group_sends[0]
     assert f"Заявка #{request.id}" in group_sends[0]
     assert "По вашему запросу" in group_sends[0]
-    assert "85000" in group_sends[0]
+    assert "85500" in group_sends[0]
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_unbound_supplier_reply_saves_null_request_and_stays_silent(
 
 
 @pytest.mark.asyncio
-async def test_supplier_without_reply_does_not_bind_last_request(
+async def test_supplier_without_reply_binds_single_open_request(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
     seed_employee,
@@ -166,12 +166,12 @@ async def test_supplier_without_reply_does_not_bind_last_request(
         select(MessageIn).where(MessageIn.tg_message_id == payload["message"]["message_id"])
     )
     assert msg_in is not None
-    assert msg_in.request_id is None
+    assert msg_in.request_id == request.id
 
     group_sends = [
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
-    assert group_sends == []
+    assert len(group_sends) == 1
 
 
 @pytest.mark.asyncio

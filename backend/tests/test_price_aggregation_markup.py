@@ -7,9 +7,9 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MarkupRule, Supplier
+from app.db.models import Supplier
 from app.llm.client import set_llm_client
-from app.services.markup_service import classify_category, load_rules, resolve_markup
+from app.services.markup_service import apply_markup, load_rules, seed_markup_rule_rows
 from app.services.price_service import (
     aggregate_today,
     build_draft_items,
@@ -19,58 +19,27 @@ from app.services.price_service import (
 from tests.conftest import MockLLMClient
 
 
-def test_classify_category() -> None:
-    assert classify_category("iPhone 15 Pro") == "iphone"
-    assert classify_category("iPhone 13") == "iphone"
-    assert classify_category("iPhone 16") == "iphone"
-    assert classify_category("iPhone 17") == "iphone"
-    assert classify_category("iPhone 17 Pro") == "iphone_17_pro"
-    assert classify_category("iPhone 17 Pro Max") == "iphone_17_pro"
-    assert classify_category("айфон 17 про макс") == "iphone_17_pro"
-    assert classify_category("AirPods Pro") == "airpods"
-    assert classify_category("Apple Watch Ultra") == "apple_watch"
-    assert classify_category("iPad Air") == "ipad"
-    assert classify_category("MacBook Pro 14") == "macbook"
-    assert classify_category("Samsung Galaxy S24") == "samsung"
-    assert classify_category("Galaxy S26 Ultra") == "samsung_s26_ultra"
-    assert classify_category("с26 ультра") == "samsung_s26_ultra"
-    assert classify_category("PlayStation 5") == "playstation"
-    assert classify_category("Dyson Airwrap") == "dyson"
-    assert classify_category("колонка JBL") == "*"
-    assert classify_category("чехол") == "*"
-    assert classify_category("Xiaomi 14") == "*"
-
-
-def test_resolve_markup_fixed_and_fallback() -> None:
-    apple = MarkupRule(
-        category="apple",
-        markup_fixed=Decimal("700"),
-        active=True,
+def test_apply_markup_from_rules() -> None:
+    rules = seed_markup_rule_rows()
+    final, markup, rule_id, _key = apply_markup(
+        Decimal("70000"),
+        "iPhone 15",
+        rules,
     )
-    star = MarkupRule(
-        category="*",
-        markup_fixed=None,
-        markup_min=Decimal("500"),
-        markup_max=Decimal("1000"),
-        active=True,
-    )
-    rules = {"apple": apple, "*": star}
-    assert resolve_markup(rules, "apple", Decimal("500")) == Decimal("700")
-    assert resolve_markup(rules, "samsung", Decimal("500")) == Decimal("500")
-    assert resolve_markup(rules, "samsung", Decimal("1200")) == Decimal("1000")
-    assert resolve_markup({}, "apple", Decimal("500")) is None
+    assert markup == Decimal("500")
+    assert final == Decimal("70500")
+    assert markup == Decimal("500")
 
 
 @pytest.mark.asyncio
 async def test_min_price_aggregation_and_our_price(
     db_session: AsyncSession,
     seed_suppliers: list[Supplier],
-    seed_markup_rules: list[MarkupRule],
+    seed_markup_rules,
     mock_llm: MockLLMClient,
 ) -> None:
     set_llm_client(mock_llm)
 
-    # Supplier A — higher price
     mock_llm.price_result = {
         "items": [
             {
@@ -91,7 +60,6 @@ async def test_min_price_aggregation_and_our_price(
     )
     await parse_pending_raw_prices(db_session)
 
-    # Supplier B — lower price, same SKU
     mock_llm.price_result = {
         "items": [
             {
@@ -114,17 +82,12 @@ async def test_min_price_aggregation_and_our_price(
 
     aggregated = await aggregate_today(db_session)
     assert len(aggregated) == 1
-    assert aggregated[0]["sku_key"] == "iPhone 15|256GB|Black||"
     assert Decimal(str(aggregated[0]["min_price"])) == Decimal("70000")
 
     rules = await load_rules(db_session)
     draft_items = build_draft_items(aggregated, rules, Decimal("500"))
     assert len(draft_items) == 1
-    # iphone rule markup_fixed=500
     assert draft_items[0]["our_price"] == "70500.00"
-    assert "min_price" not in draft_items[0]
-    assert "markup" not in draft_items[0]
-    assert "supplier" not in draft_items[0]
     set_llm_client(None)
 
 

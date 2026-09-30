@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.db.models import Quote, QuoteSource, Request, RequestStatus
+from app.services.markup_service import apply_markup, load_rules
 
 
 async def select_best_quote(
@@ -123,8 +124,65 @@ async def upsert_quote(
     quote = await session.get(Quote, quote_id)
     assert quote is not None
 
+    if price is not None and not bargain:
+        await _apply_markup_from_request(
+            session,
+            quote,
+            request_id,
+            supplier_price=Decimal(str(price)),
+        )
+    elif price is not None and bargain:
+        await _apply_markup_from_request(
+            session,
+            quote,
+            request_id,
+            use_bargain=True,
+            supplier_price=Decimal(str(price)),
+        )
+
     await _maybe_transition_to_priced(session, request_id)
     return quote
+
+
+async def _apply_markup_from_request(
+    session: AsyncSession,
+    quote: Quote,
+    request_id: int,
+    *,
+    use_bargain: bool = False,
+    supplier_price: Decimal | None = None,
+) -> None:
+    """Set markup_rub / price_final from supplier price and request product attrs."""
+    request = await session.get(Request, request_id)
+    if request is None:
+        return
+    if supplier_price is None:
+        supplier_price = quote.price_bargain if use_bargain else quote.price_initial
+    if supplier_price is None:
+        return
+
+    base = Decimal(supplier_price)
+    if use_bargain and quote.markup_rub is not None:
+        quote.price_final = base + quote.markup_rub
+        await session.flush()
+        return
+
+    rules = await load_rules(session)
+    product = request.normalized_json or {"model": request.source_text}
+    final, markup, rule_id, _rule_key = apply_markup(base, product, rules)
+    quote.markup_rub = markup
+    quote.price_final = final
+    quote.markup_rule_id = rule_id
+    await session.flush()
+
+
+def display_price_for_group(quote: Quote | None) -> Decimal | None:
+    """Price shown to client group (marked-up final)."""
+    if quote is None:
+        return None
+    if quote.price_final is not None:
+        return quote.price_final
+    return quote.price_bargain or quote.price_initial
 
 
 async def _maybe_transition_to_priced(session: AsyncSession, request_id: int) -> None:

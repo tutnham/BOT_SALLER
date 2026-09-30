@@ -138,7 +138,7 @@ async def test_business_message_reply_creates_quote(
 
 
 @pytest.mark.asyncio
-async def test_business_message_without_reply_does_not_bind_request(
+async def test_business_message_without_reply_binds_with_price(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
     webhook_headers: dict[str, str],
@@ -179,7 +179,8 @@ async def test_business_message_without_reply_does_not_bind_request(
     )
     assert resp.json()["status"] == "ok"
     quote = await db_session.scalar(select(Quote).where(Quote.request_id == request.id))
-    assert quote is None
+    assert quote is not None
+    assert quote.price_initial == 88000
 
 
 @pytest.mark.asyncio

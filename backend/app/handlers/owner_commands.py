@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.db.models import ProductCategory, Supplier, SupplierCategory
+from app.handlers.supplier_messages import manual_bind_message
+from app.services.markup_service import list_active_rules, update_rule_markup
 from app.services.purge_service import DEFAULT_PURGE_OLD_LIMIT, purge_old_requests
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol
@@ -25,6 +31,24 @@ _PURGE_OLD_RE = re.compile(
     r"^/purge_old(?:@\w+)?\s+(\d+)(?:\s+(\d+))?(?:\s+(--confirm))?\s*$",
     re.IGNORECASE,
 )
+_MARKUP_SET_RE = re.compile(
+    r"^/markup_set(?:@\w+)?\s+(\S+)\s+(\d+)\s*$",
+    re.IGNORECASE,
+)
+_SUPPLIER_CAT_ADD_RE = re.compile(
+    r"^/supplier_cat_add(?:@\w+)?\s+(\d+)\s+(\w+)\s*$",
+    re.IGNORECASE,
+)
+_SUPPLIER_CAT_DEL_RE = re.compile(
+    r"^/supplier_cat_del(?:@\w+)?\s+(\d+)\s+(\w+)\s*$",
+    re.IGNORECASE,
+)
+_BIND_RE = re.compile(
+    r"^/bind(?:@\w+)?\s+(\d+)\s+(\d+)\s*$",
+    re.IGNORECASE,
+)
+
+_VALID_CATEGORIES = frozenset(item.value for item in ProductCategory)
 
 
 def _parse_report_args(text: str) -> tuple[str, int | None] | None:
@@ -132,6 +156,173 @@ async def _handle_purge_old(
     return "ok"
 
 
+async def _handle_markup_list(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    telegram: TelegramClientProtocol,
+) -> str:
+    rules = await list_active_rules(session)
+    if not rules:
+        block = "—"
+    else:
+        block = "\n".join(
+            f"{rule.rule_key}: {rule.markup_fixed} ₽ (priority {rule.priority})"
+            for rule in rules
+        )
+    await telegram.send_message(
+        chat_id,
+        render_template("markup_rules_list", rules_block=block),
+    )
+    return "ok"
+
+
+async def _handle_markup_set(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    text: str,
+    telegram: TelegramClientProtocol,
+) -> str:
+    match = _MARKUP_SET_RE.match(text)
+    if not match:
+        await telegram.send_message(chat_id, "Формат: /markup_set <rule_key> <сумма>")
+        return "ok"
+    rule_key = match.group(1)
+    try:
+        amount = Decimal(match.group(2))
+    except InvalidOperation:
+        await telegram.send_message(chat_id, "Сумма должна быть числом")
+        return "ok"
+    if amount < 0:
+        await telegram.send_message(chat_id, "Сумма не может быть отрицательной")
+        return "ok"
+    updated = await update_rule_markup(session, rule_key, amount)
+    if updated is None:
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_rule_not_found", rule_key=rule_key),
+        )
+        return "ok"
+    await telegram.send_message(
+        chat_id,
+        render_template("markup_rule_updated", rule_key=rule_key, amount=amount),
+    )
+    return "ok"
+
+
+async def _handle_supplier_categories_list(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    telegram: TelegramClientProtocol,
+) -> str:
+    result = await session.execute(
+        select(Supplier)
+        .options(selectinload(Supplier.categories))
+        .order_by(Supplier.id.asc())
+    )
+    lines: list[str] = []
+    for supplier in result.scalars().all():
+        cats = sorted(row.category for row in supplier.categories)
+        lines.append(f"#{supplier.id} {supplier.name}: {', '.join(cats) or '—'}")
+    await telegram.send_message(
+        chat_id,
+        render_template(
+            "supplier_categories_list",
+            lines="\n".join(lines) if lines else "—",
+        ),
+    )
+    return "ok"
+
+
+async def _handle_supplier_cat_change(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    text: str,
+    telegram: TelegramClientProtocol,
+    add: bool,
+) -> str:
+    pattern = _SUPPLIER_CAT_ADD_RE if add else _SUPPLIER_CAT_DEL_RE
+    match = pattern.match(text)
+    if not match:
+        verb = "add" if add else "del"
+        await telegram.send_message(
+            chat_id,
+            f"Формат: /supplier_cat_{verb} <supplier_id> <category>",
+        )
+        return "ok"
+    supplier_id = int(match.group(1))
+    category = match.group(2).lower()
+    if category not in _VALID_CATEGORIES:
+        await telegram.send_message(chat_id, f"Категория: {', '.join(sorted(_VALID_CATEGORIES))}")
+        return "ok"
+    supplier = await session.get(Supplier, supplier_id)
+    if supplier is None:
+        await telegram.send_message(chat_id, "Поставщик не найден")
+        return "ok"
+    if add:
+        session.add(SupplierCategory(supplier_id=supplier_id, category=category))
+    else:
+        row = await session.scalar(
+            select(SupplierCategory).where(
+                SupplierCategory.supplier_id == supplier_id,
+                SupplierCategory.category == category,
+            )
+        )
+        if row is not None:
+            await session.delete(row)
+    await session.flush()
+    await session.refresh(supplier, attribute_names=["categories"])
+    cats = ", ".join(sorted(c.category for c in supplier.categories))
+    await telegram.send_message(
+        chat_id,
+        render_template(
+            "supplier_category_updated",
+            supplier_id=supplier_id,
+            categories=cats or "—",
+        ),
+    )
+    return "ok"
+
+
+async def _handle_bind(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    text: str,
+    telegram: TelegramClientProtocol,
+) -> str:
+    match = _BIND_RE.match(text)
+    if not match:
+        await telegram.send_message(chat_id, "Формат: /bind <message_in_id> <request_id>")
+        return "ok"
+    message_in_id = int(match.group(1))
+    request_id = int(match.group(2))
+    result = await manual_bind_message(
+        session,
+        message_in_id=message_in_id,
+        request_id=request_id,
+        telegram=telegram,
+    )
+    if result != "ok":
+        await telegram.send_message(
+            chat_id,
+            render_template("bind_failed", reason=result),
+        )
+        return "ok"
+    await telegram.send_message(
+        chat_id,
+        render_template(
+            "bind_ok",
+            message_in_id=message_in_id,
+            request_id=request_id,
+        ),
+    )
+    return "ok"
+
+
 async def handle_owner_message(
     session: AsyncSession,
     message: dict,
@@ -164,6 +355,54 @@ async def handle_owner_message(
 
     if text.startswith("/purge_old"):
         return await _handle_purge_old(
+            session,
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+        )
+
+    if text.startswith("/markup_set"):
+        return await _handle_markup_set(
+            session,
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+        )
+
+    if text.startswith("/markup"):
+        return await _handle_markup_list(
+            session,
+            chat_id=int(chat_id),
+            telegram=telegram,
+        )
+
+    if text.startswith("/supplier_cat_add"):
+        return await _handle_supplier_cat_change(
+            session,
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+            add=True,
+        )
+
+    if text.startswith("/supplier_cat_del"):
+        return await _handle_supplier_cat_change(
+            session,
+            chat_id=int(chat_id),
+            text=text,
+            telegram=telegram,
+            add=False,
+        )
+
+    if text.startswith("/supplier_categories"):
+        return await _handle_supplier_categories_list(
+            session,
+            chat_id=int(chat_id),
+            telegram=telegram,
+        )
+
+    if text.startswith("/bind"):
+        return await _handle_bind(
             session,
             chat_id=int(chat_id),
             text=text,
