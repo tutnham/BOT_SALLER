@@ -386,6 +386,12 @@ async def _handle_bind(
         request_id=request_id,
         telegram=telegram,
     )
+    if result == "already_bound":
+        await telegram.send_message(
+            chat_id,
+            render_template("bind_already", request_id=request_id),
+        )
+        return "ok"
     if result != "ok":
         await telegram.send_message(
             chat_id,
@@ -394,11 +400,7 @@ async def _handle_bind(
         return "ok"
     await telegram.send_message(
         chat_id,
-        render_template(
-            "bind_ok",
-            message_in_id=message_in_id,
-            request_id=request_id,
-        ),
+        render_template("bind_ok", request_id=request_id),
     )
     return "ok"
 

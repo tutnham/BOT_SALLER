@@ -231,19 +231,44 @@ async def _dispatch_callback(
             telegram=telegram,
         )
         if result == "ok":
-            await telegram.send_message(
-                chat_id,
-                render_template(
-                    "bind_ok",
-                    message_in_id=cd.arg,
-                    request_id=cd.page,
-                ),
-            )
+            text = render_template("bind_ok", request_id=cd.page)
+        elif result == "already_bound":
+            text = render_template("bind_already", request_id=cd.page)
         else:
-            await telegram.send_message(
-                chat_id,
-                render_template("bind_failed", reason=result),
-            )
+            text = render_template("bind_failed", reason=result)
+        await _send_or_edit(
+            telegram, chat_id=chat_id, text=text, message_id=message_id
+        )
+        return
+
+    if action == "bind_unbind":
+        from app.handlers.supplier_messages import unbind_message
+
+        result = await unbind_message(session, message_in_id=cd.arg, telegram=telegram)
+        text = (
+            render_template("bind_unbound_ok")
+            if result == "ok"
+            else render_template("bind_failed", reason=result)
+        )
+        await _send_or_edit(
+            telegram, chat_id=chat_id, text=text, message_id=message_id
+        )
+        return
+
+    if action == "bind_ignore":
+        from app.handlers.supplier_messages import unbind_message
+
+        result = await unbind_message(
+            session, message_in_id=cd.arg, telegram=telegram, status="ignored"
+        )
+        text = (
+            render_template("bind_ignored_ok")
+            if result == "ok"
+            else render_template("bind_failed", reason=result)
+        )
+        await _send_or_edit(
+            telegram, chat_id=chat_id, text=text, message_id=message_id
+        )
         return
 
     if action == "requests":

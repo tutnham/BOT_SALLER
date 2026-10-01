@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +55,20 @@ _ACTIVE_STATUSES = (
     RequestStatus.priced,
     RequestStatus.open,
 )
+
+
+def candidate_label(request: Request) -> str:
+    """Human label for a request in owner bind buttons/cards."""
+    normalized = request.normalized_json or {}
+    model = normalized.get("model")
+    if model:
+        parts = [str(model)]
+        for key in ("storage", "color"):
+            value = normalized.get(key)
+            if value:
+                parts.append(str(value))
+        return " ".join(parts)
+    return (request.source_text or "").strip()[:48]
 
 
 async def _parse_with_llm_cache(
@@ -166,8 +180,8 @@ async def process_bound_supplier_reply(
     business_connection_id: str | None,
     chat_id: int,
     bind_method: str,
-) -> None:
-    """Parse supplier text, upsert quote, notify employee group."""
+) -> Quote | None:
+    """Parse supplier text, upsert quote, notify employee group. Returns the quote."""
     message_in.bind_method = bind_method
     message_in.bind_status = "bound"
     message_in.request_id = request.id
@@ -179,7 +193,7 @@ async def process_bound_supplier_reply(
             render_template("request_not_open", request_id=request.id),
             business_connection_id=business_connection_id,
         )
-        return
+        return None
 
     parsed: Any = parse_supplier_reply(raw_text)
     source = QuoteSource.regex
@@ -252,6 +266,7 @@ async def process_bound_supplier_reply(
                     new_price=new_final,
                 ),
             )
+    return quote
 
 
 async def _notify_unbound(
@@ -263,19 +278,18 @@ async def _notify_unbound(
     candidates: list[Request],
     telegram: TelegramClientProtocol,
 ) -> None:
+    rows: list[list[dict[str, Any]]] = []
     if not candidates:
         block = "—"
-        markup = None
     else:
         lines: list[str] = []
-        rows: list[list[dict[str, Any]]] = []
         for request in candidates[:8]:
-            model = (request.normalized_json or {}).get("model") or (request.source_text or "")[:32]
-            lines.append(f"#{request.id} {model}")
+            label = candidate_label(request)
+            lines.append(f"#{request.id} {label}")
             rows.append(
                 [
                     menu_button(
-                        f"#{request.id} {model}"[:40],
+                        f"#{request.id} {label}"[:40],
                         "bind_pick",
                         message_in.id,
                         page=request.id,
@@ -283,18 +297,68 @@ async def _notify_unbound(
                 ]
             )
         block = "\n".join(lines)
-        markup = inline_keyboard(rows)
+    rows.append([menu_button("Игнорировать", "bind_ignore", message_in.id)])
+    markup = inline_keyboard(rows)
     await notify_operators(
         session,
         render_template(
             "alert_unbound_supplier_message",
+            supplier_name=supplier.name,
             supplier_id=supplier.id,
-            message_in_id=message_in.id,
             raw_text=raw_text[:500],
             candidates_block=block,
         ),
         telegram=telegram,
         reply_markup=markup,
+    )
+
+
+async def _notify_auto_bound(
+    session: AsyncSession,
+    *,
+    message_in: MessageIn,
+    supplier: Supplier,
+    request: Request,
+    quote: Quote,
+    raw_text: str,
+    candidates: list[Request],
+    telegram: TelegramClientProtocol,
+) -> None:
+    """Owner card after order-based auto bind: rebind buttons + undo."""
+    rows: list[list[dict[str, Any]]] = []
+    for candidate in candidates[:8]:
+        if candidate.id == request.id:
+            continue
+        label = candidate_label(candidate)
+        rows.append(
+            [
+                menu_button(
+                    f"#{candidate.id} {label}"[:40],
+                    "bind_pick",
+                    message_in.id,
+                    page=candidate.id,
+                )
+            ]
+        )
+    rows.append([menu_button("Отменить привязку", "bind_unbind", message_in.id)])
+
+    final_price = display_price_for_group(quote)
+    await notify_operators(
+        session,
+        render_template(
+            "alert_auto_bound_supplier_price",
+            supplier_name=supplier.name,
+            supplier_id=supplier.id,
+            raw_text=raw_text[:500],
+            request_id=request.id,
+            request_label=candidate_label(request),
+            final_price=f"{final_price} ₽" if final_price is not None else "—",
+            supplier_price=(
+                f"{quote.price_initial} ₽" if quote.price_initial is not None else "—"
+            ),
+        ),
+        telegram=telegram,
+        reply_markup=inline_keyboard(rows),
     )
 
 
@@ -408,7 +472,9 @@ async def handle_reply(
         return "ok"
 
     if decision.request is None:
-        candidates = await load_open_requests_for_supplier(session, supplier=supplier)
+        candidates = decision.candidates
+        if not candidates:
+            candidates = await load_open_requests_for_supplier(session, supplier=supplier)
         await _notify_unbound(
             session,
             message_in=message_in,
@@ -419,7 +485,7 @@ async def handle_reply(
         )
         return "ok"
 
-    await process_bound_supplier_reply(
+    quote = await process_bound_supplier_reply(
         session,
         request=decision.request,
         supplier=supplier,
@@ -430,7 +496,71 @@ async def handle_reply(
         chat_id=int(chat_id),
         bind_method=decision.method,
     )
+    if (
+        decision.method == "order"
+        and len(decision.candidates) > 1
+        and quote is not None
+    ):
+        await _notify_auto_bound(
+            session,
+            message_in=message_in,
+            supplier=supplier,
+            request=decision.request,
+            quote=quote,
+            raw_text=raw_text,
+            candidates=decision.candidates,
+            telegram=telegram,
+        )
     return "ok"
+
+
+async def _withdraw_quote(
+    session: AsyncSession,
+    *,
+    message_in: MessageIn,
+    supplier: Supplier,
+    telegram: TelegramClientProtocol,
+) -> None:
+    """Remove the quote this message produced from its previous request.
+
+    Only when this message is the supplier's latest bound message for that
+    request and the quote is not manual — newer prices stay untouched.
+    """
+    old_request_id = message_in.request_id
+    if old_request_id is None:
+        return
+    latest_id = await session.scalar(
+        select(func.max(MessageIn.id)).where(
+            MessageIn.request_id == old_request_id,
+            MessageIn.supplier_id == supplier.id,
+            MessageIn.bind_status == "bound",
+        )
+    )
+    if latest_id != message_in.id:
+        return
+    quote = await session.scalar(
+        select(Quote).where(
+            Quote.request_id == old_request_id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    if quote is None or quote.source == QuoteSource.manual:
+        return
+    old_request = await session.get(Request, old_request_id)
+    await session.delete(quote)
+    await session.flush()
+    if old_request is None:
+        return
+    await telegram.send_message(
+        old_request.group_chat_id,
+        render_template("client_quote_withdrawn", request_id=old_request_id),
+    )
+    remaining = await session.scalar(
+        select(func.count()).select_from(Quote).where(Quote.request_id == old_request_id)
+    )
+    if not remaining and old_request.status is RequestStatus.priced:
+        old_request.status = RequestStatus.awaiting_answers
+        await session.flush()
 
 
 async def manual_bind_message(
@@ -440,7 +570,7 @@ async def manual_bind_message(
     request_id: int,
     telegram: TelegramClientProtocol,
 ) -> str:
-    """Owner manual bind of unbound supplier message."""
+    """Owner manual bind of supplier message; moves the quote when rebinding."""
     message_in = await session.get(MessageIn, message_in_id)
     if message_in is None:
         return "not_found"
@@ -450,6 +580,14 @@ async def manual_bind_message(
     supplier = await session.get(Supplier, message_in.supplier_id)
     if supplier is None:
         return "supplier_not_found"
+
+    if message_in.request_id == request_id and message_in.bind_status == "bound":
+        return "already_bound"
+
+    if message_in.request_id is not None and message_in.request_id != request_id:
+        await _withdraw_quote(
+            session, message_in=message_in, supplier=supplier, telegram=telegram
+        )
 
     await process_bound_supplier_reply(
         session,
@@ -462,4 +600,30 @@ async def manual_bind_message(
         chat_id=message_in.chat_id,
         bind_method="manual",
     )
+    return "ok"
+
+
+async def unbind_message(
+    session: AsyncSession,
+    *,
+    message_in_id: int,
+    telegram: TelegramClientProtocol,
+    status: str = "unbound",
+) -> str:
+    """Detach supplier message from its request and withdraw the quote it made."""
+    message_in = await session.get(MessageIn, message_in_id)
+    if message_in is None:
+        return "not_found"
+    supplier = await session.get(Supplier, message_in.supplier_id)
+    if supplier is None:
+        return "supplier_not_found"
+
+    if message_in.request_id is not None:
+        await _withdraw_quote(
+            session, message_in=message_in, supplier=supplier, telegram=telegram
+        )
+    message_in.request_id = None
+    message_in.bind_method = "none"
+    message_in.bind_status = status
+    await session.flush()
     return "ok"
