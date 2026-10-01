@@ -688,3 +688,68 @@ async def test_bind_ignore_marks_message_ignored(
     assert result == "ok"
     await db_session.refresh(message_in)
     assert message_in.bind_status == "ignored"
+
+
+@pytest.mark.asyncio
+async def test_unbound_price_rebinds_on_new_request(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers,
+    seed_client_group,
+    mock_telegram: MockTelegramClient,
+) -> None:
+    """Price arrived before any active request; new /ask picks it up."""
+    supplier = seed_suppliers[0]
+    assert supplier.telegram_id is not None
+
+    await handle_reply(
+        db_session,
+        _supplier_message(supplier.telegram_id, 801, "ок"),
+        telegram=mock_telegram,
+    )
+    await handle_reply(
+        db_session,
+        _supplier_message(supplier.telegram_id, 802, "97200"),
+        telegram=mock_telegram,
+    )
+    noise_in = await db_session.scalar(
+        select(MessageIn).where(MessageIn.tg_message_id == 801)
+    )
+    price_in = await db_session.scalar(
+        select(MessageIn).where(MessageIn.tg_message_id == 802)
+    )
+    assert noise_in is not None and noise_in.bind_status == "ignored"
+    assert price_in is not None and price_in.bind_status == "unbound"
+
+    request, _ = await create_request(
+        db_session,
+        group_chat_id=seed_client_group.chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro 256",
+        telegram=mock_telegram,
+    )
+
+    await db_session.refresh(price_in)
+    assert price_in.request_id == request.id
+    assert price_in.bind_status == "bound"
+    assert price_in.bind_method == "rebind_single"
+
+    await db_session.refresh(noise_in)
+    assert noise_in.bind_status == "ignored"
+    assert noise_in.request_id is None
+
+    quote = await db_session.scalar(
+        select(Quote).where(
+            Quote.request_id == request.id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    assert quote is not None
+    assert quote.price_initial == 97200
+
+    group_texts = [
+        text
+        for chat_id, text, _markup in mock_telegram.sent
+        if chat_id == seed_client_group.chat_id
+    ]
+    assert any(f"#{request.id}" in text for text in group_texts)
