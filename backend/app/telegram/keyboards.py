@@ -122,9 +122,10 @@ def menu_button(text: str, action: str, arg: int = 0, page: int = 0) -> dict[str
 
 
 def reply_keyboard(rows: list[list[str]]) -> dict[str, Any]:
-    """Persistent reply keyboard. Stays under the input in a private chat."""
+    """One-time reply keyboard. Hides after the user taps a button."""
     return {
         "keyboard": [[{"text": label} for label in row] for row in rows],
         "resize_keyboard": True,
-        "is_persistent": True,
+        "is_persistent": False,
+        "one_time_keyboard": True,
     }

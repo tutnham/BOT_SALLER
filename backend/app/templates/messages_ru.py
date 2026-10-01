@@ -32,10 +32,12 @@ TEMPLATES: dict[str, str] = {
         "{source_text}"
     ),
     "alert_unbound_supplier_message": (
-        "Непривязанное сообщение поставщика #{supplier_id} (messages_in #{message_in_id}):\n"
-        "{raw_text}\n\nКандидаты: {candidates_block}\n\n/bind {message_in_id} <request_id>"
+        "Непривязанное сообщение поставщика #{supplier_id} (сообщение #{message_in_id}):\n"
+        "{raw_text}\n\nНажмите заявку, к которой отнести эту цену:\n{candidates_block}"
     ),
-    "markup_rules_list": "Правила наценки:\n{rules_block}",
+    "markup_rules_list": "Наценки. Нажмите правило, чтобы изменить сумму:\n{rules_block}",
+    "markup_edit_prompt": "Наценка «{rule_label}» сейчас {amount} ₽. Выберите сумму или напишите свою.",
+    "markup_enter_amount": "Напишите новую наценку для «{rule_label}» числом, например 800.",
     "markup_rule_updated": "Наценка {rule_key} = {amount} ₽",
     "markup_rule_not_found": "Правило {rule_key} не найдено",
     "supplier_categories_list": "Категории поставщиков:\n{lines}",
@@ -150,7 +152,7 @@ TEMPLATES: dict[str, str] = {
     ),
     "owner_start_ok": (
         "Вы владелец.\n"
-        "Кнопки внизу открывают меню, отчёты и наценки. "
+        "Кнопки внизу открывают меню, отчёты и наценки и скрываются после нажатия. "
         "Команды писать не нужно."
     ),
     "employee_start_ok": (

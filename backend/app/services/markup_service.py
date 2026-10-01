@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from functools import lru_cache
 
@@ -157,7 +158,19 @@ async def update_rule_markup(
     rule = result.scalar_one_or_none()
     if rule is None:
         return None
+    return await update_rule_markup_by_id(session, rule.id, markup_rub)
+
+
+async def update_rule_markup_by_id(
+    session: AsyncSession,
+    rule_id: int,
+    markup_rub: Decimal,
+) -> MarkupRule | None:
+    rule = await session.get(MarkupRule, rule_id)
+    if rule is None:
+        return None
     rule.markup_fixed = markup_rub
+    rule.updated_at = datetime.now(UTC)
     await session.flush()
     return rule
 

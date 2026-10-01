@@ -9,9 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import ProductCategory, Supplier, SupplierCategory
+from app.db.models import ProductCategory, Supplier, SupplierCategory, MarkupRule
 from app.handlers.supplier_messages import manual_bind_message
-from app.services.markup_service import list_active_rules, update_rule_markup
+from app.services.markup_service import (
+    list_active_rules,
+    update_rule_markup,
+    update_rule_markup_by_id,
+)
 from app.services.purge_service import DEFAULT_PURGE_OLD_LIMIT, purge_old_requests
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol
@@ -162,19 +166,95 @@ async def _handle_markup_list(
     chat_id: int,
     telegram: TelegramClientProtocol,
 ) -> str:
+    await send_markup_list(session, chat_id=chat_id, telegram=telegram)
+    return "ok"
+
+
+def _markup_label(rule: MarkupRule) -> str:
+    return (rule.rule_key or rule.category or "правило").replace("_", " ")
+
+
+async def send_markup_list(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    telegram: TelegramClientProtocol,
+) -> None:
     rules = await list_active_rules(session)
     if not rules:
-        block = "—"
-    else:
-        block = "\n".join(
-            f"{rule.rule_key}: {rule.markup_fixed} ₽ (priority {rule.priority})"
-            for rule in rules
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_rules_list", rules_block="—"),
+        )
+        return
+    lines: list[str] = []
+    rows: list[list[dict]] = []
+    for rule in rules:
+        label = _markup_label(rule)
+        amount = int(rule.markup_fixed or 0)
+        lines.append(f"{label}: {amount} ₽")
+        rows.append(
+            [menu_button(f"{label} · {amount} ₽"[:40], "mk_open", int(rule.id))]
         )
     await telegram.send_message(
         chat_id,
-        render_template("markup_rules_list", rules_block=block),
+        render_template("markup_rules_list", rules_block="\n".join(lines)),
+        reply_markup=inline_keyboard(rows),
     )
-    return "ok"
+
+
+async def send_markup_edit(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    rule_id: int,
+    telegram: TelegramClientProtocol,
+) -> None:
+    rule = await session.get(MarkupRule, rule_id)
+    if rule is None:
+        await telegram.send_message(chat_id, render_template("markup_rule_not_found", rule_key=rule_id))
+        return
+    label = _markup_label(rule)
+    amount = int(rule.markup_fixed or 0)
+    amount_row = [
+        menu_button(f"{preset}", "mk_set", rule_id, page=preset)
+        for preset in (500, 800, 1000)
+    ]
+    rows = [
+        amount_row,
+        [menu_button("Своя сумма", "mk_custom", rule_id)],
+        [menu_button("К списку", "markup_list")],
+    ]
+    await telegram.send_message(
+        chat_id,
+        render_template("markup_edit_prompt", rule_label=label, amount=amount),
+        reply_markup=inline_keyboard(rows),
+    )
+
+
+async def apply_markup_choice(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    rule_id: int,
+    amount: Decimal,
+    telegram: TelegramClientProtocol,
+) -> None:
+    updated = await update_rule_markup_by_id(session, rule_id, amount)
+    if updated is None:
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_rule_not_found", rule_key=rule_id),
+        )
+        return
+    await telegram.send_message(
+        chat_id,
+        render_template(
+            "markup_rule_updated",
+            rule_key=_markup_label(updated),
+            amount=amount,
+        ),
+    )
 
 
 async def _handle_markup_set(
@@ -440,12 +520,3 @@ async def send_owner_report(
         report_text,
         parse_mode=TELEGRAM_HTML_PARSE_MODE,
     )
-
-
-async def send_markup_list(
-    session: AsyncSession,
-    *,
-    chat_id: int,
-    telegram: TelegramClientProtocol,
-) -> None:
-    await _handle_markup_list(session, chat_id=chat_id, telegram=telegram)

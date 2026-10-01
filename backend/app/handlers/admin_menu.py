@@ -182,6 +182,70 @@ async def _dispatch_callback(
         await send_markup_list(session, chat_id=chat_id, telegram=telegram)
         return
 
+    if action == "mk_open":
+        from app.handlers.owner_commands import send_markup_edit
+
+        await send_markup_edit(
+            session, chat_id=chat_id, rule_id=cd.arg, telegram=telegram
+        )
+        return
+
+    if action == "mk_set":
+        from decimal import Decimal
+
+        from app.handlers.owner_commands import apply_markup_choice
+
+        await apply_markup_choice(
+            session,
+            chat_id=chat_id,
+            rule_id=cd.arg,
+            amount=Decimal(cd.page),
+            telegram=telegram,
+        )
+        return
+
+    if action == "mk_custom":
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_markup_amount",
+            payload={"rule_id": cd.arg},
+        )
+        from app.db.models import MarkupRule
+
+        rule = await session.get(MarkupRule, cd.arg)
+        label = (rule.rule_key if rule and rule.rule_key else "правило").replace("_", " ")
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_enter_amount", rule_label=label),
+        )
+        return
+
+    if action == "bind_pick":
+        from app.handlers.supplier_messages import manual_bind_message
+
+        result = await manual_bind_message(
+            session,
+            message_in_id=cd.arg,
+            request_id=cd.page,
+            telegram=telegram,
+        )
+        if result == "ok":
+            await telegram.send_message(
+                chat_id,
+                render_template(
+                    "bind_ok",
+                    message_in_id=cd.arg,
+                    request_id=cd.page,
+                ),
+            )
+        else:
+            await telegram.send_message(
+                chat_id,
+                render_template("bind_failed", reason=result),
+            )
+        return
+
     if action == "requests":
         await _send_request_list(session, telegram, chat_id, cd.page, message_id=message_id)
         return
@@ -1386,6 +1450,31 @@ async def _handle_dialog_text(
     state = dialog.state
     payload = dialog.payload or {}
     text = extract_message_text(message)
+
+    if state == "await_markup_amount":
+        from decimal import Decimal, InvalidOperation
+
+        from app.handlers.owner_commands import apply_markup_choice
+
+        raw = text.replace(" ", "").replace(",", ".")
+        try:
+            amount = Decimal(raw)
+        except InvalidOperation:
+            await telegram.send_message(chat_id, "Сумма должна быть числом")
+            return "ok"
+        if amount < 0:
+            await telegram.send_message(chat_id, "Сумма не может быть отрицательной")
+            return "ok"
+        rule_id = int(payload.get("rule_id") or 0)
+        await admin_service.clear_dialog(session, owner_id)
+        await apply_markup_choice(
+            session,
+            chat_id=chat_id,
+            rule_id=rule_id,
+            amount=amount,
+            telegram=telegram,
+        )
+        return "ok"
 
     if state == "await_supplier_name":
         name = text.strip()

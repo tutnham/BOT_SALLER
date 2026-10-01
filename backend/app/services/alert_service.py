@@ -40,6 +40,7 @@ async def notify_operators(
     text: str,
     *,
     telegram: TelegramClientProtocol,
+    reply_markup: dict | None = None,
 ) -> None:
     """Notify admin alert chat and owners with dm_ok (deduped)."""
     from app.services.price_service import resolve_price_draft_destinations
@@ -57,7 +58,7 @@ async def notify_operators(
 
     for chat_id in destinations:
         try:
-            await telegram.send_message(int(chat_id), text)
+            await telegram.send_message(int(chat_id), text, reply_markup=reply_markup)
         except TelegramSendError as exc:
             logger.warning("Failed operator notify chat_id={}: {}", chat_id, exc)
 
