@@ -32,8 +32,19 @@ TEMPLATES: dict[str, str] = {
         "{source_text}"
     ),
     "alert_unbound_supplier_message": (
-        "Непривязанное сообщение поставщика #{supplier_id} (сообщение #{message_in_id}):\n"
-        "{raw_text}\n\nНажмите заявку, к которой отнести эту цену:\n{candidates_block}"
+        "Поставщик {supplier_label} прислал сообщение без привязки к заявке:\n"
+        "{raw_text}\n\n"
+        "К какой заявке отнести?\n{candidates_block}"
+    ),
+    "alert_auto_bound_supplier_price": (
+        "Поставщик {supplier_label} прислал цену без указания заявки:\n"
+        "{raw_text}\n\n"
+        "Отнёс к заявке #{request_id}: {request_label}\n"
+        "Клиенту отправлено: {final_price} (цена поставщика {supplier_price})\n\n"
+        "Если заявка не та — нажмите правильную:"
+    ),
+    "client_quote_withdrawn": (
+        "Заявка #{request_id}: цена уточняется, предыдущее предложение неактуально."
     ),
     "markup_rules_list": "Наценки. Нажмите правило, чтобы изменить сумму:\n{rules_block}",
     "markup_edit_prompt": "Наценка «{rule_label}» сейчас {amount} ₽. Выберите сумму или напишите свою.",
@@ -42,8 +53,11 @@ TEMPLATES: dict[str, str] = {
     "markup_rule_not_found": "Правило {rule_key} не найдено",
     "supplier_categories_list": "Категории поставщиков:\n{lines}",
     "supplier_category_updated": "Поставщик #{supplier_id}: категории {categories}",
-    "bind_ok": "Сообщение #{message_in_id} привязано к заявке #{request_id}",
+    "bind_ok": "Сообщение привязано к заявке #{request_id}",
+    "bind_already": "Сообщение уже привязано к заявке #{request_id}",
     "bind_failed": "Не удалось привязать: {reason}",
+    "bind_unbound_ok": "Привязка снята, клиенту отправлена поправка",
+    "bind_ignored_ok": "Сообщение отмечено как игнорируемое",
     "supplier_need_reply": (
         "Пожалуйста, ответьте на сообщение с номером заявки (#N)"
     ),
@@ -386,6 +400,8 @@ _SUPPLIER_LABEL_TEMPLATES = frozenset(
         "deal_closed",
         "setprice_ok",
         "bargain_sent",
+        "alert_unbound_supplier_message",
+        "alert_auto_bound_supplier_price",
     }
 )
 

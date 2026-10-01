@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -65,6 +65,7 @@ class BindingDecision:
     score: float | None
     parsed: ParsedSupplierReply
     ignored_reason: str | None = None
+    candidates: list[Request] = field(default_factory=list)
 
 
 def is_neutral_or_noise(raw_text: str) -> str | None:
@@ -285,6 +286,32 @@ async def resolve_binding(
             status="bound",
             score=None,
             parsed=parsed,
+            candidates=candidates,
+        )
+
+    if not message_attrs.model and not message_attrs.family and not message_attrs.number:
+        ordered = await _oldest_unanswered(session, supplier, candidates)
+        if ordered is not None:
+            logger.info(
+                "supplier_bind message supplier_id={} request_id={} method=order score=null",
+                supplier.id,
+                ordered.id,
+            )
+            return BindingDecision(
+                request=ordered,
+                method="order",
+                status="bound",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+            )
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="unbound",
+            score=None,
+            parsed=parsed,
+            candidates=candidates,
         )
 
     scored: list[tuple[Request, int]] = []
@@ -315,6 +342,7 @@ async def resolve_binding(
                 status="bound",
                 score=float(top_score),
                 parsed=parsed,
+                candidates=candidates,
             )
 
     llm_request, llm_conf = await _resolve_with_llm(session, raw_text, candidates)
@@ -331,23 +359,8 @@ async def resolve_binding(
             status="bound",
             score=llm_conf,
             parsed=parsed,
+            candidates=candidates,
         )
-
-    if not message_attrs.model and not message_attrs.family and not message_attrs.number:
-        ordered = await _oldest_unanswered(session, supplier, candidates)
-        if ordered is not None:
-            logger.info(
-                "supplier_bind message supplier_id={} request_id={} method=order score=null",
-                supplier.id,
-                ordered.id,
-            )
-            return BindingDecision(
-                request=ordered,
-                method="order",
-                status="bound",
-                score=None,
-                parsed=parsed,
-            )
 
     return BindingDecision(
         request=None,
@@ -355,6 +368,7 @@ async def resolve_binding(
         status="unbound",
         score=None,
         parsed=parsed,
+        candidates=candidates,
     )
 
 
