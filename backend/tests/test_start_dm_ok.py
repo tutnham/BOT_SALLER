@@ -57,6 +57,8 @@ async def test_owner_start_sets_dm_ok(
         for button in row
     ]
     assert "Меню" in labels
+    assert markup.get("one_time_keyboard") is True
+    assert markup.get("is_persistent") is False
 
 
 @pytest.mark.asyncio

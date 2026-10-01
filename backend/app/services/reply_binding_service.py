@@ -9,13 +9,14 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import (
     MessageOut,
     MessageSendStatus,
+    Quote,
     Request,
     RequestStatus,
     Supplier,
@@ -179,6 +180,43 @@ async def _resolve_with_llm(
     return None, binding.confidence
 
 
+async def _oldest_unanswered(
+    session: AsyncSession,
+    supplier: Supplier,
+    candidates: list[Request],
+) -> Request | None:
+    """First request sent to this supplier that still has no quote from them."""
+    ids = [request.id for request in candidates]
+    quoted = set(
+        (
+            await session.execute(
+                select(Quote.request_id).where(
+                    Quote.supplier_id == supplier.id,
+                    Quote.request_id.in_(ids),
+                )
+            )
+        ).scalars().all()
+    )
+    pending = [request for request in candidates if request.id not in quoted]
+    if not pending:
+        return None
+    sent_at = dict(
+        (
+            await session.execute(
+                select(MessageOut.request_id, func.min(MessageOut.sent_at))
+                .where(
+                    MessageOut.supplier_id == supplier.id,
+                    MessageOut.request_id.in_([request.id for request in pending]),
+                    MessageOut.send_status == MessageSendStatus.sent.value,
+                )
+                .group_by(MessageOut.request_id)
+            )
+        ).all()
+    )
+    pending.sort(key=lambda request: (sent_at.get(request.id) or request.created_at, request.id))
+    return pending[0]
+
+
 async def resolve_binding(
     session: AsyncSession,
     *,
@@ -294,6 +332,22 @@ async def resolve_binding(
             score=llm_conf,
             parsed=parsed,
         )
+
+    if not message_attrs.model and not message_attrs.family and not message_attrs.number:
+        ordered = await _oldest_unanswered(session, supplier, candidates)
+        if ordered is not None:
+            logger.info(
+                "supplier_bind message supplier_id={} request_id={} method=order score=null",
+                supplier.id,
+                ordered.id,
+            )
+            return BindingDecision(
+                request=ordered,
+                method="order",
+                status="bound",
+                score=None,
+                parsed=parsed,
+            )
 
     return BindingDecision(
         request=None,

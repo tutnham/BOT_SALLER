@@ -31,6 +31,7 @@ from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
+from app.telegram.keyboards import inline_keyboard, menu_button
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
 from app.services.reply_binding_service import (
@@ -264,11 +265,25 @@ async def _notify_unbound(
 ) -> None:
     if not candidates:
         block = "—"
+        markup = None
     else:
-        block = "\n".join(
-            f"#{request.id} {(request.normalized_json or {}).get('model', '')}"
-            for request in candidates
-        )
+        lines: list[str] = []
+        rows: list[list[dict[str, Any]]] = []
+        for request in candidates[:8]:
+            model = (request.normalized_json or {}).get("model") or (request.source_text or "")[:32]
+            lines.append(f"#{request.id} {model}")
+            rows.append(
+                [
+                    menu_button(
+                        f"#{request.id} {model}"[:40],
+                        "bind_pick",
+                        message_in.id,
+                        page=request.id,
+                    )
+                ]
+            )
+        block = "\n".join(lines)
+        markup = inline_keyboard(rows)
     await notify_operators(
         session,
         render_template(
@@ -279,6 +294,7 @@ async def _notify_unbound(
             candidates_block=block,
         ),
         telegram=telegram,
+        reply_markup=markup,
     )
 
 
