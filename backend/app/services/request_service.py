@@ -231,6 +231,20 @@ async def _broadcast_request(
         )
         if is_sent(outbound):
             sent_count += 1
+            # Supplier may have sent a price before this RFQ existed; retry binding.
+            from app.handlers.supplier_messages import retry_unbound_supplier_prices
+
+            try:
+                await retry_unbound_supplier_prices(
+                    session, supplier=supplier, telegram=telegram
+                )
+            except Exception as exc:
+                logger.warning(
+                    "rebind_unbound failed supplier_id={} request_id={}: {}",
+                    supplier.id,
+                    request.id,
+                    exc,
+                )
         else:
             logger.warning(
                 "Failed to send ask to supplier_id={} chat_id={}: {}",

@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     supplier_bind_min_score: int = 3
     supplier_bind_min_margin: int = 2
     supplier_reply_max_age_hours: int | None = None
+    # Window for retrying unbound supplier price messages after a new RFQ (0 = off).
+    supplier_rebind_window_hours: int = 24
     suppliers_without_categories_policy: str = "skip_and_notify"
     tz: str = "Europe/Moscow"
     # Used for NL synonym @mention gating in groups (Phase 5). Optional.
