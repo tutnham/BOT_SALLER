@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -12,6 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.manual_bind import (
+    manual_bind_message as manual_bind_message_use_case,
+)
 from app.config import get_settings
 from app.db.models import (
     MessageIn,
@@ -32,15 +34,16 @@ from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
-from app.telegram.keyboards import inline_keyboard, menu_button
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
 from app.services.reply_binding_service import (
     BindingDecision,
+    merge_llm_price,
     resolve_binding,
 )
 from app.services.routing_service import resolve_supplier_by_chat
 from app.telegram.client import TelegramClientProtocol
+from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
 from app.utils.whitelist import get_supplier_by_telegram_id
 
@@ -181,6 +184,7 @@ async def process_bound_supplier_reply(
     business_connection_id: str | None,
     chat_id: int,
     bind_method: str,
+    binding_price: Decimal | None = None,
 ) -> Quote | None:
     """Parse supplier text, upsert quote, notify employee group. Returns the quote."""
     message_in.bind_method = bind_method
@@ -201,6 +205,7 @@ async def process_bound_supplier_reply(
     if parsed.price is None and parsed.qty is None:
         parsed = await _parse_with_llm_cache(session, raw_text)
         source = QuoteSource.llm
+    parsed = merge_llm_price(parsed, binding_price)
 
     existing = await session.execute(
         select(Quote).where(
@@ -496,6 +501,7 @@ async def handle_reply(
         business_connection_id=business_connection_id,
         chat_id=int(chat_id),
         bind_method=decision.method,
+        binding_price=decision.binding_price,
     )
     if (
         decision.method == "order"
@@ -572,110 +578,12 @@ async def manual_bind_message(
     telegram: TelegramClientProtocol,
 ) -> str:
     """Owner manual bind of supplier message; moves the quote when rebinding."""
-    message_in = await session.get(MessageIn, message_in_id)
-    if message_in is None:
-        return "not_found"
-    request = await session.get(Request, request_id)
-    if request is None:
-        return "request_not_found"
-    supplier = await session.get(Supplier, message_in.supplier_id)
-    if supplier is None:
-        return "supplier_not_found"
-
-    if message_in.request_id == request_id and message_in.bind_status == "bound":
-        return "already_bound"
-
-    if message_in.request_id is not None and message_in.request_id != request_id:
-        await _withdraw_quote(
-            session, message_in=message_in, supplier=supplier, telegram=telegram
-        )
-
-    await process_bound_supplier_reply(
+    return await manual_bind_message_use_case(
         session,
-        request=request,
-        supplier=supplier,
-        raw_text=message_in.raw_text,
-        message_in=message_in,
+        message_in_id=message_in_id,
+        request_id=request_id,
         telegram=telegram,
-        business_connection_id=message_in.business_connection_id,
-        chat_id=message_in.chat_id,
-        bind_method="manual",
     )
-    return "ok"
-
-
-async def retry_unbound_supplier_prices(
-    session: AsyncSession,
-    *,
-    supplier: Supplier,
-    telegram: TelegramClientProtocol,
-) -> int:
-    """Re-run binding for recent unbound price messages after a new RFQ.
-
-    Covers the case where the supplier answered before any active request
-    existed (or all candidates were closed). Window: SUPPLIER_REBIND_WINDOW_HOURS.
-    """
-    window = get_settings().supplier_rebind_window_hours
-    if window <= 0:
-        return 0
-    cutoff = datetime.now(UTC) - timedelta(hours=window)
-    result = await session.execute(
-        select(MessageIn)
-        .where(
-            MessageIn.supplier_id == supplier.id,
-            MessageIn.bind_status == "unbound",
-            MessageIn.received_at >= cutoff,
-        )
-        .order_by(MessageIn.received_at.asc(), MessageIn.id.asc())
-    )
-    rebound = 0
-    for message_in in result.scalars().all():
-        parsed = parse_supplier_reply(message_in.raw_text)
-        if parsed.price is None:
-            continue
-        decision = await resolve_binding(
-            session,
-            supplier=supplier,
-            message={},
-            raw_text=message_in.raw_text,
-            reply_request=None,
-        )
-        if decision.status != "bound" or decision.request is None:
-            continue
-        quote = await process_bound_supplier_reply(
-            session,
-            request=decision.request,
-            supplier=supplier,
-            raw_text=message_in.raw_text,
-            message_in=message_in,
-            telegram=telegram,
-            business_connection_id=message_in.business_connection_id,
-            chat_id=message_in.chat_id,
-            bind_method=f"rebind_{decision.method}",
-        )
-        rebound += 1
-        logger.info(
-            "supplier_rebind message_in_id={} request_id={} method=rebind_{}",
-            message_in.id,
-            decision.request.id,
-            decision.method,
-        )
-        if (
-            decision.method == "order"
-            and len(decision.candidates) > 1
-            and quote is not None
-        ):
-            await _notify_auto_bound(
-                session,
-                message_in=message_in,
-                supplier=supplier,
-                request=decision.request,
-                quote=quote,
-                raw_text=message_in.raw_text,
-                candidates=decision.candidates,
-                telegram=telegram,
-            )
-    return rebound
 
 
 async def unbind_message(

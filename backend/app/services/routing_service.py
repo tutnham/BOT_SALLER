@@ -19,7 +19,6 @@ from app.db.models import (
     BusinessConnection,
     ClientGroup,
     Supplier,
-    SupplierCategory,
     SupplierChat,
     SupplierChatType,
 )

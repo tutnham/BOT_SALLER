@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MessageIn, Owner, Quote, Request, RequestStatus
+from app.db.models import MessageIn, Owner, Quote, RequestStatus
 from app.handlers.supplier_messages import (
     handle_reply,
     manual_bind_message,
@@ -14,7 +14,7 @@ from app.handlers.supplier_messages import (
 )
 from app.llm.client import set_llm_client
 from app.services.request_service import create_request
-from tests.conftest import MockLLMClient, MockTelegramClient, next_tg_update_id
+from tests.conftest import MockLLMClient, MockTelegramClient
 
 
 @pytest.mark.asyncio

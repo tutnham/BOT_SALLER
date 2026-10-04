@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -37,9 +37,13 @@ async def test_draft_created_pending(
     )
     await db_session.flush()
 
+    async def _empty_iter(**kwargs):
+        return
+        yield  # pragma: no cover
+
     with patch(
-        "app.services.price_service.get_posts",
-        new=AsyncMock(return_value=[]),
+        "app.services.price_service.iter_posts",
+        new=_empty_iter,
     ):
         resp = await webhook_client.post(
             "/jobs/morning-price",

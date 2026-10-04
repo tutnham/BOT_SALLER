@@ -16,6 +16,7 @@
 - **`TG_CHANNEL_PARSER_DOCUMENTATION.md`** — спека parser
 - **`Техническая документация  бот для закупок.md`** — спека backend
 - **`CLAUDE.md`** / **`AGENTS.md`** — правила для агентов
+- **`docs/archive/`** — история (n8n migration, workflow JSON)
 
 ## Production (кратко)
 

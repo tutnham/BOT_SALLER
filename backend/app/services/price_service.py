@@ -17,7 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.db.models import Owner, ParsedItem, PriceListDraft, RawPrice, Supplier
+from app.db.models import (
+    MarkupRule,
+    Owner,
+    ParsedItem,
+    PriceListDraft,
+    RawPrice,
+    Supplier,
+)
 from app.llm.client import LLMProviderError, get_llm_client
 from app.llm.schemas import (
     ParsedPriceItem,
@@ -27,7 +34,7 @@ from app.llm.schemas import (
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
 from app.services.alert_service import send_admin_alert
 from app.services.markup_service import apply_markup, load_rules
-from app.services.parser_client import ParserClientError, get_posts
+from app.services.parser_client import ParserClientError, iter_posts
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard
 from app.templates.messages_ru import render_template
@@ -143,28 +150,47 @@ async def ingest_channel_prices(
 
     semaphore = asyncio.Semaphore(5)
 
-    async def _fetch_posts_for_supplier(
-        supplier: Supplier,
-    ) -> tuple[Supplier, list[Any] | None, Exception | None]:
+    async def _ingest_supplier_channel(supplier: Supplier) -> tuple[Supplier, Exception | None]:
+        nonlocal raw_new
         channel_id = supplier.price_channel_id
         if channel_id is None:
-            return supplier, None, None
+            return supplier, None
         async with semaphore:
             try:
-                posts = await get_posts(
+                max_post_date: datetime | None = None
+                async for page in iter_posts(
                     channel_id=int(channel_id),
                     from_=supplier.last_price_sync_at,
                     content_type="text",
-                )
-                return supplier, posts, None
+                ):
+                    for post in page:
+                        text_body = (post.raw_text or "").strip()
+                        if not text_body:
+                            continue
+                        if max_post_date is None or post.post_date > max_post_date:
+                            max_post_date = post.post_date
+                        raw, is_new = await insert_raw_price(
+                            session,
+                            supplier_id=supplier.id,
+                            text=text_body,
+                            source="channel_post",
+                            source_post_id=post.post_id,
+                            source_message_link=post.message_link,
+                        )
+                        if is_new and raw is not None:
+                            raw_new += 1
+                if max_post_date is not None:
+                    supplier.last_price_sync_at = max_post_date
+                    await session.flush()
+                return supplier, None
             except ParserClientError as exc:
-                return supplier, None, exc
+                return supplier, exc
 
     fetch_results = await asyncio.gather(
-        *[_fetch_posts_for_supplier(supplier) for supplier in suppliers]
+        *[_ingest_supplier_channel(supplier) for supplier in suppliers]
     )
 
-    for supplier, posts, fetch_error in fetch_results:
+    for supplier, fetch_error in fetch_results:
         channel_id = supplier.price_channel_id
         if channel_id is None:
             continue
@@ -176,31 +202,6 @@ async def ingest_channel_prices(
                 channel_id,
                 fetch_error,
             )
-            continue
-
-        if posts is None:
-            continue
-        max_post_date: datetime | None = None
-        for post in posts:
-            text_body = (post.raw_text or "").strip()
-            if not text_body:
-                continue
-            if max_post_date is None or post.post_date > max_post_date:
-                max_post_date = post.post_date
-            raw, is_new = await insert_raw_price(
-                session,
-                supplier_id=supplier.id,
-                text=text_body,
-                source="channel_post",
-                source_post_id=post.post_id,
-                source_message_link=post.message_link,
-            )
-            if is_new and raw is not None:
-                raw_new += 1
-
-        if max_post_date is not None:
-            supplier.last_price_sync_at = max_post_date
-            await session.flush()
 
     return raw_new, degraded
 
@@ -329,7 +330,7 @@ async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
 
 def build_draft_items(
     aggregated: list[dict[str, Any]],
-    rules: dict,
+    rules: list[MarkupRule],
     default_markup: Decimal,
 ) -> list[dict[str, Any]]:
     """Build public-safe draft items with markup applied."""

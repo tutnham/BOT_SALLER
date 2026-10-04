@@ -62,8 +62,24 @@ def seed_markup_rule_rows() -> list[MarkupRule]:
     ]
 
 
+_rules_cache: tuple[list[MarkupRule], datetime] | None = None
+_RULES_CACHE_TTL_SECONDS = 60
+
+
+def invalidate_markup_rules_cache() -> None:
+    global _rules_cache
+    _rules_cache = None
+
+
 async def load_rules(session: AsyncSession) -> list[MarkupRule]:
     """Load active v2 rules sorted by priority descending."""
+    global _rules_cache
+    now = datetime.now(UTC)
+    if _rules_cache is not None:
+        cached_rules, cached_at = _rules_cache
+        if (now - cached_at).total_seconds() < _RULES_CACHE_TTL_SECONDS:
+            return cached_rules
+
     result = await session.execute(
         select(MarkupRule)
         .where(
@@ -72,7 +88,9 @@ async def load_rules(session: AsyncSession) -> list[MarkupRule]:
         )
         .order_by(MarkupRule.priority.desc().nullslast(), MarkupRule.id.asc())
     )
-    return list(result.scalars().all())
+    rules = list(result.scalars().all())
+    _rules_cache = (rules, now)
+    return rules
 
 
 @lru_cache(maxsize=128)
@@ -171,6 +189,7 @@ async def update_rule_markup_by_id(
         return None
     rule.markup_fixed = markup_rub
     rule.updated_at = datetime.now(UTC)
+    invalidate_markup_rules_cache()
     await session.flush()
     return rule
 

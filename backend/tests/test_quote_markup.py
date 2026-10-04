@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MarkupRule, QuoteSource
 from app.handlers.supplier_messages import handle_reply
 from app.services.quote_service import display_price_for_group, upsert_quote
-from app.services.markup_service import seed_markup_rule_rows
 from app.services.request_service import create_request
 from tests.conftest import MockTelegramClient
 

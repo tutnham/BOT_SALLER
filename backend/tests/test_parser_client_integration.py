@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -249,10 +249,10 @@ async def test_ingest_updates_last_price_sync_at(
 ) -> None:
     post_date = datetime(2026, 7, 30, 8, 15, tzinfo=UTC)
 
-    async def _fake_get_posts(**kwargs):
+    async def _fake_iter_posts(**kwargs):
         from app.services.parser_client import ParserPost
 
-        return [
+        yield [
             ParserPost(
                 post_id=42,
                 message_id=42,
@@ -263,8 +263,8 @@ async def test_ingest_updates_last_price_sync_at(
         ]
 
     with patch(
-        "app.services.price_service.get_posts",
-        new=AsyncMock(side_effect=_fake_get_posts),
+        "app.services.price_service.iter_posts",
+        new=_fake_iter_posts,
     ):
         raw_new, degraded = await ingest_channel_prices(db_session)
 
@@ -279,9 +279,13 @@ async def test_ingest_degrades_on_parser_failure(
     db_session: AsyncSession,
     seed_channel_supplier: Supplier,
 ) -> None:
+    async def _fail_iter(**kwargs):
+        raise ParserClientError("parser_http_503")
+        yield  # pragma: no cover
+
     with patch(
-        "app.services.price_service.get_posts",
-        new=AsyncMock(side_effect=ParserClientError("parser_http_503")),
+        "app.services.price_service.iter_posts",
+        new=_fail_iter,
     ):
         raw_new, degraded = await ingest_channel_prices(db_session)
 

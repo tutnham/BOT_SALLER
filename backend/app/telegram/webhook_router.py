@@ -21,7 +21,6 @@ from app.handlers.business_events import (
 from app.handlers.chat_events import handle_my_chat_member
 from app.handlers.employee_commands import handle_employee_message
 from app.handlers.employee_home import employee_waiting_text, handle_employee_callback
-from app.telegram.home_buttons import EMPLOYEE_BUTTONS, OWNER_BUTTONS, OWNER_MENU
 from app.handlers.llm_billing_commands import handle_set_llm_price
 from app.handlers.owner_commands import handle_owner_message
 from app.handlers.price_approval import handle_price_callback, handle_price_command
@@ -33,6 +32,7 @@ from app.services.price_service import is_price_command_chat
 from app.services.routing_service import chat_role
 from app.telegram.client import get_telegram_client
 from app.telegram.deps import verify_telegram_secret_token
+from app.telegram.home_buttons import EMPLOYEE_BUTTONS, OWNER_BUTTONS, OWNER_MENU
 from app.telegram.keyboards import CallbackData
 from app.utils.idempotency import is_duplicate_update, mark_update_processed
 from app.utils.telegram import extract_message_text
@@ -183,7 +183,10 @@ async def _route_message(
             if text in OWNER_BUTTONS and not text.startswith("/"):
                 if text == OWNER_MENU:
                     return await handle_admin_message(session, message, telegram=telegram)
-                from app.handlers.owner_commands import send_markup_list, send_owner_report
+                from app.handlers.owner_commands import (
+                    send_markup_list,
+                    send_owner_report,
+                )
                 from app.telegram.home_buttons import (
                     OWNER_MARKUP,
                     OWNER_REPORT_DAY,
@@ -309,6 +312,18 @@ async def telegram_webhook(
     update_id = update.update_id
     if update_id is None:
         return {"status": "ignored"}
+
+    settings = get_settings()
+    if settings.webhook_async_enabled:
+        from app.services.inbox_service import enqueue_webhook_update
+
+        status, _inbox_id = await enqueue_webhook_update(
+            session,
+            tg_update_id=int(update_id),
+            payload=update_data,
+        )
+        await session.commit()
+        return {"status": status}
 
     if await is_duplicate_update(session, int(update_id)):
         return {"status": "duplicate"}

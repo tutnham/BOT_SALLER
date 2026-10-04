@@ -444,7 +444,7 @@ def render_template(name: str, **kwargs: Any) -> str:
     if name not in TEMPLATES:
         raise KeyError(f"Unknown template: {name}")
 
-    normalized = kwargs.pop("normalized_json", None) or {}
+    kwargs.pop("normalized_json", None)
     if name in _SUPPLIER_LABEL_TEMPLATES:
         supplier_name = kwargs.pop("supplier_name", None)
         supplier_id = kwargs.pop("supplier_id")

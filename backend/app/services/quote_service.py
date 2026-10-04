@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -195,17 +195,14 @@ async def _maybe_transition_to_priced(session: AsyncSession, request_id: int) ->
     if request.status not in (RequestStatus.open, RequestStatus.awaiting_answers):
         return
 
-    count_result = await session.execute(
-        select(func.count()).select_from(Quote).where(Quote.request_id == request_id)
+    has_priced_quote = await session.scalar(
+        select(
+            exists().where(
+                Quote.request_id == request_id,
+                Quote.price_initial.is_not(None),
+            )
+        )
     )
-    quote_count = count_result.scalar_one()
-    if quote_count >= 1 and any(
-        quote.price_initial is not None for quote in await _fetch_request_quotes(session, request_id)
-    ):
+    if has_priced_quote:
         request.status = RequestStatus.priced
         await session.flush()
-
-
-async def _fetch_request_quotes(session: AsyncSession, request_id: int) -> list[Quote]:
-    result = await session.execute(select(Quote).where(Quote.request_id == request_id))
-    return list(result.scalars().all())

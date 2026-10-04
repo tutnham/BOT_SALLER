@@ -19,7 +19,7 @@ from app.parsers.cache import get_cached, set_cached
 from app.parsers.request_normalizer import parse_request_text
 from app.services.alert_service import notify_operators
 from app.services.product_classifier import resolve_product_category, split_positions
-from app.services.routing_service import RfqTarget, resolve_rfq_targets
+from app.services.routing_service import resolve_rfq_targets
 from app.services.supplier_delivery import deliver, is_sent
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
@@ -32,7 +32,7 @@ class CreateRequestOutcome:
     requests: list[Request]
     sent_count: int
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         """Backward-compatible unpack: primary request, sent_count."""
         primary = self.requests[0] if self.requests else None
         yield primary
@@ -139,16 +139,6 @@ async def build_normalized_json(
     return normalized
 
 
-async def get_eligible_suppliers(
-    session: AsyncSession,
-    *,
-    category: str | None = None,
-) -> list[RfqTarget]:
-    """Suppliers that can receive an RFQ and their resolved target chat."""
-    targets, _skipped = await resolve_rfq_targets(session, category=category)
-    return targets
-
-
 async def _broadcast_request(
     session: AsyncSession,
     *,
@@ -231,8 +221,7 @@ async def _broadcast_request(
         )
         if is_sent(outbound):
             sent_count += 1
-            # Supplier may have sent a price before this RFQ existed; retry binding.
-            from app.handlers.supplier_messages import retry_unbound_supplier_prices
+            from app.application.supplier_rebind import retry_unbound_supplier_prices
 
             try:
                 await retry_unbound_supplier_prices(

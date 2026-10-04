@@ -14,11 +14,9 @@ from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from sqlalchemy import select
 
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.db.models import ParserChannel, ParserChannelStatus
-from app.db.session import dispose_engine, get_session_factory
-from app.logging_setup import setup_logging
-from app.mtproto.client_factory import create_client
+from app.db.session import get_session_factory
 from app.mtproto.upsert import upsert_post
 
 
@@ -43,34 +41,10 @@ def _build_handler(channel_ids: list[int]) -> MessageHandler | None:
 
 
 async def run_realtime() -> None:
-    settings = get_settings()
-    setup_logging(settings.log_level, settings.secret_values())
-    settings.require_mtproto()
+    """Deprecated: use ``app.mtproto.runtime.run_mtproto_runtime``."""
+    from app.mtproto.runtime import run_mtproto_runtime
 
-    channel_ids = await _load_active_channel_ids()
-    client = create_client("listener", settings=settings)
-    handler = _build_handler(channel_ids)
-    if handler is not None:
-        client.add_handler(handler)
-        logger.info("Realtime listening channels={}", channel_ids)
-    else:
-        logger.warning(
-            "No active channels in parser_channels — waiting for POST /channels or add_channel"
-        )
-
-    try:
-        await client.start()
-        logger.info("tg-listener started")
-        await _reload_loop(client, handler, settings)
-    except Exception:
-        logger.critical("Listener auth/runtime failure — stop process")
-        raise
-    finally:
-        try:
-            await client.stop()
-        except Exception:
-            pass
-        await dispose_engine()
+    await run_mtproto_runtime()
 
 
 async def _on_new_post(_client: Client, message: Any) -> None:
@@ -120,10 +94,9 @@ async def _reload_loop(
 
 
 def main() -> None:
-    try:
-        asyncio.run(run_realtime())
-    except KeyboardInterrupt:
-        pass
+    from app.mtproto.runtime import main as runtime_main
+
+    runtime_main()
 
 
 if __name__ == "__main__":

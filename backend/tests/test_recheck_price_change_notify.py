@@ -9,7 +9,14 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MessageKind, MessageOut, Quote, QuoteSource, RequestStatus, Supplier
+from app.db.models import (
+    MessageKind,
+    MessageOut,
+    Quote,
+    QuoteSource,
+    RequestStatus,
+    Supplier,
+)
 from app.services.request_service import create_request
 
 

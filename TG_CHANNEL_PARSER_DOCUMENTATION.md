@@ -531,7 +531,7 @@ else:
 
 Файл: `docker-compose.tg-parser.yml`. Coolify: base directory `tg-channel-parser/`, **без domains**, env через UI.
 
-Сервисы: `tg-parser-postgres`, `tg-parser-migrate` (one-shot Alembic), `tg-listener`, `tg-worker`, `tg-parser-api`.
+Сервисы: `tg-parser-postgres`, `tg-parser-migrate` (one-shot Alembic), `tg-runtime` (listener + worker), `tg-parser-api`.
 
 Host ports **не** публикуются. Ollama в текущем MVP **не** включён.
 

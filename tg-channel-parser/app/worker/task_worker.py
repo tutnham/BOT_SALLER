@@ -1,7 +1,7 @@
-"""Poll parser_tasks and process download_media (MVP — no ai_process).
+"""Parser task processors (resolve_channel, download_media).
 
-Usage:
-  python -m app.worker.task_worker
+Poll loop runs in ``app.mtproto.runtime`` (single Pyrogram client).
+Legacy entrypoint delegates to runtime.
 """
 
 from __future__ import annotations
@@ -27,9 +27,8 @@ from app.db.models import (
     ParserTask,
     ParserTaskType,
 )
-from app.db.session import dispose_engine, get_session_factory
-from app.logging_setup import setup_logging
-from app.mtproto.client_factory import create_client
+from app.db.session import get_session_factory
+from app.mtproto.channel_backfill import backfill_channel_on_activate
 from app.mtproto.flood_wait import with_flood_wait
 from app.storage.local_storage import LocalStorage, guess_ext, media_key
 from app.utils.hashing import sha256_file
@@ -161,17 +160,22 @@ async def process_resolve_channel(
     try:
         chat = await with_flood_wait(lambda: client.get_chat(handle))
     except Exception as exc:
-        task.status = ParserStatus.failed
-        task.error_text = f"resolve_error:{type(exc).__name__}:{exc}"
-        channel.status = ParserChannelStatus.failed
-        channel.error_text = task.error_text
+        await _fail_or_retry(
+            session,
+            task,
+            None,
+            f"resolve_error:{type(exc).__name__}:{exc}",
+        )
+        if task.status == ParserStatus.failed:
+            channel.status = ParserChannelStatus.failed
+            channel.error_text = task.error_text
         return
 
     if chat is None:
-        task.status = ParserStatus.failed
-        task.error_text = "chat_not_found"
-        channel.status = ParserChannelStatus.failed
-        channel.error_text = "chat_not_found"
+        await _fail_or_retry(session, task, None, "chat_not_found")
+        if task.status == ParserStatus.failed:
+            channel.status = ParserChannelStatus.failed
+            channel.error_text = task.error_text
         return
 
     channel.channel_id = chat.id
@@ -181,6 +185,15 @@ async def process_resolve_channel(
     channel.error_text = None
     task.status = ParserStatus.processed
     task.error_text = None
+    await session.flush()
+    try:
+        await backfill_channel_on_activate(client, channel=channel)
+    except Exception as exc:
+        logger.warning(
+            "Backfill after resolve failed channel_id={}: {}",
+            channel.channel_id,
+            exc,
+        )
 
 
 async def process_download_media(
@@ -301,37 +314,27 @@ async def _process_claimed_task(task_id: int, client: Any) -> None:
         await session.commit()
 
 
-async def worker_loop() -> None:
+async def run_task_poll_loop(client: Any) -> None:
+    """Claim and process parser_tasks using the shared MTProto client."""
     settings = get_settings()
-    setup_logging(settings.log_level, settings.secret_values())
-    settings.require_mtproto()
-
-    client = create_client("worker", settings=settings)
-    await client.start()
-    logger.info("tg-worker started (download_media only)")
-    try:
-        while True:
-            factory = get_session_factory()
-            async with factory() as session:
-                reclaimed = await reclaim_stale_processing(session)
-                if reclaimed:
-                    logger.warning("Reclaimed {} stale processing tasks", reclaimed)
-                await session.commit()
-            task_id = await _claim_next_task_id()
-            if task_id is None:
-                await asyncio.sleep(settings.task_poll_interval_seconds)
-                continue
-            await _process_claimed_task(task_id, client)
-    finally:
-        await client.stop()
-        await dispose_engine()
+    while True:
+        factory = get_session_factory()
+        async with factory() as session:
+            reclaimed = await reclaim_stale_processing(session)
+            if reclaimed:
+                logger.warning("Reclaimed {} stale processing tasks", reclaimed)
+            await session.commit()
+        task_id = await _claim_next_task_id()
+        if task_id is None:
+            await asyncio.sleep(settings.task_poll_interval_seconds)
+            continue
+        await _process_claimed_task(task_id, client)
 
 
 def main() -> None:
-    try:
-        asyncio.run(worker_loop())
-    except KeyboardInterrupt:
-        pass
+    from app.mtproto.runtime import main as runtime_main
+
+    runtime_main()
 
 
 if __name__ == "__main__":
