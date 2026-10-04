@@ -44,7 +44,7 @@ This repository houses a dual-service architecture designed to automate hardware
 
 - **System System Architecture & Bot Logic:** Refer to `Техническая документация  бот для закупок.md` (Source [6])
 - **Channel Parser & MTProto Spec:** Refer to `TG_CHANNEL_PARSER_DOCUMENTATION.md` (Source [4])
-- **Archived workflow JSON:** `n8n_workflow_zakupki_bot.json` is kept only as rollback/archive reference (Source [5])
+- **Archived workflow JSON:** `docs/archive/n8n_workflow_zakupki_bot.json` (rollback only; see `docs/archive/README.md`)
 - **Agent Guidelines & Phased Roadmap:** Refer to `AGENTS.md`
 
 ---

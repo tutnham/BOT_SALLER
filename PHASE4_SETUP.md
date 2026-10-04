@@ -188,7 +188,7 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — вне текущего prod scope.
 
-`auth_cli` на VPS: `TELEGRAM_SESSION_STRING=placeholder` + `docker compose … run --rm -it --no-deps tg-listener python -m app.mtproto.auth_cli`. Hostname API после Redeploy обновить в `PARSER_API_URL`.
+`auth_cli` на VPS: `TELEGRAM_SESSION_STRING=placeholder` + `docker compose … run --rm -it --no-deps tg-runtime python -m app.mtproto.auth_cli`. Hostname API после Redeploy обновить в `PARSER_API_URL`.
 
 ---
 

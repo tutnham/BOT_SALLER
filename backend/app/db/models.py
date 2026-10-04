@@ -63,8 +63,25 @@ class MessageKind(str, enum.Enum):
 
 
 class MessageSendStatus(str, enum.Enum):
+    pending = "pending"
     sent = "sent"
     failed = "failed"
+
+
+class WebhookInboxStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    done = "done"
+    dead = "dead"
+
+
+class TelegramOutboxStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    sent = "sent"
+    failed = "failed"
+    dead = "dead"
+    uncertain = "uncertain"
 
 
 def _pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
@@ -344,7 +361,7 @@ class MessageOut(Base):
     __table_args__ = (
         UniqueConstraint("chat_id", "tg_message_id"),
         CheckConstraint(
-            "send_status IN ('sent', 'failed')",
+            "send_status IN ('pending', 'sent', 'failed')",
             name="ck_messages_out_send_status",
         ),
         Index("ix_messages_out_request_id", "request_id"),
@@ -448,6 +465,7 @@ class Quote(Base):
 class Deal(Base):
     __tablename__ = "deals"
     __table_args__ = (
+        UniqueConstraint("request_id", name="uq_deals_request_id"),
         Index("ix_deals_request_id", "request_id"),
         Index("ix_deals_chosen_supplier_id", "chosen_supplier_id"),
     )
@@ -579,6 +597,75 @@ class ReportCache(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class WebhookInbox(Base):
+    __tablename__ = "webhook_inbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'done', 'dead')",
+            name="ck_webhook_inbox_status",
+        ),
+        Index("ix_webhook_inbox_claim", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tg_update_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa_text("'pending'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    lease_owner: Mapped[str | None] = mapped_column(Text)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TelegramOutbox(Base):
+    __tablename__ = "telegram_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'sent', 'failed', 'dead', 'uncertain')",
+            name="ck_telegram_outbox_status",
+        ),
+        Index("ix_telegram_outbox_claim", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    supplier_id: Mapped[int | None] = mapped_column(BigInteger)
+    request_id: Mapped[int | None] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
+    parse_mode: Mapped[str | None] = mapped_column(Text)
+    reply_markup: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa_text("'pending'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    lease_owner: Mapped[str | None] = mapped_column(Text)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    tg_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    message_out_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages_out.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UpdateLog(Base):

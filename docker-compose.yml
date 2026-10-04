@@ -42,5 +42,27 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  backend-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?required}
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: ${TELEGRAM_WEBHOOK_SECRET_TOKEN:?required}
+      TZ: ${TZ:-Europe/Moscow}
+      SCHEDULER_ENABLED: "false"
+      WEBHOOK_ASYNC_ENABLED: ${WEBHOOK_ASYNC_ENABLED:-false}
+      OUTBOX_DELIVERY_ENABLED: ${OUTBOX_DELIVERY_ENABLED:-false}
+      WORKER_ID: ${WORKER_ID:-backend-worker}
+    command: ["python", "-m", "app.workers.main"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   zakupki_pg_data:

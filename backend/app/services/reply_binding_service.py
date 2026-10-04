@@ -22,7 +22,11 @@ from app.db.models import (
     Supplier,
     SupplierCategory,
 )
-from app.llm.client import LLMProviderError, get_llm_client, validate_supplier_reply_binding
+from app.llm.client import (
+    LLMProviderError,
+    get_llm_client,
+    validate_supplier_reply_binding,
+)
 from app.parsers.cache import get_cached, set_cached
 from app.parsers.product_normalizer import attrs_match_score, extract_product_attrs
 from app.parsers.regex_parser import ParsedSupplierReply, parse_supplier_reply
@@ -66,6 +70,7 @@ class BindingDecision:
     parsed: ParsedSupplierReply
     ignored_reason: str | None = None
     candidates: list[Request] = field(default_factory=list)
+    binding_price: Decimal | None = None
 
 
 def is_neutral_or_noise(raw_text: str) -> str | None:
@@ -147,7 +152,7 @@ async def _resolve_with_llm(
     session: AsyncSession,
     raw_text: str,
     candidates: list[Request],
-) -> tuple[Request | None, float]:
+) -> tuple[Request | None, float, Decimal | None]:
     payload_candidates = [_candidate_payload(request) for request in candidates]
     allowed_ids = {request.id for request in candidates}
     cache_key = f"{raw_text}\n---\n" + "|".join(str(c["id"]) for c in payload_candidates)
@@ -160,7 +165,7 @@ async def _resolve_with_llm(
         try:
             binding = await llm.classify_supplier_reply(raw_text, payload_candidates)
         except LLMProviderError:
-            return None, 0.0
+            return None, 0.0, None
         settings = get_settings()
         await set_cached(
             session,
@@ -172,13 +177,13 @@ async def _resolve_with_llm(
 
     threshold = get_settings().confidence_threshold
     if not binding.related or binding.confidence < threshold:
-        return None, binding.confidence
+        return None, binding.confidence, None
     if binding.request_id not in allowed_ids:
-        return None, binding.confidence
+        return None, binding.confidence, None
     for request in candidates:
         if request.id == binding.request_id:
-            return request, binding.confidence
-    return None, binding.confidence
+            return request, binding.confidence, binding.price
+    return None, binding.confidence, None
 
 
 async def _oldest_unanswered(
@@ -201,19 +206,22 @@ async def _oldest_unanswered(
     pending = [request for request in candidates if request.id not in quoted]
     if not pending:
         return None
-    sent_at = dict(
-        (
-            await session.execute(
-                select(MessageOut.request_id, func.min(MessageOut.sent_at))
-                .where(
-                    MessageOut.supplier_id == supplier.id,
-                    MessageOut.request_id.in_([request.id for request in pending]),
-                    MessageOut.send_status == MessageSendStatus.sent.value,
-                )
-                .group_by(MessageOut.request_id)
+    sent_rows = (
+        await session.execute(
+            select(MessageOut.request_id, func.min(MessageOut.sent_at))
+            .where(
+                MessageOut.supplier_id == supplier.id,
+                MessageOut.request_id.in_([request.id for request in pending]),
+                MessageOut.send_status == MessageSendStatus.sent.value,
             )
-        ).all()
-    )
+            .group_by(MessageOut.request_id)
+        )
+    ).all()
+    sent_at: dict[int, datetime] = {
+        int(request_id): sent_time
+        for request_id, sent_time in sent_rows
+        if request_id is not None
+    }
     pending.sort(key=lambda request: (sent_at.get(request.id) or request.created_at, request.id))
     return pending[0]
 
@@ -345,7 +353,7 @@ async def resolve_binding(
                 candidates=candidates,
             )
 
-    llm_request, llm_conf = await _resolve_with_llm(session, raw_text, candidates)
+    llm_request, llm_conf, llm_price = await _resolve_with_llm(session, raw_text, candidates)
     if llm_request is not None:
         logger.info(
             "supplier_bind message supplier_id={} request_id={} method=llm score={}",
@@ -358,8 +366,9 @@ async def resolve_binding(
             method="llm",
             status="bound",
             score=llm_conf,
-            parsed=parsed,
+            parsed=merge_llm_price(parsed, llm_price),
             candidates=candidates,
+            binding_price=llm_price,
         )
 
     return BindingDecision(

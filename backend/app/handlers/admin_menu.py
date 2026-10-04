@@ -13,10 +13,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Employee, PendingChat, ProductCategory, RequestStatus, Supplier
+from app.db.models import (
+    Employee,
+    PendingChat,
+    ProductCategory,
+    RequestStatus,
+    Supplier,
+)
 from app.services import admin_service, parser_client, purge_service
-from app.services.deal_service import RequestNotFoundError, RequestNotOpenError, cancel_request
+from app.services.deal_service import (
+    RequestNotFoundError,
+    RequestNotOpenError,
+    cancel_request,
+)
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
+from app.telegram.home_buttons import OWNER_MENU
 from app.telegram.keyboards import (
     CallbackData,
     button,
@@ -24,7 +35,6 @@ from app.telegram.keyboards import (
     menu_button,
     paginated_keyboard,
 )
-from app.telegram.home_buttons import OWNER_MENU
 from app.templates.messages_ru import render_template
 from app.utils.telegram import (
     extract_message_text,

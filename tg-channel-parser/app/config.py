@@ -31,18 +31,20 @@ class Settings(BaseSettings):
     db_pool_recycle: int = 1800
     db_pool_timeout: int = 30
 
-    # Media
+    # Media (MVP: local only; S3 is not implemented)
     media_storage_backend: str = "local"
     media_local_path: str = "/data/media"
     media_tmp_path: str = "/tmp/media"
 
-    # Worker
+    # Worker / runtime
     task_poll_interval_seconds: float = 2.0
     listener_reload_interval_seconds: float = 30.0
     media_max_retries: int = 3
     media_retry_backoff_base_seconds: float = 5.0
     task_stale_processing_minutes: int = 15
     max_media_bytes: int = 50 * 1024 * 1024
+    backfill_on_activate_limit: int = 200
+    ai_process_enabled: bool = False
 
     # API
     api_auth_token: str = Field(min_length=1)
@@ -58,6 +60,20 @@ class Settings(BaseSettings):
         if not self.telegram_session_string:
             raise RuntimeError("TELEGRAM_SESSION_STRING required (run auth_cli first)")
         return self.telegram_api_id, self.telegram_api_hash, self.telegram_session_string
+
+    def require_media_storage(self) -> None:
+        """Fail fast when an unsupported storage backend is configured."""
+        backend = (self.media_storage_backend or "local").strip().lower()
+        if backend != "local":
+            raise RuntimeError(
+                f"MEDIA_STORAGE_BACKEND={backend!r} is not supported in MVP; use local"
+            )
+
+    def require_api_auth(self) -> str:
+        token = (self.api_auth_token or "").strip()
+        if not token:
+            raise RuntimeError("API_AUTH_TOKEN required for parser API")
+        return token
 
     def secret_values(self) -> list[str]:
         """Values that must be redacted from logs."""

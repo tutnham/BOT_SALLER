@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import ProductCategory
 from app.parsers.product_normalizer import extract_product_attrs, normalize_product_text
 
@@ -79,7 +81,7 @@ def split_positions(source_text: str) -> list[str]:
 
 
 async def classify_product_with_llm(
-    session,
+    session: AsyncSession,
     text: str,
 ) -> tuple[str, float]:
     """LLM fallback for unknown products. Returns (category, confidence)."""
@@ -111,7 +113,7 @@ async def classify_product_with_llm(
     return parsed.category, parsed.confidence
 
 
-async def resolve_product_category(session, text: str) -> str:
+async def resolve_product_category(session: AsyncSession, text: str) -> str:
     """Full pipeline: regex first, LLM for unknown."""
     from app.config import get_settings
 

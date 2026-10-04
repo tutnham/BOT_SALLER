@@ -91,6 +91,21 @@ class Settings(BaseSettings):
     max_message_text_len: int = 4000
     docs_enabled: bool = False
 
+    # Async webhook / outbox rollout (mutually exclusive with sync path when enabled)
+    webhook_async_enabled: bool = False
+    outbox_delivery_enabled: bool = False
+
+    # Dedicated worker (Coolify service backend-worker)
+    worker_poll_interval_seconds: float = 1.0
+    worker_lease_seconds: int = 60
+    worker_max_attempts: int = 8
+    worker_inbox_batch_size: int = 10
+    worker_outbox_batch_size: int = 20
+    worker_id: str | None = None
+
+    # Morning price LLM parse concurrency cap
+    morning_price_llm_concurrency: int = 4
+
     @staticmethod
     def _parse_csv_chat_ids(raw: str | None) -> list[int]:
         raw = (raw or "").strip()

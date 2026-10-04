@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
@@ -78,13 +79,21 @@ async def create_channel(
         is_active=True,
     )
     db.add(channel)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="pending_channel_username_exists",
+        ) from None
 
     task = ParserTask(
         post_id=None,
         channel_id=channel.id,
         task_type=ParserTaskType.resolve_channel,
         status=ParserStatus.new,
+        max_attempts=5,
     )
     db.add(task)
     await db.flush()

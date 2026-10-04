@@ -114,11 +114,7 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
         return None
 
     # Media descriptors
-    backend = (
-        ParserStorageBackend.local
-        if get_settings().media_storage_backend == "local"
-        else ParserStorageBackend.s3
-    )
+    backend = ParserStorageBackend.local
     for desc in extract_media_descriptors(message):
         media_stmt = (
             insert(ParserMediaFile)
@@ -148,7 +144,11 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
             )
         )
 
-    if channel.purpose == ParserChannelPurpose.monitoring:
+    settings = get_settings()
+    if (
+        channel.purpose == ParserChannelPurpose.monitoring
+        and settings.ai_process_enabled
+    ):
         await session.execute(
             insert(ParserTask).values(
                 post_id=post.id,

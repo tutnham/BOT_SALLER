@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from loguru import logger
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
@@ -161,22 +162,23 @@ def _validate_posts(raw_items: list[Any], *, channel_id: int) -> list[ParserPost
     return posts
 
 
-async def get_posts(
+async def iter_posts(
     *,
     channel_id: int,
     from_: datetime | None,
     content_type: str = "text",
     http_client: httpx.AsyncClient | None = None,
-) -> list[ParserPost]:
-    """Fetch text posts for a supplier channel from the parser service."""
-    all_posts: list[ParserPost] = []
+    page_size: int = DEFAULT_POSTS_PAGE_SIZE,
+) -> AsyncIterator[list[ParserPost]]:
+    """Stream parser posts page-by-page (bounded memory)."""
     cursor: str | None = None
+    limit = min(max(page_size, 1), MAX_POSTS_PAGE_SIZE)
 
     while True:
         params: dict[str, str] = {
             "channel_id": str(channel_id),
             "content_type": content_type,
-            "limit": str(DEFAULT_POSTS_PAGE_SIZE),
+            "limit": str(limit),
         }
         if from_ is not None:
             params["from"] = from_.isoformat()
@@ -190,11 +192,30 @@ async def get_posts(
             http_client=http_client,
         )
         raw_items, next_cursor = _extract_posts_page(payload)
-        all_posts.extend(_validate_posts(raw_items, channel_id=channel_id))
+        page = _validate_posts(raw_items, channel_id=channel_id)
+        if page:
+            yield page
         if not next_cursor:
             break
         cursor = next_cursor
 
+
+async def get_posts(
+    *,
+    channel_id: int,
+    from_: datetime | None,
+    content_type: str = "text",
+    http_client: httpx.AsyncClient | None = None,
+) -> list[ParserPost]:
+    """Fetch text posts for a supplier channel from the parser service."""
+    all_posts: list[ParserPost] = []
+    async for page in iter_posts(
+        channel_id=channel_id,
+        from_=from_,
+        content_type=content_type,
+        http_client=http_client,
+    ):
+        all_posts.extend(page)
     return all_posts
 
 

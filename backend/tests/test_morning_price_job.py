@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -66,12 +66,12 @@ async def test_morning_price_happy_path_manual_and_channel(
         )
     ]
 
-    async def _fake_get_posts(**kwargs):
-        return posts
+    async def _fake_iter_posts(**kwargs):
+        yield posts
 
     with patch(
-        "app.services.price_service.get_posts",
-        new=AsyncMock(side_effect=_fake_get_posts),
+        "app.services.price_service.iter_posts",
+        new=_fake_iter_posts,
     ):
         resp = await webhook_client.post(
             "/jobs/morning-price",
@@ -127,9 +127,13 @@ async def test_morning_price_safe_rerun(
     )
     await db_session.flush()
 
+    async def _empty_iter(**kwargs):
+        return
+        yield  # pragma: no cover — async generator marker
+
     with patch(
-        "app.services.price_service.get_posts",
-        new=AsyncMock(return_value=[]),
+        "app.services.price_service.iter_posts",
+        new=_empty_iter,
     ):
         first = await webhook_client.post(
             "/jobs/morning-price",

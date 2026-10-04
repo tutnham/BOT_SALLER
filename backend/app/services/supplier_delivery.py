@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import MessageKind, MessageOut, MessageSendStatus
+from app.services.outbox_service import enqueue_telegram_message
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 
 
@@ -22,7 +24,22 @@ async def deliver(
     """Send one template message and persist ``messages_out``.
 
     A Bot API failure is stored as ``send_status='failed'`` and does not raise.
+    When ``OUTBOX_DELIVERY_ENABLED``, enqueue for the worker instead of Bot API.
     """
+    if get_settings().outbox_delivery_enabled:
+        dedupe_key = f"{kind.value}:{request_id}:{supplier_id}:{hash(text)}"
+        outbound, _is_new = await enqueue_telegram_message(
+            session,
+            dedupe_key=dedupe_key,
+            chat_id=chat_id,
+            text=text,
+            kind=kind,
+            request_id=request_id,
+            supplier_id=supplier_id,
+            business_connection_id=business_connection_id,
+        )
+        return outbound
+
     try:
         message_id = await telegram.send_message(
             chat_id,

@@ -38,6 +38,7 @@ from app.db.models import (  # noqa: E402
     ClientGroup,
     Employee,
     MarkupRule,
+    MessageOut,
     Owner,
     ProductCategory,
     Supplier,
@@ -68,8 +69,7 @@ async def load_supplier_outbound(
     *,
     request_id: int,
     supplier_id: int,
-) -> "MessageOut":
-    from app.db.models import MessageOut
+) -> MessageOut:
     from sqlalchemy import select
 
     outbound = await session.scalar(

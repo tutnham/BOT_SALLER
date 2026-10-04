@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import ProductCategory, Supplier, SupplierCategory, MarkupRule
+from app.db.models import MarkupRule, ProductCategory, Supplier, SupplierCategory
 from app.handlers.supplier_messages import manual_bind_message
 from app.services.markup_service import (
     list_active_rules,

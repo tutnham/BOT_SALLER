@@ -10,6 +10,18 @@ import httpx
 from pydantic import ValidationError
 
 from app.config import get_settings
+from app.llm.prompts.classify_product import (
+    SYSTEM_PROMPT as CLASSIFY_PRODUCT_SYSTEM_PROMPT,
+)
+from app.llm.prompts.classify_product import (
+    build_user_prompt as build_classify_product_user_prompt,
+)
+from app.llm.prompts.classify_supplier_reply import (
+    SYSTEM_PROMPT as CLASSIFY_SUPPLIER_REPLY_SYSTEM_PROMPT,
+)
+from app.llm.prompts.classify_supplier_reply import (
+    build_user_prompt as build_classify_supplier_reply_user_prompt,
+)
 from app.llm.prompts.format_report import (
     SYSTEM_PROMPT as REPORT_SYSTEM_PROMPT,
 )
@@ -27,18 +39,6 @@ from app.llm.prompts.parse_price_list import (
 )
 from app.llm.prompts.parse_price_list import (
     build_user_prompt as build_price_list_user_prompt,
-)
-from app.llm.prompts.classify_product import (
-    SYSTEM_PROMPT as CLASSIFY_PRODUCT_SYSTEM_PROMPT,
-)
-from app.llm.prompts.classify_product import (
-    build_user_prompt as build_classify_product_user_prompt,
-)
-from app.llm.prompts.classify_supplier_reply import (
-    SYSTEM_PROMPT as CLASSIFY_SUPPLIER_REPLY_SYSTEM_PROMPT,
-)
-from app.llm.prompts.classify_supplier_reply import (
-    build_user_prompt as build_classify_supplier_reply_user_prompt,
 )
 from app.llm.prompts.parse_supplier_reply import (
     SYSTEM_PROMPT as SUPPLIER_SYSTEM_PROMPT,

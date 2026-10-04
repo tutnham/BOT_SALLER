@@ -374,7 +374,9 @@ async def _apply_price_text(
             render_template(
                 "deal_closed",
                 request_id=request_id,
-                supplier_label=format_supplier_label(None, deal.chosen_supplier_id),
+                supplier_label=format_supplier_label(
+                    None, deal.chosen_supplier_id or supplier_id
+                ),
                 final_price=price,
             ),
         )
