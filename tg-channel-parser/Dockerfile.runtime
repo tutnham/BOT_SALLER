@@ -16,6 +16,7 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --upgrade pip "setuptools>=78.1.1" "wheel>=0.46.2" "jaraco.context>=6.1.0" \
+    && rm -rf /usr/local/lib/python3.11/ensurepip \
     && pip install --require-hashes -r requirements.txt
 
 COPY . .
