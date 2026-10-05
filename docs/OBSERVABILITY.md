@@ -10,7 +10,9 @@
 | `GET /health` | Старый ответ `{status, db}`. Всегда HTTP 200, чтобы не сломать уже настроенные пробы. |
 | `GET /ready` | HTTP 200 только если база отвечает, ревизия Alembic совпадает с кодом, и (когда включено) свежие heartbeat worker и scheduler. Иначе HTTP 503. |
 | `GET /health/details` | Те же данные плюс мёртвая очередь и последние cron. Заголовок `X-Internal-Token` равен `HEALTH_DETAILS_TOKEN` или `WEBHOOK_SECRET`. |
-| `GET /metrics` | Текст Prometheus без идентификаторов заявок, текста сообщений и секретов. |
+| `GET /metrics` | Текст Prometheus. Заголовок `X-Metrics-Token` = `METRICS_TOKEN`. Без токена HTTP 401. |
+
+Счётчики и гистограммы webhook/HTTP/LLM/cron — **process-local** (не суммируются между `backend`, worker и scheduler). Очереди, heartbeat age и morning-price last success берутся из Postgres при каждом scrape.
 
 `/ready` требует heartbeat worker, когда `WEBHOOK_ASYNC_ENABLED=true`. Heartbeat scheduler требуется, когда `SCHEDULER_ENABLED=true` или `SCHEDULER_EXPECTED=true`. Свежесть — `HEARTBEAT_STALE_SECONDS` (по умолчанию 90).
 
@@ -33,8 +35,10 @@
 
 ## Процессы
 
-- `backend` — HTTP. Cron внутри него работает, пока `SCHEDULER_ENABLED=true`.
-- `backend-worker` — `python -m app.workers.main`
-- `backend-scheduler` — `python -m app.scheduler`
+- `backend` — HTTP (`uvicorn`). В `docker-compose.yml` по умолчанию `SCHEDULER_ENABLED=false`, `SCHEDULER_EXPECTED=true`: cron на web не запускается, `/ready` ждёт heartbeat отдельного scheduler.
+- `backend-worker` — `python -m app.workers.main`, `SCHEDULER_ENABLED=false`.
+- `backend-scheduler` — `python -m app.scheduler`; пишет `process_heartbeats` с `process_type=scheduler` каждые ~15 с. Health orchestrator — через `/ready` на web (свежесть heartbeat в Postgres), не через HTTP у scheduler.
 
-Если поднят отдельный scheduler, на web поставьте `SCHEDULER_ENABLED=false` и `SCHEDULER_EXPECTED=true`. Иначе утренний прайс может запуститься в двух процессах; второй пропустит работу из-за advisory lock, но так оставлять не нужно.
+Локальная разработка в одном процессе: `SCHEDULER_ENABLED=true`, `SCHEDULER_EXPECTED=false` — тогда web сам пишет scheduler heartbeat и поднимает APScheduler в lifespan.
+
+Split deploy: никогда не включайте cron и на web, и в `backend-scheduler` одновременно. Advisory lock не заменяет правильную топологию.

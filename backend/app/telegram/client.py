@@ -98,57 +98,60 @@ class TelegramClient:
         ``throttle_chat_id`` is used for sendMessage throttling; pure
         methods like answerCallbackQuery can pass None to skip it.
         """
+        from app.services.telemetry import observe_http_async
+
         url = f"{TELEGRAM_API_BASE}/bot{self._bot_token}/{method}"
         if throttle_chat_id is not None:
             await throttle_send(throttle_chat_id)
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                response = await self._http.post(url, json=payload)
-            except httpx.HTTPError as exc:
-                if attempt >= MAX_ATTEMPTS:
-                    raise TelegramSendError(
-                        f"transport_error:{type(exc).__name__}",
-                        status_code=None,
-                    ) from exc
-                await asyncio.sleep(min(3.0, 0.2 * (2 ** (attempt - 1))))
-                continue
+        async with observe_http_async(f"telegram_{method}"):
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                try:
+                    response = await self._http.post(url, json=payload)
+                except httpx.HTTPError as exc:
+                    if attempt >= MAX_ATTEMPTS:
+                        raise TelegramSendError(
+                            f"transport_error:{type(exc).__name__}",
+                            status_code=None,
+                        ) from exc
+                    await asyncio.sleep(min(3.0, 0.2 * (2 ** (attempt - 1))))
+                    continue
 
-            api_data: dict[str, Any]
-            try:
-                raw = response.json()
-            except ValueError:
-                api_data = {"ok": False, "description": "invalid_json_response"}
-            else:
-                if isinstance(raw, dict):
-                    api_data = raw
-                else:
+                api_data: dict[str, Any]
+                try:
+                    raw = response.json()
+                except ValueError:
                     api_data = {"ok": False, "description": "invalid_json_response"}
+                else:
+                    if isinstance(raw, dict):
+                        api_data = raw
+                    else:
+                        api_data = {"ok": False, "description": "invalid_json_response"}
 
-            if response.status_code == 200 and api_data.get("ok"):
-                if return_result:
-                    result = api_data.get("result") or {}
-                    if not isinstance(result, dict):
-                        return {}
-                    return result
-                return api_data
+                if response.status_code == 200 and api_data.get("ok"):
+                    if return_result:
+                        result = api_data.get("result") or {}
+                        if not isinstance(result, dict):
+                            return {}
+                        return result
+                    return api_data
 
-            retry_after = _extract_retry_after_seconds(api_data)
-            can_retry = response.status_code in {429, 500, 502, 503, 504}
-            if can_retry and attempt < MAX_ATTEMPTS:
-                base_wait = retry_after if retry_after is not None else 0.3 * (2 ** (attempt - 1))
-                await asyncio.sleep(min(8.0, base_wait + random.uniform(0.0, 0.15)))
-                continue
+                retry_after = _extract_retry_after_seconds(api_data)
+                can_retry = response.status_code in {429, 500, 502, 503, 504}
+                if can_retry and attempt < MAX_ATTEMPTS:
+                    base_wait = retry_after if retry_after is not None else 0.3 * (2 ** (attempt - 1))
+                    await asyncio.sleep(min(8.0, base_wait + random.uniform(0.0, 0.15)))
+                    continue
 
-            description = api_data.get("description", response.text)
-            logger.warning(
-                "Telegram {} failed chat_id={} status={} detail={}",
-                method,
-                payload.get("chat_id"),
-                response.status_code,
-                description,
-            )
-            raise TelegramSendError(str(description), status_code=response.status_code)
+                description = api_data.get("description", response.text)
+                logger.warning(
+                    "Telegram {} failed chat_id={} status={} detail={}",
+                    method,
+                    payload.get("chat_id"),
+                    response.status_code,
+                    description,
+                )
+                raise TelegramSendError(str(description), status_code=response.status_code)
 
         raise TelegramSendError("telegram_request_failed")
 

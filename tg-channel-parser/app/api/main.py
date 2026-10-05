@@ -6,13 +6,15 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Header, Response
+from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers import channels, posts
 from app.config import get_settings
-from app.db.session import dispose_engine, get_engine
+from app.db.session import dispose_engine, get_db, get_engine
 from app.logging_setup import setup_logging
 
 
@@ -31,9 +33,36 @@ app.include_router(channels.router)
 app.include_router(posts.router)
 
 
+@app.get("/live")
+async def live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready(session: AsyncSession = Depends(get_db)) -> JSONResponse | dict[str, object]:
+    from app.services.ops_status_service import readiness
+
+    ok, body = await readiness(session)
+    if not ok:
+        return JSONResponse(status_code=503, content=body)
+    return body
+
+
+@app.get("/health/details")
+async def health_details_route(
+    session: AsyncSession = Depends(get_db),
+    x_internal_token: str | None = Header(default=None),
+) -> JSONResponse | dict[str, object]:
+    from app.services.ops_status_service import details_token_ok, health_details as build_details
+
+    if not details_token_ok(x_internal_token):
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+    return await build_details(session)
+
+
 @app.get("/health")
 async def health() -> Response:
-    """Liveness/readiness: process up and Postgres reachable."""
+    """Legacy probe: always HTTP 200; db field reflects connectivity."""
     db_status = "ok"
     try:
         engine = get_engine()
@@ -42,10 +71,9 @@ async def health() -> Response:
     except Exception as exc:
         logger.warning("Health DB check failed: {}", exc)
         db_status = "error"
-    body = {"status": "ok" if db_status == "ok" else "degraded", "db": db_status}
-    status_code = 200 if db_status == "ok" else 503
+    body = {"status": "ok", "db": db_status}
     return Response(
         content=json.dumps(body),
-        status_code=status_code,
+        status_code=200,
         media_type="application/json",
     )

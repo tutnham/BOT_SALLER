@@ -1,0 +1,15 @@
+name: staging-acceptance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  record-metadata:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture metadata
+        run: |
+          echo "commit_sha=${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Fill Telegram/MTProto scenarios manually; see docs/STAGING_ACCEPTANCE.md" >> "$GITHUB_STEP_SUMMARY"

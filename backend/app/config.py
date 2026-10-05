@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     commit_sha: str = "unknown"
     heartbeat_stale_seconds: int = 90
     health_details_token: str | None = None
+    metrics_token: str = Field(min_length=1)
     retention_dry_run: bool = True
     retention_inbox_days: int = 30
     retention_outbox_days: int = 30

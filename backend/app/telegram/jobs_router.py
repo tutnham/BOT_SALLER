@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
@@ -36,10 +37,34 @@ async def _run_locked(
     runner: JobRunner,
 ) -> JobResult:
     """Run a job under a distributed advisory lock; skip if already running."""
+    from app.services.audit_service import record_admin_mutation
+    from app.services.job_run_service import record_job_run
+
     if not await acquire_job_lock(session, lock_name):
         return {"status": "skipped", "reason": "already_running"}
+    started = datetime.now(UTC)
     try:
-        return await runner(session, get_telegram_client())
+        result = await runner(session, get_telegram_client())
+        await record_job_run(lock_name, "ok", started)
+        await record_admin_mutation(
+            session,
+            action="manual_job_run",
+            entity_type="job",
+            entity_id=lock_name,
+            new_state={"status": "ok"},
+        )
+        return result
+    except Exception as exc:
+        await record_job_run(lock_name, "failed", started, error_type=type(exc).__name__)
+        await record_admin_mutation(
+            session,
+            action="manual_job_run",
+            entity_type="job",
+            entity_id=lock_name,
+            new_state={"status": "failed", "error_type": type(exc).__name__},
+            outcome="failed",
+        )
+        raise
     finally:
         await release_job_lock(session, lock_name)
 

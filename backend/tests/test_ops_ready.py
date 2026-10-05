@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db.models import AdminAuditLog, TelegramOutbox, WebhookInbox
 from app.services.dlq_service import ReplayNeedsConfirmation, replay_outbox
 from app.services.ops_status_service import sanitize_error
+from app.services.heartbeat_service import touch_heartbeat
 from app.services.retention_service import run_retention
 
 
@@ -34,6 +35,11 @@ async def test_live_ready_and_metrics(client) -> None:
     assert "dead_inbox" in details.json()
 
     metrics = await client.get("/metrics")
+    assert metrics.status_code == 401
+    metrics = await client.get(
+        "/metrics",
+        headers={"X-Metrics-Token": "test-metrics-token"},
+    )
     assert metrics.status_code == 200
     assert "zakupki_inbox_pending" in metrics.text
 
@@ -49,6 +55,48 @@ async def test_ready_requires_worker_when_async(client) -> None:
         settings.webhook_async_enabled = previous
     assert response.status_code == 503
     assert "worker" in response.json()["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_ready_requires_scheduler_when_expected(client, db_session) -> None:
+    settings = get_settings()
+    previous_enabled = settings.scheduler_enabled
+    previous_expected = settings.scheduler_expected
+    settings.scheduler_enabled = False
+    settings.scheduler_expected = True
+    try:
+        response = await client.get("/ready")
+    finally:
+        settings.scheduler_enabled = previous_enabled
+        settings.scheduler_expected = previous_expected
+    assert response.status_code == 503
+    assert "scheduler" in response.json()["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_ready_ok_with_fresh_scheduler_heartbeat(client) -> None:
+    from app.db.session import get_session_factory
+
+    settings = get_settings()
+    previous_enabled = settings.scheduler_enabled
+    previous_expected = settings.scheduler_expected
+    settings.scheduler_enabled = False
+    settings.scheduler_expected = True
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await touch_heartbeat(
+                session,
+                process_type="scheduler",
+                instance_id="test-scheduler-ready",
+            )
+            await session.commit()
+        response = await client.get("/ready")
+    finally:
+        settings.scheduler_enabled = previous_enabled
+        settings.scheduler_expected = previous_expected
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
 
 
 def test_sanitize_error_strips_token() -> None:

@@ -313,14 +313,18 @@ class DefaultLLMClient:
         *,
         payload: dict[str, Any],
         headers: dict[str, str] | None,
+        operation: str = "llm_chat",
     ) -> httpx.Response:
+        from app.services.telemetry import observe_llm
+
         response: httpx.Response | None = None
-        for attempt in range(1, 4):
-            response = await self._http.post(url, json=payload, headers=headers)
-            if response.status_code < 500:
-                break
-            if attempt < 3:
-                await asyncio.sleep(min(2.0, 0.2 * (2 ** (attempt - 1))))
+        async with observe_llm(operation):
+            for attempt in range(1, 4):
+                response = await self._http.post(url, json=payload, headers=headers)
+                if response.status_code < 500:
+                    break
+                if attempt < 3:
+                    await asyncio.sleep(min(2.0, 0.2 * (2 ** (attempt - 1))))
         assert response is not None
         return response
 

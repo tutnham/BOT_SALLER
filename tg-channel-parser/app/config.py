@@ -48,6 +48,9 @@ class Settings(BaseSettings):
 
     # API
     api_auth_token: str = Field(min_length=1)
+    health_details_token: str | None = None
+    heartbeat_stale_seconds: int = 90
+    runtime_required: bool = True
 
     # Misc
     tz: str = "Europe/Moscow"
