@@ -199,17 +199,12 @@ jobs:
         run: docker network create zakupki-internal || true
       - name: Start backend and parser API
         env:
-          POSTGRES_USER: zakupki
-          POSTGRES_PASSWORD: zakupki
-          POSTGRES_DB: zakupki
-          DATABASE_URL: postgresql+asyncpg://tg_parser:tg_parser@tg-parser-postgres:5432/tg_parser
           WEBHOOK_SECRET: test-webhook-secret
           TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
           TELEGRAM_API_ID: "12345"
           TELEGRAM_API_HASH: 0123456789abcdef0123456789abcdef
           TELEGRAM_SESSION_STRING: test-session-string-not-real
           API_AUTH_TOKEN: test-parser-api-token
-          POSTGRES_PASSWORD: tg_parser
         run: |
           cat > .env <<'EOF'
           TELEGRAM_BOT_TOKEN=test-bot-token
@@ -220,8 +215,10 @@ jobs:
           PARSER_API_URL=http://tg-parser-api:8000
           PARSER_API_TOKEN=test-parser-api-token
           EOF
-          docker compose -f tg-channel-parser/docker-compose.tg-parser.yml up -d --build tg-parser-api
-          DATABASE_URL=postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki \
+          POSTGRES_USER=tg_parser POSTGRES_PASSWORD=tg_parser POSTGRES_DB=tg_parser \
+            docker compose -f tg-channel-parser/docker-compose.tg-parser.yml up -d --build tg-parser-api
+          POSTGRES_USER=zakupki POSTGRES_PASSWORD=zakupki POSTGRES_DB=zakupki \
+            DATABASE_URL=postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki \
             docker compose -f docker-compose.yml up -d --build backend
       - name: Smoke and recreate
         run: |
