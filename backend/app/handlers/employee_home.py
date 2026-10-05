@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.db.models import ClientGroup, Quote, Request, RequestStatus
 from app.services import admin_service
 from app.services.bargain_service import start_bargain
-from app.services.deal_service import create_deal
+from app.services.deal_service import SupplierNotFoundError, create_deal
 from app.services.recheck_service import RECHECK_HOURS_DEFAULT, schedule_recheck
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
@@ -363,12 +363,19 @@ async def _apply_price_text(
             )
             return
     if kind == "req_deal":
-        deal = await create_deal(
-            session,
-            request_id=request_id,
-            supplier_id=supplier_id,
-            final_price=price,
-        )
+        try:
+            deal = await create_deal(
+                session,
+                request_id=request_id,
+                supplier_id=supplier_id,
+                final_price=price,
+            )
+        except SupplierNotFoundError:
+            await telegram.send_message(
+                chat_id,
+                render_template("supplier_not_found", supplier_id=supplier_id),
+            )
+            return
         await telegram.send_message(
             chat_id,
             render_template(

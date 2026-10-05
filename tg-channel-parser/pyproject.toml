@@ -58,3 +58,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    "acceptance: parser API scenarios against PostgreSQL",
+]
