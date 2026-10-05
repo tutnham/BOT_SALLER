@@ -13,7 +13,7 @@ RUN apt-get update \
     && adduser --disabled-password --gecos "" --uid 1000 appuser
 
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && pip install --require-hashes -r requirements.txt
 
 COPY . .
 RUN chown -R appuser:appuser /app
