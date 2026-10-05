@@ -57,6 +57,7 @@ services:
       OUTBOX_DELIVERY_ENABLED: ${OUTBOX_DELIVERY_ENABLED:-false}
       WORKER_ID: ${WORKER_ID:-backend-worker}
     command: ["python", "-m", "app.workers.main"]
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

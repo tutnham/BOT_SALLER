@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -101,6 +102,9 @@ async def _process_inbox_row(session: AsyncSession, inbox_id: int) -> int:
     row = await session.get(WebhookInbox, inbox_id)
     if row is None:
         return 0
+    pause = get_settings().worker_test_pause_seconds
+    if pause > 0:
+        await asyncio.sleep(pause)
     token = caller_owns_transaction.set(True)
     try:
         if await is_duplicate_update(session, int(row.tg_update_id)):

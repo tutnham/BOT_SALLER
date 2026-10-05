@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     worker_inbox_batch_size: int = 10
     worker_outbox_batch_size: int = 20
     worker_id: str | None = None
+    worker_shutdown_grace_seconds: float = 20.0
+    # Test-only delay after a lease is committed. Production leaves this at 0.
+    worker_test_pause_seconds: float = 0.0
 
     # Morning price LLM parse concurrency cap
     morning_price_llm_concurrency: int = 4
