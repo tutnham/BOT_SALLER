@@ -9,14 +9,13 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import (
     MessageOut,
     MessageSendStatus,
-    Quote,
     Request,
     RequestStatus,
     Supplier,
@@ -28,7 +27,12 @@ from app.llm.client import (
     validate_supplier_reply_binding,
 )
 from app.parsers.cache import get_cached, set_cached
-from app.parsers.product_normalizer import attrs_match_score, extract_product_attrs
+from app.parsers.product_normalizer import (
+    ProductAttrs,
+    attrs_match_score,
+    extract_product_attrs,
+    normalize_product_text,
+)
 from app.parsers.regex_parser import ParsedSupplierReply, parse_supplier_reply
 from app.services.product_classifier import (
     category_from_normalized,
@@ -71,6 +75,77 @@ class BindingDecision:
     ignored_reason: str | None = None
     candidates: list[Request] = field(default_factory=list)
     binding_price: Decimal | None = None
+    needs_supplier_confirm: bool = False
+
+
+def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
+    supplier_norm = normalize_product_text(supplier_text)
+    request_norm = normalize_product_text(request_text)
+    if not supplier_norm or not request_norm:
+        return 0
+    if supplier_norm in request_norm or request_norm in supplier_norm:
+        return 4
+    supplier_tokens = {token for token in supplier_norm.split() if len(token) >= 2}
+    request_tokens = {token for token in request_norm.split() if len(token) >= 2}
+    if not supplier_tokens or not request_tokens:
+        return 0
+    overlap = len(supplier_tokens & request_tokens)
+    if overlap >= 3:
+        return 3
+    if overlap >= 2:
+        return 2
+    if overlap >= 1:
+        return 1
+    return 0
+
+
+def _has_product_identity(attrs: ProductAttrs) -> bool:
+    return bool(attrs.model or attrs.family or attrs.number)
+
+
+def find_clear_text_match(
+    raw_text: str,
+    message_attrs: ProductAttrs,
+    candidates: list[Request],
+) -> Request | None:
+    """One candidate clearly matches supplier product text (not a bare price)."""
+    if not _has_product_identity(message_attrs):
+        return None
+    settings = get_settings()
+    scored: list[tuple[Request, int]] = []
+    for request in candidates:
+        score = attrs_match_score(message_attrs, request.normalized_json)
+        if score < 0:
+            continue
+        score += source_text_overlap_score(raw_text, request.source_text or "")
+        scored.append((request, score))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (item[1], -item[0].id), reverse=True)
+    top_request, top_score = scored[0]
+    second_score = scored[1][1] if len(scored) > 1 else -1
+    margin = top_score - second_score
+    if (
+        top_score >= settings.supplier_bind_min_score
+        and margin >= settings.supplier_bind_min_margin
+    ):
+        return top_request
+    return None
+
+
+def _should_confirm_with_supplier(
+    *,
+    message_attrs: ProductAttrs,
+    candidates: list[Request],
+    scored: list[tuple[Request, int]],
+) -> bool:
+    if not candidates:
+        return False
+    if not _has_product_identity(message_attrs):
+        return True
+    if not scored:
+        return False
+    return True
 
 
 def is_neutral_or_noise(raw_text: str) -> str | None:
@@ -186,46 +261,6 @@ async def _resolve_with_llm(
     return None, binding.confidence, None
 
 
-async def _oldest_unanswered(
-    session: AsyncSession,
-    supplier: Supplier,
-    candidates: list[Request],
-) -> Request | None:
-    """First request sent to this supplier that still has no quote from them."""
-    ids = [request.id for request in candidates]
-    quoted = set(
-        (
-            await session.execute(
-                select(Quote.request_id).where(
-                    Quote.supplier_id == supplier.id,
-                    Quote.request_id.in_(ids),
-                )
-            )
-        ).scalars().all()
-    )
-    pending = [request for request in candidates if request.id not in quoted]
-    if not pending:
-        return None
-    sent_rows = (
-        await session.execute(
-            select(MessageOut.request_id, func.min(MessageOut.sent_at))
-            .where(
-                MessageOut.supplier_id == supplier.id,
-                MessageOut.request_id.in_([request.id for request in pending]),
-                MessageOut.send_status == MessageSendStatus.sent.value,
-            )
-            .group_by(MessageOut.request_id)
-        )
-    ).all()
-    sent_at: dict[int, datetime] = {
-        int(request_id): sent_time
-        for request_id, sent_time in sent_rows
-        if request_id is not None
-    }
-    pending.sort(key=lambda request: (sent_at.get(request.id) or request.created_at, request.id))
-    return pending[0]
-
-
 async def resolve_binding(
     session: AsyncSession,
     *,
@@ -233,6 +268,7 @@ async def resolve_binding(
     message: dict[str, Any],
     raw_text: str,
     reply_request: Request | None,
+    for_rebind: bool = False,
 ) -> BindingDecision:
     parsed = parse_supplier_reply(raw_text)
     message_attrs = extract_product_attrs(raw_text)
@@ -282,7 +318,7 @@ async def resolve_binding(
             parsed=parsed,
         )
 
-    if len(candidates) == 1:
+    if for_rebind and len(candidates) == 1:
         logger.info(
             "supplier_bind message supplier_id={} request_id={} method=single score=null",
             supplier.id,
@@ -297,26 +333,17 @@ async def resolve_binding(
             candidates=candidates,
         )
 
-    if not message_attrs.model and not message_attrs.family and not message_attrs.number:
-        ordered = await _oldest_unanswered(session, supplier, candidates)
-        if ordered is not None:
-            logger.info(
-                "supplier_bind message supplier_id={} request_id={} method=order score=null",
-                supplier.id,
-                ordered.id,
-            )
-            return BindingDecision(
-                request=ordered,
-                method="order",
-                status="bound",
-                score=None,
-                parsed=parsed,
-                candidates=candidates,
-            )
+    text_match = find_clear_text_match(raw_text, message_attrs, candidates)
+    if text_match is not None:
+        logger.info(
+            "supplier_bind message supplier_id={} request_id={} method=text score=null",
+            supplier.id,
+            text_match.id,
+        )
         return BindingDecision(
-            request=None,
-            method="none",
-            status="unbound",
+            request=text_match,
+            method="text",
+            status="bound",
             score=None,
             parsed=parsed,
             candidates=candidates,
@@ -353,6 +380,17 @@ async def resolve_binding(
                 candidates=candidates,
             )
 
+    if not _has_product_identity(message_attrs):
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="unbound",
+            score=None,
+            parsed=parsed,
+            candidates=candidates,
+            needs_supplier_confirm=True,
+        )
+
     llm_request, llm_conf, llm_price = await _resolve_with_llm(session, raw_text, candidates)
     if llm_request is not None:
         logger.info(
@@ -371,6 +409,11 @@ async def resolve_binding(
             binding_price=llm_price,
         )
 
+    needs_confirm = _should_confirm_with_supplier(
+        message_attrs=message_attrs,
+        candidates=candidates,
+        scored=scored,
+    )
     return BindingDecision(
         request=None,
         method="none",
@@ -378,6 +421,7 @@ async def resolve_binding(
         score=None,
         parsed=parsed,
         candidates=candidates,
+        needs_supplier_confirm=needs_confirm,
     )
 
 
