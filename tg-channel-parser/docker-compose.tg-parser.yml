@@ -97,7 +97,17 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      default: {}
+      zakupki-internal:
+        aliases:
+          - tg-parser-api
     restart: unless-stopped
+
+networks:
+  zakupki-internal:
+    external: true
+    name: zakupki-internal
 
 volumes:
   tg_parser_pg_data:

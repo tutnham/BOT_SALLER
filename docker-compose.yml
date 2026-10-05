@@ -40,6 +40,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - default
+      - zakupki-internal
     restart: unless-stopped
 
   backend-worker:
@@ -58,12 +61,20 @@ services:
       WORKER_ID: ${WORKER_ID:-backend-worker}
     command: ["python", "-m", "app.workers.main"]
     stop_grace_period: 30s
+    networks:
+      - default
+      - zakupki-internal
     depends_on:
       postgres:
         condition: service_healthy
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+networks:
+  zakupki-internal:
+    external: true
+    name: zakupki-internal
 
 volumes:
   zakupki_pg_data:
