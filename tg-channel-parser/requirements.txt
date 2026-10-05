@@ -58,9 +58,9 @@ colorama==0.4.6 ; sys_platform == 'win32' \
     # via
     #   loguru
     #   uvicorn
-fastapi==0.115.0 \
-    --hash=sha256:17ea427674467486e997206a5ab25760f6b09e069f099b96f5b55a32fb6f1631 \
-    --hash=sha256:f93b4ca3529a8ebc6fc3fcf710e5efa8de3df9b41570958abf1d97d843138004
+fastapi==0.116.1 \
+    --hash=sha256:c46ac7c312df840f0c9e220f7964bada936781bc4e2e6eb71f1c4d7553786565 \
+    --hash=sha256:ed52cbf946abfd70c5a0dccb24673f0670deeb517a88b3544d03c2a6bf283143
     # via tg-channel-parser
 greenlet==3.5.6 \
     --hash=sha256:0616b8f878098c5681fd8f0dc92d887551717402342a70f0abcbfea5f5ad8a44 \
@@ -476,9 +476,9 @@ sqlalchemy==2.0.36 \
     # via
     #   alembic
     #   tg-channel-parser
-starlette==0.38.6 \
-    --hash=sha256:4517a1409e2e73ee4951214ba012052b9e16f60e90d73cfb06192c19203bbb05 \
-    --hash=sha256:863a1588f5574e70a821dadefb41e4881ea451a47a3cd1b4df359d4ffefe5ead
+starlette==0.47.3 \
+    --hash=sha256:6bc94f839cc176c4858894f1f8908f0ab79dfec1a6b8402f6da9be26ebea52e9 \
+    --hash=sha256:89c0778ca62a76b826101e7c709e70680a1699ca7da6b44d38eb0a7e61fe4b51
     # via fastapi
 tgcrypto==1.2.5 \
     --hash=sha256:10dd3870aecb1a783c6eafd3b164b2149dbc93a9ee13feb7e6f5c58f87c24cd0 \
@@ -502,6 +502,7 @@ typing-extensions==4.16.0 \
     #   pydantic
     #   pydantic-core
     #   sqlalchemy
+    #   starlette
 uvicorn==0.32.0 \
     --hash=sha256:60b8f3a5ac027dcd31448f411ced12b5ef452c646f76f02f8cc3f25d8d26fd82 \
     --hash=sha256:f78b36b143c16f54ccdb8190d0a26b5f1901fe5a3c777e1ab29f26391af8551e
