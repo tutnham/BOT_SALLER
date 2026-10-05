@@ -146,5 +146,8 @@ async def test_low_confidence_no_quote_low_confidence_template(
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
+    assert "Цена:" in group_sends[0]
     assert "Комментарий:" in group_sends[0]
+    assert "Наличие:" not in group_sends[0]
+    assert "Кол-во:" not in group_sends[0]
     assert "Перезвоните позже" in group_sends[0]
