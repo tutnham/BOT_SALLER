@@ -17,7 +17,11 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --upgrade pip "setuptools>=78.1.1" "wheel>=0.46.2" "jaraco.context>=6.1.0" \
     && rm -rf /usr/local/lib/python3.11/ensurepip \
-    && pip install --require-hashes -r requirements.txt
+    && pip install --require-hashes -r requirements.txt \
+    && python -m pip uninstall -y pip setuptools wheel \
+    && rm -rf /usr/local/lib/python3.11/site-packages/pip* \
+              /usr/local/lib/python3.11/site-packages/setuptools* \
+              /usr/local/lib/python3.11/site-packages/wheel*
 
 COPY . .
 RUN chown -R appuser:appuser /app
