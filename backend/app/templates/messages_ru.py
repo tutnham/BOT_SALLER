@@ -69,9 +69,7 @@ TEMPLATES: dict[str, str] = {
     ),
     "supplier_low_confidence": (
         "По вашему запросу · Заявка #{request_id}\n"
-        "Наличие: —\n"
         "Цена: —\n"
-        "Кол-во: —\n"
         "Комментарий: {raw_text}"
     ),
     "deal_closed": (
