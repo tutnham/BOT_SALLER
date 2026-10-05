@@ -20,6 +20,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:?required}
@@ -28,8 +36,8 @@ services:
       PUBLIC_BACKEND_URL: ${PUBLIC_BACKEND_URL:-}
       # Drives both container clock and Settings.tz / cron schedules.
       TZ: ${TZ:-Europe/Moscow}
-      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
-      SCHEDULER_EXPECTED: ${SCHEDULER_EXPECTED:-false}
+      SCHEDULER_ENABLED: "false"
+      SCHEDULER_EXPECTED: "true"
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -82,8 +90,10 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?required}
       TELEGRAM_WEBHOOK_SECRET_TOKEN: ${TELEGRAM_WEBHOOK_SECRET_TOKEN:?required}
       TZ: ${TZ:-Europe/Moscow}
-      SCHEDULER_ENABLED: "true"
+      SCHEDULER_ENABLED: "false"
+      HOSTNAME: backend-scheduler
     command: ["python", "-m", "app.scheduler"]
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

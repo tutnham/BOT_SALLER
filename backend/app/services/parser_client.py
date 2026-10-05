@@ -77,40 +77,46 @@ async def _request(
     http_client: httpx.AsyncClient | None = None,
 ) -> Any:
     """Make a parser API request with retries. Returns JSON body (dict or list)."""
+    from app.services.telemetry import observe_http_async, record_parser_error
+
+    operation = f"parser_{method.lower()}"
     base = _base_url()
     client = http_client or get_parser_http_client()
 
     response: httpx.Response | None = None
-    for attempt in range(1, 4):
-        try:
-            if method == "GET":
-                response = await client.get(
-                    f"{base}{path}",
-                    params=params,
-                    headers=_headers(),
-                )
-            elif method == "POST":
-                response = await client.post(
-                    f"{base}{path}",
-                    json=json_body,
-                    headers=_headers(),
-                )
-            elif method == "DELETE":
-                response = await client.delete(
-                    f"{base}{path}",
-                    headers=_headers(),
-                )
-            else:
-                raise ParserClientError(f"unsupported_method:{method}")
-        except httpx.HTTPError as exc:
-            if attempt == 3:
-                raise ParserClientError(f"parser_transport_error:{exc}") from exc
-            continue
-        if response.status_code < 500:
-            break
+    async with observe_http_async(operation):
+        for attempt in range(1, 4):
+            try:
+                if method == "GET":
+                    response = await client.get(
+                        f"{base}{path}",
+                        params=params,
+                        headers=_headers(),
+                    )
+                elif method == "POST":
+                    response = await client.post(
+                        f"{base}{path}",
+                        json=json_body,
+                        headers=_headers(),
+                    )
+                elif method == "DELETE":
+                    response = await client.delete(
+                        f"{base}{path}",
+                        headers=_headers(),
+                    )
+                else:
+                    raise ParserClientError(f"unsupported_method:{method}")
+            except httpx.HTTPError as exc:
+                if attempt == 3:
+                    record_parser_error()
+                    raise ParserClientError(f"parser_transport_error:{exc}") from exc
+                continue
+            if response.status_code < 500:
+                break
 
     assert response is not None
     if response.status_code >= 400:
+        record_parser_error()
         raise ParserClientError(f"parser_http_{response.status_code}")
 
     try:
@@ -265,3 +271,31 @@ async def delete_channel(
 ) -> None:
     """Deactivate a parser channel."""
     await _request("DELETE", f"/channels/{channel_id}", http_client=http_client)
+
+
+async def fetch_parser_ready(
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """Short-timeout readiness probe for morning-price dependency status."""
+    try:
+        payload = await _request("GET", "/ready", http_client=http_client)
+    except ParserClientError:
+        return False, {"status": "unreachable"}
+    if isinstance(payload, dict) and payload.get("status") == "ok":
+        return True, payload
+    return False, payload if isinstance(payload, dict) else {"status": "unknown"}
+
+
+async def fetch_parser_ready(
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """Short-timeout readiness probe for morning-price dependency status."""
+    try:
+        payload = await _request("GET", "/ready", http_client=http_client)
+    except ParserClientError:
+        return False, {"status": "unreachable"}
+    if isinstance(payload, dict) and payload.get("status") == "ok":
+        return True, payload
+    return False, payload if isinstance(payload, dict) else {"status": "unknown"}

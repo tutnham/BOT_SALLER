@@ -7,6 +7,8 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -89,6 +91,20 @@ async def _reload_loop(
             if handler is not None:
                 client.add_handler(handler)
             last_ids = new_ids
+            try:
+                from app.services.heartbeat_service import touch_runtime_heartbeat
+
+                factory = get_session_factory()
+                async with factory() as session:
+                    await touch_runtime_heartbeat(
+                        session,
+                        instance_id=os.environ.get("HOSTNAME", "tg-runtime"),
+                        session_state="connected",
+                        last_channel_reload_at=datetime.now(UTC),
+                    )
+                    await session.commit()
+            except Exception:
+                logger.warning("Failed to record channel reload heartbeat")
         except Exception:
             logger.exception("Failed to reload listener channel filter")
 

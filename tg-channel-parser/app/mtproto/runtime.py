@@ -7,6 +7,9 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
+from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 from pyrogram.handlers import MessageHandler
@@ -19,7 +22,28 @@ from app.mtproto.realtime import (
     _load_active_channel_ids,
     _reload_loop,
 )
+from app.db.session import get_session_factory
+from app.services.heartbeat_service import touch_runtime_heartbeat
 from app.worker.task_worker import run_task_poll_loop
+
+
+async def _runtime_heartbeat_loop(client: Any, instance_id: str) -> None:
+    started = datetime.now(UTC)
+    factory = get_session_factory()
+    while True:
+        state = "connected" if client.is_connected else "disconnected"
+        try:
+            async with factory() as session:
+                await touch_runtime_heartbeat(
+                    session,
+                    instance_id=instance_id,
+                    session_state=state,
+                    started_at=started,
+                )
+                await session.commit()
+        except Exception:
+            logger.warning("Runtime heartbeat write failed")
+        await asyncio.sleep(15)
 
 
 async def run_mtproto_runtime() -> None:
@@ -40,16 +64,20 @@ async def run_mtproto_runtime() -> None:
         )
 
     await client.start()
+    instance_id = os.environ.get("HOSTNAME", "tg-runtime")
     logger.info("tg-runtime started (listener + task worker)")
     poll_task = asyncio.create_task(run_task_poll_loop(client))
+    heartbeat_task = asyncio.create_task(_runtime_heartbeat_loop(client, instance_id))
     try:
         await _reload_loop(client, handler, settings)
     finally:
+        heartbeat_task.cancel()
         poll_task.cancel()
-        try:
-            await poll_task
-        except asyncio.CancelledError:
-            pass
+        for task in (heartbeat_task, poll_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await client.stop()
         from app.db.session import dispose_engine
 

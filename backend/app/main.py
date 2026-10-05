@@ -155,7 +155,7 @@ async def unhandled_exception_handler(
 
 
 async def _heartbeat_loop() -> None:
-    """Web process heartbeat. Also covers the scheduler when it runs in-process."""
+    """Web process heartbeat. Scheduler hb only when cron runs in-process (not split deploy)."""
     settings = get_settings()
     instance_id = os.environ.get("HOSTNAME", "backend-web")
     while True:
@@ -167,7 +167,7 @@ async def _heartbeat_loop() -> None:
                 await touch_heartbeat(
                     session, process_type="web", instance_id=instance_id
                 )
-                if settings.scheduler_enabled:
+                if settings.scheduler_enabled and not settings.scheduler_expected:
                     await touch_heartbeat(
                         session, process_type="scheduler", instance_id=instance_id
                     )
@@ -214,12 +214,18 @@ async def health_details(
     return await health_details(session)
 
 
-@app.get("/metrics")
-async def metrics(session: AsyncSession = Depends(get_db)) -> PlainTextResponse:
+@app.get("/metrics", response_model=None)
+async def metrics(
+    session: AsyncSession = Depends(get_db),
+    x_metrics_token: str | None = Header(default=None, alias="X-Metrics-Token"),
+) -> PlainTextResponse | JSONResponse:
     from app.services.metrics_service import render_metrics
+    from app.services.ops_status_service import metrics_token_ok
 
+    if not metrics_token_ok(x_metrics_token):
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
     body = await render_metrics(session)
-    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/health")

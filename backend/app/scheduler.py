@@ -16,7 +16,6 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.models import JobRun
 from app.db.session import get_scheduler_session_factory
 from app.jobs import (
     run_daily_report,
@@ -76,11 +75,14 @@ async def _run_guarded(
             logger.info("Job {} skipped: already running on another instance", job_name)
             return
 
+        from app.services.telemetry import observe_cron
+
         try:
-            await asyncio.wait_for(
-                runner(session, telegram),
-                timeout=timeout_seconds,
-            )
+            with observe_cron(job_name):
+                await asyncio.wait_for(
+                    runner(session, telegram),
+                    timeout=timeout_seconds,
+                )
             logger.info("Job {} finished successfully", job_name)
             await _record_job_run(job_name, "ok", started)
         except Exception as exc:
@@ -158,21 +160,9 @@ async def _record_job_run(
     *,
     error_type: str | None = None,
 ) -> None:
-    try:
-        factory = get_scheduler_session_factory()
-        async with factory() as session:
-            session.add(
-                JobRun(
-                    job_name=job_name,
-                    status=status,
-                    started_at=started,
-                    finished_at=datetime.now(UTC),
-                    error_type=error_type,
-                )
-            )
-            await session.commit()
-    except Exception:
-        logger.exception("Job {} result was not recorded", job_name)
+    from app.services.job_run_service import record_job_run
+
+    await record_job_run(job_name, status, started, error_type=error_type)
 
 
 async def job_retention() -> None:
@@ -203,6 +193,23 @@ _JOB_CALLABLES: dict[str, Callable[[], Awaitable[None]]] = {
     "llm_billing_reminder": job_llm_billing_reminder,
     "retention": job_retention,
 }
+
+
+def setup_scheduler() -> AsyncIOScheduler:
+    settings = get_settings()
+    tz = ZoneInfo(settings.tz)
+    scheduler = AsyncIOScheduler(timezone=tz)
+    defaults = {"max_instances": 1, "coalesce": True}
+
+    for spec in build_job_specs(settings):
+        scheduler.add_job(
+            _JOB_CALLABLES[spec.job_id],
+            CronTrigger.from_crontab(spec.cron, timezone=tz),
+            id=spec.job_id,
+            misfire_grace_time=spec.misfire_grace_time,
+            **defaults,
+        )
+    return scheduler
 
 
 def main() -> None:
@@ -246,20 +253,3 @@ async def _scheduler_main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-def setup_scheduler() -> AsyncIOScheduler:
-    settings = get_settings()
-    tz = ZoneInfo(settings.tz)
-    scheduler = AsyncIOScheduler(timezone=tz)
-    defaults = {"max_instances": 1, "coalesce": True}
-
-    for spec in build_job_specs(settings):
-        scheduler.add_job(
-            _JOB_CALLABLES[spec.job_id],
-            CronTrigger.from_crontab(spec.cron, timezone=tz),
-            id=spec.job_id,
-            misfire_grace_time=spec.misfire_grace_time,
-            **defaults,
-        )
-    return scheduler

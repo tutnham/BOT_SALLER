@@ -29,7 +29,12 @@ async def _delete_request_children(
     await session.execute(delete(Deal).where(Deal.request_id.in_(request_ids)))
 
 
-async def hard_delete_request(session: AsyncSession, request_id: int) -> bool:
+async def hard_delete_request(
+    session: AsyncSession,
+    request_id: int,
+    *,
+    actor_telegram_id: int | None = None,
+) -> bool:
     """
     Hard-delete request and all dependent rows in one transaction.
 
@@ -40,8 +45,19 @@ async def hard_delete_request(session: AsyncSession, request_id: int) -> bool:
     if request is None:
         return False
 
+    from app.services.audit_service import record_admin_mutation
+
     await _delete_request_children(session, [request_id])
     await session.execute(delete(Request).where(Request.id == request_id))
+    await record_admin_mutation(
+        session,
+        action="request_purge",
+        entity_type="request",
+        entity_id=str(request_id),
+        actor_telegram_id=actor_telegram_id,
+        previous_state={"status": str(request.status)},
+        new_state={"deleted": True},
+    )
     await session.flush()
     return True
 

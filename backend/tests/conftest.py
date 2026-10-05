@@ -22,6 +22,7 @@ from sqlalchemy.pool import NullPool
 os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot-token"
 os.environ["WEBHOOK_SECRET"] = "test-webhook-secret"
 os.environ["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = "test-telegram-webhook-secret"
+os.environ["METRICS_TOKEN"] = "test-metrics-token"
 os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ.setdefault(
     "DATABASE_URL",

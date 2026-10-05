@@ -275,3 +275,17 @@ class ParserAiResult(Base):
     )
 
     post: Mapped[ParserPost] = relationship(back_populates="ai_results")
+
+
+class ParserRuntimeHeartbeat(Base):
+    """MTProto runtime liveness (tg-runtime process)."""
+
+    __tablename__ = "parser_runtime_heartbeats"
+
+    instance_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    session_state: Mapped[str] = mapped_column(Text, nullable=False)
+    last_channel_reload_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

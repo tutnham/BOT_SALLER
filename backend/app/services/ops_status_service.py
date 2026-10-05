@@ -14,6 +14,14 @@ from app.db.revision import EXPECTED_ALEMBIC_REVISION
 from app.services.heartbeat_service import heartbeat_is_fresh, latest_heartbeat_at
 
 
+def metrics_token_ok(presented: str | None) -> bool:
+    settings = get_settings()
+    expected = settings.metrics_token
+    if not presented or not expected:
+        return False
+    return hmac.compare_digest(presented, expected)
+
+
 def details_token_ok(presented: str | None) -> bool:
     settings = get_settings()
     expected = settings.health_details_token or settings.webhook_secret
@@ -119,9 +127,17 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
     runs = (
         await session.execute(select(JobRun).order_by(JobRun.finished_at.desc()).limit(10))
     ).scalars().all()
+    morning_price_ready = False
+    try:
+        from app.services.parser_client import fetch_parser_ready
+
+        morning_price_ready, _parser_body = await fetch_parser_ready()
+    except Exception:
+        morning_price_ready = False
     return {
         "ready": ready,
         "readiness": ready_body,
+        "morning_price_ready": morning_price_ready,
         "dead_inbox": dead_inbox,
         "uncertain_outbox": uncertain,
         "oldest_pending_age_seconds": oldest_age,

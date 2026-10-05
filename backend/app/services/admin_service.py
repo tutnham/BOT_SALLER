@@ -120,11 +120,25 @@ async def add_employee(
 async def toggle_employee_active(
     session: AsyncSession,
     employee_id: int,
+    *,
+    actor_telegram_id: int | None = None,
 ) -> Employee:
+    from app.services.audit_service import record_admin_mutation
+
     employee = await session.get(Employee, employee_id)
     if employee is None:
         raise EmployeeNotFoundError(employee_id)
+    before = {"active": employee.active}
     employee.active = not employee.active
+    await record_admin_mutation(
+        session,
+        action="employee_toggle_active",
+        entity_type="employee",
+        entity_id=str(employee_id),
+        actor_telegram_id=actor_telegram_id,
+        previous_state=before,
+        new_state={"active": employee.active},
+    )
     await session.flush()
     return employee
 

@@ -1,43 +1,43 @@
-"""Prometheus text exposition. Labels stay bounded: no ids, secrets, or message text."""
+"""Prometheus exposition: process-local counters + DB-backed gauges."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from prometheus_client import generate_latest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import TelegramOutbox, WebhookInbox
+from app.db.models import JobRun, TelegramOutbox, WebhookInbox
 from app.services.heartbeat_service import latest_heartbeat_at
-
-_webhook_total = 0
-_webhook_errors = 0
+from app.services.telemetry import get_metrics, get_registry
 
 
-def record_webhook(*, error: bool) -> None:
-    global _webhook_total, _webhook_errors
-    _webhook_total += 1
-    if error:
-        _webhook_errors += 1
+async def _count_webhook_inbox(session: AsyncSession, status: str, *, open_dead: bool = False) -> int:
+    stmt = select(func.count()).select_from(WebhookInbox).where(WebhookInbox.status == status)
+    if open_dead:
+        stmt = stmt.where(WebhookInbox.resolved_at.is_(None))
+    return int((await session.execute(stmt)).scalar_one())
 
 
-def _line(name: str, value: int | float) -> str:
-    return f"{name} {value}"
+async def _count_outbox(session: AsyncSession, status: str, *, open_only: bool = False) -> int:
+    stmt = select(func.count()).select_from(TelegramOutbox).where(TelegramOutbox.status == status)
+    if open_only:
+        stmt = stmt.where(TelegramOutbox.resolved_at.is_(None))
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def render_metrics(session: AsyncSession) -> str:
+    metrics = get_metrics()
     now = datetime.now(UTC)
 
-    async def _count(model: type, status: str) -> int:
-        column = model.status  # type: ignore[attr-defined]
-        return int(
-            (await session.execute(select(func.count()).select_from(model).where(column == status))).scalar_one()
-        )
+    metrics.inbox_pending.set(await _count_webhook_inbox(session, "pending"))
+    metrics.inbox_processing.set(await _count_webhook_inbox(session, "processing"))
+    metrics.inbox_dead.set(await _count_webhook_inbox(session, "dead", open_dead=True))
+    metrics.outbox_pending.set(await _count_outbox(session, "pending"))
+    metrics.outbox_processing.set(await _count_outbox(session, "processing"))
+    metrics.outbox_uncertain.set(await _count_outbox(session, "uncertain", open_only=True))
 
-    pending = await _count(WebhookInbox, "pending")
-    dead = await _count(WebhookInbox, "dead")
-    out_pending = await _count(TelegramOutbox, "pending")
-    uncertain = await _count(TelegramOutbox, "uncertain")
     oldest = (
         await session.execute(
             select(func.min(WebhookInbox.created_at)).where(WebhookInbox.status == "pending")
@@ -48,33 +48,32 @@ async def render_metrics(session: AsyncSession) -> str:
         if oldest.tzinfo is None:
             oldest = oldest.replace(tzinfo=UTC)
         oldest_age = int((now - oldest).total_seconds())
+    metrics.inbox_oldest_pending_seconds.set(oldest_age)
+
     worker_at = await latest_heartbeat_at(session, "worker")
     scheduler_at = await latest_heartbeat_at(session, "scheduler")
 
-    def _age(value: datetime | None) -> int:
+    def _age(value: datetime | None) -> float:
         if value is None:
             return -1
-        return int((now - value).total_seconds())
+        return float(int((now - value).total_seconds()))
 
-    lines = [
-        "# HELP zakupki_webhook_total Webhook requests handled by this process",
-        "# TYPE zakupki_webhook_total counter",
-        _line("zakupki_webhook_total", _webhook_total),
-        "# TYPE zakupki_webhook_errors counter",
-        _line("zakupki_webhook_errors", _webhook_errors),
-        "# TYPE zakupki_inbox_pending gauge",
-        _line("zakupki_inbox_pending", pending),
-        "# TYPE zakupki_inbox_dead gauge",
-        _line("zakupki_inbox_dead", dead),
-        "# TYPE zakupki_outbox_pending gauge",
-        _line("zakupki_outbox_pending", out_pending),
-        "# TYPE zakupki_outbox_uncertain gauge",
-        _line("zakupki_outbox_uncertain", uncertain),
-        "# TYPE zakupki_inbox_oldest_pending_seconds gauge",
-        _line("zakupki_inbox_oldest_pending_seconds", oldest_age),
-        "# TYPE zakupki_worker_heartbeat_age_seconds gauge",
-        _line("zakupki_worker_heartbeat_age_seconds", _age(worker_at)),
-        "# TYPE zakupki_scheduler_heartbeat_age_seconds gauge",
-        _line("zakupki_scheduler_heartbeat_age_seconds", _age(scheduler_at)),
-    ]
-    return "\n".join(lines) + "\n"
+    metrics.worker_heartbeat_age_seconds.set(_age(worker_at))
+    metrics.scheduler_heartbeat_age_seconds.set(_age(scheduler_at))
+
+    last_morning = (
+        await session.execute(
+            select(func.max(JobRun.finished_at)).where(
+                JobRun.job_name == "morning-price",
+                JobRun.status == "ok",
+            )
+        )
+    ).scalar_one_or_none()
+    morning_unix = 0.0
+    if last_morning is not None:
+        if last_morning.tzinfo is None:
+            last_morning = last_morning.replace(tzinfo=UTC)
+        morning_unix = last_morning.timestamp()
+    metrics.morning_price_last_success_unixtime.set(morning_unix)
+
+    return generate_latest(get_registry()).decode("utf-8")

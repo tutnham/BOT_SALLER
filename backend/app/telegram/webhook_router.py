@@ -313,16 +313,23 @@ async def telegram_webhook(
     if update_id is None:
         return {"status": "ignored"}
 
+    from app.services.telemetry import record_webhook_accepted, record_webhook_error
+
+    record_webhook_accepted()
     settings = get_settings()
     if settings.webhook_async_enabled:
         from app.services.inbox_service import enqueue_webhook_update
 
-        status, _inbox_id = await enqueue_webhook_update(
-            session,
-            tg_update_id=int(update_id),
-            payload=update_data,
-        )
-        await session.commit()
+        try:
+            status, _inbox_id = await enqueue_webhook_update(
+                session,
+                tg_update_id=int(update_id),
+                payload=update_data,
+            )
+            await session.commit()
+        except Exception:
+            record_webhook_error()
+            raise
         return {"status": status}
 
     if await is_duplicate_update(session, int(update_id)):
@@ -338,6 +345,7 @@ async def telegram_webhook(
         await session.commit()
         return {"status": status}
     except Exception as exc:
+        record_webhook_error()
         await session.rollback()
         logger.exception(
             "Webhook processing failed update_id={} error_type={}",
