@@ -47,6 +47,19 @@ async def enqueue_webhook_update(
     return "queued", int(inbox_id)
 
 
+async def _expire_inbox_row(row: WebhookInbox) -> bool:
+    """Count a crashed lease. Return False when the row must not run again."""
+    settings = get_settings()
+    row.attempts += 1
+    row.last_error = "lease_expired"
+    if row.attempts >= settings.worker_max_attempts:
+        row.status = WebhookInboxStatus.dead.value
+        row.lease_owner = None
+        row.leased_until = None
+        return False
+    return True
+
+
 def _backoff_seconds(attempts: int) -> int:
     return int(min(300, 2 ** min(attempts, 8)))
 
@@ -67,6 +80,7 @@ async def process_inbox_batch(
         lease_seconds=settings.worker_lease_seconds,
         batch_size=settings.worker_inbox_batch_size,
         worker_id=worker_id,
+        on_expired=_expire_inbox_row,
     )
     claimed_ids = [int(row.id) for row in rows]
     await session.commit()

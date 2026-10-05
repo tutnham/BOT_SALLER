@@ -129,6 +129,29 @@ async def process_outbox_batch(
     """Claim rows, commit the lease, then send. A crash after send keeps ``processing``."""
     settings = get_settings()
     tg = telegram or get_telegram_client()
+
+    async def _expire_outbox_row(row: TelegramOutbox) -> bool:
+        if row.kind in (MessageKind.ask.value, MessageKind.bargain.value):
+            row.status = TelegramOutboxStatus.uncertain.value
+            row.last_error = "lease_expired"
+            row.lease_owner = None
+            row.leased_until = None
+            await notify_operators(
+                session,
+                f"⚠️ Истёк lease доставки {row.kind} "
+                f"request_id={row.request_id} supplier_id={row.supplier_id}",
+                telegram=tg,
+            )
+            return False
+        row.attempts += 1
+        row.last_error = "lease_expired"
+        if row.attempts >= settings.worker_max_attempts:
+            row.status = TelegramOutboxStatus.dead.value
+            row.lease_owner = None
+            row.leased_until = None
+            return False
+        return True
+
     rows = await claim_rows(
         session,
         TelegramOutbox,
@@ -137,6 +160,7 @@ async def process_outbox_batch(
         lease_seconds=settings.worker_lease_seconds,
         batch_size=settings.worker_outbox_batch_size,
         worker_id=worker_id,
+        on_expired=_expire_outbox_row,
     )
     claimed_ids = [int(row.id) for row in rows]
     await session.commit()
