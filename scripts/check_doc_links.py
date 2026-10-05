@@ -18,6 +18,7 @@ CANONICAL = [
     ROOT / "Техническая документация  бот для закупок.md",
     ROOT / "TELEGRAM_BUSINESS_SETUP.md",
     ROOT / "docs" / "archive" / "README.md",
+    ROOT / "docs" / "BRANCH_PROTECTION.md",
 ]
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")

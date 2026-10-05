@@ -1,0 +1,2 @@
+# Add a CVE id only after review, with the reason on the same line.
+# Unfixed OS findings are already ignored by ignore-unfixed in CI.
