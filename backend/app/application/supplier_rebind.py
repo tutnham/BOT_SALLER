@@ -52,7 +52,7 @@ async def retry_unbound_supplier_prices(
         )
         if decision.status != "bound" or decision.request is None:
             continue
-        quote = await process_bound_supplier_reply(
+        await process_bound_supplier_reply(
             session,
             request=decision.request,
             supplier=supplier,

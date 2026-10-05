@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.db.session import reset_engine_for_tests
 from app.worker.task_worker import claim_next_task
+from tests.pg_cleanup import truncate_parser_tables
 
 PARSER_TEST_DATABASE_URL = os.environ.get("PARSER_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -52,6 +53,8 @@ async def pg_factory(migrated_url: str) -> async_sessionmaker[AsyncSession]:
     reset_engine_for_tests(migrated_url)
     engine = create_async_engine(migrated_url, poolclass=NullPool)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        await truncate_parser_tables(session)
     yield factory
     await engine.dispose()
 

@@ -56,6 +56,11 @@ async def persist_client(migrated_url: str) -> AsyncGenerator[AsyncClient, None]
                 await session.rollback()
                 raise
 
+    async with factory() as session:
+        from tests.pg_cleanup import truncate_parser_tables
+
+        await truncate_parser_tables(session)
+
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

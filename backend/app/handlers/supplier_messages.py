@@ -32,22 +32,22 @@ from app.llm.client import (
 )
 from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
+from app.parsers.product_normalizer import extract_product_attrs
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
-from app.parsers.product_normalizer import extract_product_attrs
 from app.services.reply_binding_service import (
     BindingDecision,
     merge_llm_price,
     resolve_binding,
 )
+from app.services.routing_service import resolve_supplier_by_chat
 from app.services.supplier_bind_prompt_service import (
     clear_supplier_bind_prompt,
     start_supplier_bind_prompt,
     try_handle_supplier_bind_prompt_reply,
 )
-from app.services.routing_service import resolve_supplier_by_chat
 from app.telegram.client import TelegramClientProtocol
 from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
