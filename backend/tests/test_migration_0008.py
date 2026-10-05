@@ -29,7 +29,7 @@ def _urls() -> tuple[str, str]:
             "postgresql+asyncpg://zakupki:changeme@127.0.0.1:5432/zakupki",
         ),
     )
-    sync = base.replace("postgresql+asyncpg://", "postgresql://", 1)
+    sync = base.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
     parsed = urlparse(sync)
     admin = urlunparse(parsed._replace(path="/postgres"))
     test = urlunparse(parsed._replace(path=f"/{TEST_DB_NAME}"))

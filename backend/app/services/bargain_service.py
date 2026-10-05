@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MessageKind, MessageOut, Request, RequestStatus, Supplier
+from app.db.unit_of_work import commit_or_flush
 from app.services.deal_service import RequestNotFoundError, SupplierNotFoundError
 from app.services.quote_service import select_best_quote
 from app.services.routing_service import resolve_target
@@ -77,7 +78,7 @@ async def start_bargain(
     # failure cannot roll back an already delivered message.
     request.status = RequestStatus.bargaining
     await session.flush()
-    await session.commit()
+    await commit_or_flush(session)
 
     # Template must never include competitor prices (TECH DOC §9.3 / ТЗ §5).
     text = render_template(
@@ -96,6 +97,6 @@ async def start_bargain(
         business_connection_id=target.business_connection_id,
     )
     if not is_sent(outbound):
-        await session.commit()
+        await commit_or_flush(session)
         raise SupplierUnavailableError(supplier.id)
     return outbound

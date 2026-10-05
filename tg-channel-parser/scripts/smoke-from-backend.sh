@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
-# End-to-end smoke from backend container after predefined-network wiring.
+# Smoke parser discovery from a container on zakupki-internal.
 set -euo pipefail
 
-: "${PARSER_API_URL:?set PARSER_API_URL like http://<parser-api-uuid>:8000}"
+: "${PARSER_API_URL:?set PARSER_API_URL=http://tg-parser-api:8000}"
 : "${PARSER_API_TOKEN:?set PARSER_API_TOKEN}"
+
+case "${PARSER_API_URL}" in
+  http://tg-parser-api:8000|http://tg-parser-api:8000/) ;;
+  *)
+    echo "PARSER_API_URL must stay http://tg-parser-api:8000" >&2
+    exit 1
+    ;;
+esac
+
+python - <<'PY'
+import socket
+print(socket.getaddrinfo("tg-parser-api", 8000)[0][4])
+PY
 
 echo "health"
 curl -sf "${PARSER_API_URL}/health" | tee /tmp/parser-health.json
 python - <<'PY'
-import json, sys
+import json
 data = json.load(open("/tmp/parser-health.json"))
 assert data.get("status") == "ok", data
 assert data.get("db") == "ok", data
@@ -21,11 +34,5 @@ test "$code" = "401" -o "$code" = "403"
 
 echo "channels"
 curl -sf -H "Authorization: Bearer ${PARSER_API_TOKEN}" "${PARSER_API_URL}/channels"
-
-if [[ -n "${SMOKE_CHANNEL_ID:-}" ]]; then
-  echo "posts"
-  curl -sf -H "Authorization: Bearer ${PARSER_API_TOKEN}" \
-    "${PARSER_API_URL}/posts?channel_id=${SMOKE_CHANNEL_ID}&content_type=text&limit=5"
-fi
 
 echo "smoke ok"

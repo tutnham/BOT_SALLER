@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     public_backend_url: str | None = None
     # Disable when running extra workers/replicas that must not double-fire cron.
     scheduler_enabled: bool = True
+    # Web without an in-process scheduler still expects a scheduler process heartbeat.
+    scheduler_expected: bool = False
+    app_version: str = "0.1.0"
+    commit_sha: str = "unknown"
+    heartbeat_stale_seconds: int = 90
+    health_details_token: str | None = None
+    retention_dry_run: bool = True
+    retention_inbox_days: int = 30
+    retention_outbox_days: int = 30
+    retention_parse_cache_days: int = 14
+    retention_batch_size: int = 500
 
     # Morning price (Phase 4)
     # Legacy single-chat setting; kept for backward compatibility with existing deployments.
@@ -103,6 +114,9 @@ class Settings(BaseSettings):
     worker_inbox_batch_size: int = 10
     worker_outbox_batch_size: int = 20
     worker_id: str | None = None
+    worker_shutdown_grace_seconds: float = 20.0
+    # Test-only delay after a lease is committed. Production leaves this at 0.
+    worker_test_pause_seconds: float = 0.0
 
     # Morning price LLM parse concurrency cap
     morning_price_llm_concurrency: int = 4

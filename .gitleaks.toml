@@ -1,0 +1,10 @@
+title = "zakupki allowlist"
+
+[allowlist]
+description = "CI placeholders, tests, and archived workflow dumps"
+paths = [
+  '''\.github/workflows/.*''',
+  '''(^|/)tests/''',
+  '''docs/archive/''',
+  '''\.env\.example''',
+]

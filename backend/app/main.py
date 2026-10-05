@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, Request, Response
+from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.session import dispose_engine, get_engine
+from app.db.session import dispose_engine, get_db, get_engine, get_session_factory
 from app.middleware.rate_limit import rate_limit_webhook_and_jobs
 from app.scheduler import setup_scheduler
 from app.telegram.jobs_router import router as jobs_router
@@ -65,6 +68,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Fail-fast: required env must be present at startup
     settings = get_settings()
     get_engine()
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
     scheduler = None
     if settings.scheduler_enabled:
         scheduler = setup_scheduler()
@@ -81,6 +85,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             settings.confidence_threshold,
         )
     yield
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
     if scheduler is not None:
         # Wait so in-flight jobs can finish before engine disposal.
         scheduler.shutdown(wait=True)
@@ -143,6 +152,74 @@ async def unhandled_exception_handler(
         status_code=500,
         content={"status": "error", "detail": "internal_server_error"},
     )
+
+
+async def _heartbeat_loop() -> None:
+    """Web process heartbeat. Also covers the scheduler when it runs in-process."""
+    settings = get_settings()
+    instance_id = os.environ.get("HOSTNAME", "backend-web")
+    while True:
+        try:
+            factory = get_session_factory()
+            async with factory() as session:
+                from app.services.heartbeat_service import touch_heartbeat
+
+                await touch_heartbeat(
+                    session, process_type="web", instance_id=instance_id
+                )
+                if settings.scheduler_enabled:
+                    await touch_heartbeat(
+                        session, process_type="scheduler", instance_id=instance_id
+                    )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Heartbeat write failed: {}", type(exc).__name__)
+        await asyncio.sleep(15)
+
+
+@app.get("/live")
+async def live() -> dict[str, str]:
+    """Process is up. Does not touch the database."""
+    return {"status": "ok"}
+
+
+@app.get("/ready", response_model=None)
+async def ready() -> JSONResponse | dict[str, object]:
+    """Database, schema, and required process heartbeats. HTTP 503 when not ready."""
+    from app.services.ops_status_service import readiness
+
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            ok, body = await readiness(session)
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reasons": ["database"]},
+        )
+    if not ok:
+        return JSONResponse(status_code=503, content=body)
+    return body
+
+
+@app.get("/health/details", response_model=None)
+async def health_details(
+    session: AsyncSession = Depends(get_db),
+    x_internal_token: str | None = Header(default=None),
+) -> JSONResponse | dict[str, object]:
+    from app.services.ops_status_service import details_token_ok, health_details
+
+    if not details_token_ok(x_internal_token):
+        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+    return await health_details(session)
+
+
+@app.get("/metrics")
+async def metrics(session: AsyncSession = Depends(get_db)) -> PlainTextResponse:
+    from app.services.metrics_service import render_metrics
+
+    body = await render_metrics(session)
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
 
 @app.get("/health")

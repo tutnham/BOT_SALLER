@@ -46,7 +46,7 @@ async def create_deal(
         raise RequestNotFoundError(request_id)
 
     supplier = await session.get(Supplier, supplier_id)
-    if supplier is None:
+    if supplier is None or not supplier.active:
         raise SupplierNotFoundError(supplier_id)
 
     if request.status in (RequestStatus.closed, RequestStatus.cancelled):

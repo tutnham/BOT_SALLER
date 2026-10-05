@@ -40,6 +40,16 @@ async def test_group_sees_final_price_not_supplier(
         },
         telegram=mock_telegram,
     )
+    await handle_reply(
+        db_session,
+        {
+            "message_id": 602,
+            "chat": {"id": supplier.telegram_id, "type": "private"},
+            "from": {"id": supplier.telegram_id},
+            "text": "да",
+        },
+        telegram=mock_telegram,
+    )
     group_msgs = [text for chat_id, text, _ in mock_telegram.sent if chat_id == seed_client_group.chat_id]
     assert any("80800" in text for text in group_msgs)
     assert all("80000" not in text for text in group_msgs)

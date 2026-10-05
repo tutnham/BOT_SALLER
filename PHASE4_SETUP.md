@@ -24,7 +24,7 @@ DEFAULT_MARKUP=500
 PARSER_TIMEOUT_SECONDS=15
 
 # URL и токен API парсера каналов (Docker-сеть Coolify или UUID-hostname — см. СЕРВИСЫ.md)
-PARSER_API_URL=http://<parser-api-uuid-or-tg-parser-api>:8000
+PARSER_API_URL=http://tg-parser-api:8000
 PARSER_API_TOKEN=
 
 # LLM (backend Coolify). Не LLM_PROVIDER=deepseek — см. СЕРВИСЫ.md § LLM
@@ -47,7 +47,7 @@ LLM_API_KEY=
 | `PRICE_PUBLISH_CHAT_IDS` | Список chat_id (CSV), куда публикуется утверждённый прайс. Пример: `-100111,-100222` |
 | `DEFAULT_MARKUP` | Базовая наценка в рублях, если в `markup_rules` нет `markup_fixed` |
 | `PARSER_TIMEOUT_SECONDS` | Сколько ждать ответ парсера каналов |
-| `PARSER_API_URL` | Базовый URL сервиса `tg-channel-parser` (**порт 8000**, не 8100). В Coolify с Predefined Network — UUID-hostname контейнера |
+| `PARSER_API_URL` | `http://tg-parser-api:8000` в сети `zakupki-internal`. Не менять после redeploy parser |
 | `PARSER_API_TOKEN` | Bearer-токен для `GET /posts` (тот же, что `API_AUTH_TOKEN` у парсера) |
 | `LLM_PROVIDER` | Только `openai` / `openai_compatible` / `openrouter` / `ollama`. Не `deepseek` |
 | `LLM_BASE_URL` | Для DeepSeek: `https://api.deepseek.com` (код дописывает `/chat/completions`) |
@@ -141,7 +141,7 @@ Backend **не** читает каналы сам. Нужен развёрнут
 2. Env — см. `СЕРВИСЫ.md`; **без domains**
 3. `auth_cli` → `TELEGRAM_SESSION_STRING` → redeploy
 4. **Connect to Predefined Network** на parser + backend
-5. UUID-hostname → backend `PARSER_API_URL=http://<uuid>:8000`
+5. Сеть `zakupki-internal` и `PARSER_API_URL=http://tg-parser-api:8000` (см. `СЕРВИСЫ.md`)
 6. Smoke: `tg-channel-parser/scripts/smoke-from-backend.sh`
 
 ---
@@ -188,7 +188,7 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — вне текущего prod scope.
 
-`auth_cli` на VPS: `TELEGRAM_SESSION_STRING=placeholder` + `docker compose … run --rm -it --no-deps tg-runtime python -m app.mtproto.auth_cli`. Hostname API после Redeploy обновить в `PARSER_API_URL`.
+`auth_cli` на VPS: `TELEGRAM_SESSION_STRING=placeholder` + `docker compose … run --rm -it --no-deps tg-runtime python -m app.mtproto.auth_cli`. После Redeploy parser `PARSER_API_URL` остаётся `http://tg-parser-api:8000`.
 
 ---
 

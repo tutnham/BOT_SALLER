@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.db.models import (
@@ -122,10 +123,35 @@ async def process_outbox_batch(
     *,
     telegram: TelegramClientProtocol | None = None,
     worker_id: str | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    on_after_send: Callable[[], Awaitable[None]] | None = None,
 ) -> int:
-    """Deliver claimed outbox messages. Returns sent count."""
+    """Claim rows, commit the lease, then send. A crash after send keeps ``processing``."""
     settings = get_settings()
     tg = telegram or get_telegram_client()
+
+    async def _expire_outbox_row(row: TelegramOutbox) -> bool:
+        if row.kind in (MessageKind.ask.value, MessageKind.bargain.value):
+            row.status = TelegramOutboxStatus.uncertain.value
+            row.last_error = "lease_expired"
+            row.lease_owner = None
+            row.leased_until = None
+            await notify_operators(
+                session,
+                f"⚠️ Истёк lease доставки {row.kind} "
+                f"request_id={row.request_id} supplier_id={row.supplier_id}",
+                telegram=tg,
+            )
+            return False
+        row.attempts += 1
+        row.last_error = "lease_expired"
+        if row.attempts >= settings.worker_max_attempts:
+            row.status = TelegramOutboxStatus.dead.value
+            row.lease_owner = None
+            row.leased_until = None
+            return False
+        return True
+
     rows = await claim_rows(
         session,
         TelegramOutbox,
@@ -134,75 +160,124 @@ async def process_outbox_batch(
         lease_seconds=settings.worker_lease_seconds,
         batch_size=settings.worker_outbox_batch_size,
         worker_id=worker_id,
+        on_expired=_expire_outbox_row,
     )
-    if not rows:
+    claimed_ids = [int(row.id) for row in rows]
+    await session.commit()
+    if not claimed_ids:
         return 0
 
     sent = 0
-    for row in rows:
-        outbound = (
-            await session.get(MessageOut, row.message_out_id)
-            if row.message_out_id is not None
-            else None
-        )
-        try:
-            message_id = await tg.send_message(
-                int(row.chat_id),
-                row.text,
-                parse_mode=row.parse_mode,
-                reply_markup=row.reply_markup,
-                business_connection_id=row.business_connection_id,
+    for outbox_id in claimed_ids:
+        if session_factory is None:
+            sent += await _deliver_outbox_row(
+                session,
+                outbox_id,
+                telegram=tg,
+                on_after_send=on_after_send,
             )
-            row.status = TelegramOutboxStatus.sent.value
-            row.tg_message_id = message_id
-            row.sent_at = datetime.now(UTC)
-            if outbound is not None:
-                outbound.tg_message_id = message_id
-                outbound.send_status = MessageSendStatus.sent.value
-                outbound.error_text = None
-            sent += 1
-        except TelegramSendError as exc:
-            error_text = exc.description
-            if _is_uncertain_delivery(row.kind, error_text):
-                row.status = TelegramOutboxStatus.uncertain.value
-                row.last_error = error_text
-                if outbound is not None:
-                    outbound.send_status = MessageSendStatus.failed.value
-                    outbound.error_text = error_text
-                await notify_operators(
-                    session,
-                    f"⚠️ Неоднозначная доставка {row.kind} "
-                    f"request_id={row.request_id} supplier_id={row.supplier_id}\n"
-                    f"{error_text}",
-                    telegram=tg,
-                )
-            else:
-                row.attempts += 1
-                row.last_error = error_text
-                if outbound is not None:
-                    outbound.send_status = MessageSendStatus.failed.value
-                    outbound.error_text = error_text
-                if row.attempts >= settings.worker_max_attempts:
-                    row.status = TelegramOutboxStatus.dead.value
-                else:
-                    row.status = TelegramOutboxStatus.pending.value
-                    row.next_attempt_at = datetime.now(UTC) + timedelta(
-                        seconds=_backoff_seconds(row.attempts)
-                    )
-        except Exception as exc:
-            row.attempts += 1
-            row.last_error = f"{type(exc).__name__}: {exc}"[:2000]
-            if row.attempts >= settings.worker_max_attempts:
-                row.status = TelegramOutboxStatus.dead.value
-            else:
-                row.status = TelegramOutboxStatus.pending.value
-                row.next_attempt_at = datetime.now(UTC) + timedelta(
-                    seconds=_backoff_seconds(row.attempts)
-                )
-            logger.exception("telegram_outbox failed id={}", row.id)
-        finally:
-            row.lease_owner = None
-            row.leased_until = None
-            await session.flush()
-
+            continue
+        async with session_factory() as row_session:
+            sent += await _deliver_outbox_row(
+                row_session,
+                outbox_id,
+                telegram=tg,
+                on_after_send=on_after_send,
+            )
     return sent
+
+
+async def _deliver_outbox_row(
+    session: AsyncSession,
+    outbox_id: int,
+    *,
+    telegram: TelegramClientProtocol,
+    on_after_send: Callable[[], Awaitable[None]] | None,
+) -> int:
+    settings = get_settings()
+    row = await session.get(TelegramOutbox, outbox_id)
+    if row is None:
+        return 0
+    outbound = (
+        await session.get(MessageOut, row.message_out_id)
+        if row.message_out_id is not None
+        else None
+    )
+    try:
+        message_id = await telegram.send_message(
+            int(row.chat_id),
+            row.text,
+            parse_mode=row.parse_mode,
+            reply_markup=row.reply_markup,
+            business_connection_id=row.business_connection_id,
+        )
+        if on_after_send is not None:
+            await on_after_send()
+        row.status = TelegramOutboxStatus.sent.value
+        row.tg_message_id = message_id
+        row.sent_at = datetime.now(UTC)
+        row.lease_owner = None
+        row.leased_until = None
+        if outbound is not None:
+            outbound.tg_message_id = message_id
+            outbound.send_status = MessageSendStatus.sent.value
+            outbound.error_text = None
+        await session.commit()
+        return 1
+    except TelegramSendError as exc:
+        await _record_outbox_send_error(
+            session,
+            row,
+            outbound,
+            exc.description,
+            telegram=telegram,
+            settings_max_attempts=settings.worker_max_attempts,
+        )
+        await session.commit()
+        return 0
+    except Exception:
+        await session.rollback()
+        logger.exception("telegram_outbox crashed id={}", outbox_id)
+        return 0
+
+
+async def _record_outbox_send_error(
+    session: AsyncSession,
+    row: TelegramOutbox,
+    outbound: MessageOut | None,
+    error_text: str,
+    *,
+    telegram: TelegramClientProtocol,
+    settings_max_attempts: int,
+) -> None:
+    if _is_uncertain_delivery(row.kind, error_text):
+        row.status = TelegramOutboxStatus.uncertain.value
+        row.last_error = error_text
+        row.lease_owner = None
+        row.leased_until = None
+        if outbound is not None:
+            outbound.send_status = MessageSendStatus.failed.value
+            outbound.error_text = error_text
+        await notify_operators(
+            session,
+            f"⚠️ Неоднозначная доставка {row.kind} "
+            f"request_id={row.request_id} supplier_id={row.supplier_id}\n"
+            f"{error_text}",
+            telegram=telegram,
+        )
+        return
+
+    row.attempts += 1
+    row.last_error = error_text
+    row.lease_owner = None
+    row.leased_until = None
+    if outbound is not None:
+        outbound.send_status = MessageSendStatus.failed.value
+        outbound.error_text = error_text
+    if row.attempts >= settings_max_attempts:
+        row.status = TelegramOutboxStatus.dead.value
+    else:
+        row.status = TelegramOutboxStatus.pending.value
+        row.next_attempt_at = datetime.now(UTC) + timedelta(
+            seconds=_backoff_seconds(row.attempts)
+        )

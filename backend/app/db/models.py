@@ -651,6 +651,10 @@ class WebhookInbox(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[int | None] = mapped_column(BigInteger)
+    resolution_reason: Mapped[str | None] = mapped_column(Text)
+    replay_of_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class TelegramOutbox(Base):
@@ -691,6 +695,10 @@ class TelegramOutbox(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[int | None] = mapped_column(BigInteger)
+    resolution_reason: Mapped[str | None] = mapped_column(Text)
+    replay_of_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class UpdateLog(Base):
@@ -739,3 +747,47 @@ class BillingReminder(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     chat_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
+
+
+class ProcessHeartbeat(Base):
+    """Liveness of web, worker, and scheduler processes. Not a business table."""
+
+    __tablename__ = "process_heartbeats"
+
+    process_type: Mapped[str] = mapped_column(Text, primary_key=True)
+    instance_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    app_version: Mapped[str] = mapped_column(Text, nullable=False)
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class JobRun(Base):
+    """Recent cron outcomes for the owner error screen and /health/details."""
+
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_type: Mapped[str | None] = mapped_column(Text)
+
+
+class AdminAuditLog(Base):
+    """Operator actions. No foreign keys, so business deletes cannot erase it."""
+
+    __tablename__ = "admin_audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    actor_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    new_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -1,0 +1,34 @@
+"""Append-only operator audit. Rows have no foreign keys to business tables."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import AdminAuditLog
+
+
+async def record_audit(
+    session: AsyncSession,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    actor_telegram_id: int | None = None,
+    previous_state: dict[str, Any] | None = None,
+    new_state: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    session.add(
+        AdminAuditLog(
+            actor_telegram_id=actor_telegram_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            previous_state=previous_state,
+            new_state=new_state,
+            correlation_id=correlation_id,
+        )
+    )
+    await session.flush()

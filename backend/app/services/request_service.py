@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import MessageKind, Request, RequestStatus
+from app.db.unit_of_work import commit_or_flush
 from app.llm.client import (
     LLMProviderError,
     get_llm_client,
@@ -278,7 +279,7 @@ async def create_request(
         await session.flush()
         created.append(request)
 
-    await session.commit()
+    await commit_or_flush(session)
 
     for request in created:
         category = str((request.normalized_json or {}).get("category") or "unknown")

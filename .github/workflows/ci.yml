@@ -2,25 +2,7 @@ name: ci
 
 on:
   push:
-    paths:
-      - "backend/**"
-      - "tg-channel-parser/**"
-      - "docs/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
-      - "README.md"
-      - "CLAUDE.md"
-      - "AGENTS.md"
   pull_request:
-    paths:
-      - "backend/**"
-      - "tg-channel-parser/**"
-      - "docs/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
-      - "README.md"
-      - "CLAUDE.md"
-      - "AGENTS.md"
 
 jobs:
   docs:
@@ -61,25 +43,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install ruff mypy pip-audit
+        working-directory: backend
+        run: uv sync --frozen --all-groups --python 3.11
       - name: Ruff
         working-directory: backend
-        run: ruff check app tests
+        run: uv run ruff check app tests
       - name: Mypy
         working-directory: backend
-        run: mypy app --config-file pyproject.toml
+        run: uv run mypy app --config-file pyproject.toml
       - name: Alembic upgrade
         working-directory: backend
-        run: alembic upgrade head
+        run: uv run alembic upgrade head
       - name: Pytest
         working-directory: backend
-        run: pytest tests -q
+        run: uv run pytest tests -q
       - name: pip-audit (backend)
-        run: pip-audit -r backend/requirements.txt --desc on
+        working-directory: backend
+        run: uv run pip-audit -r requirements.txt --desc on
+      - name: Alembic upgrade from previous revision
+        working-directory: backend
+        # Parent of head in git. Replace after `alembic current` on production.
+        env:
+          PREV_REVISION: "0013_deal_request_unique_binding_checks"
+        run: |
+          uv run alembic downgrade "$PREV_REVISION"
+          uv run alembic upgrade head
 
   tg-channel-parser:
     runs-on: ubuntu-latest
@@ -110,22 +100,176 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r tg-channel-parser/requirements.txt
-          pip install ruff mypy pip-audit
+        working-directory: tg-channel-parser
+        run: uv sync --frozen --all-groups --python 3.11
       - name: Ruff
         working-directory: tg-channel-parser
-        run: ruff check app tests
+        run: uv run ruff check app tests
       - name: Mypy
         working-directory: tg-channel-parser
-        run: mypy app --config-file pyproject.toml
+        run: uv run mypy app --config-file pyproject.toml
       - name: Alembic upgrade
         working-directory: tg-channel-parser
-        run: alembic upgrade head
+        run: uv run alembic upgrade head
       - name: Pytest
         working-directory: tg-channel-parser
-        run: pytest tests -q
+        run: uv run pytest tests -q
       - name: pip-audit (parser)
-        run: pip-audit -r tg-channel-parser/requirements.txt --desc on
+        working-directory: tg-channel-parser
+        run: uv run pip-audit -r requirements.txt --desc on
+      - name: Alembic upgrade from previous revision
+        working-directory: tg-channel-parser
+        # Parent of head in git. Replace after `alembic current` on production.
+        env:
+          PREV_REVISION: "0003_task_fk_and_posts_index"
+        run: |
+          uv run alembic downgrade "$PREV_REVISION"
+          uv run alembic upgrade head
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build -t zakupki-backend:ci backend
+      - name: Backend image smoke
+        run: sh scripts/image_smoke.sh zakupki-backend:ci app.main app.workers.main
+      - name: Trivy backend
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: zakupki-backend:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+      - name: Build parser API image
+        run: docker build -f tg-channel-parser/Dockerfile.api -t tg-parser-api:ci tg-channel-parser
+      - name: Parser API image smoke
+        run: sh scripts/image_smoke.sh tg-parser-api:ci app.api.main
+      - name: Trivy parser API
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: tg-parser-api:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+      - name: Build parser runtime image
+        run: docker build -f tg-channel-parser/Dockerfile.runtime -t tg-parser-runtime:ci tg-channel-parser
+      - name: Parser runtime image smoke
+        run: sh scripts/image_smoke.sh tg-parser-runtime:ci app.mtproto.runtime
+      - name: Trivy parser runtime
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: tg-parser-runtime:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        env:
+          POSTGRES_USER: zakupki
+          POSTGRES_PASSWORD: zakupki
+          POSTGRES_DB: zakupki
+          DATABASE_URL: postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki
+          WEBHOOK_SECRET: test-webhook-secret
+          TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: 0123456789abcdef0123456789abcdef
+          TELEGRAM_SESSION_STRING: test-session-string-not-real
+          API_AUTH_TOKEN: test-parser-api-token
+        run: |
+          docker network create zakupki-internal || true
+          touch .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f tg-channel-parser/docker-compose.tg-parser.yml --env-file /dev/null config >/dev/null
+
+  parser-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create shared network
+        run: docker network create zakupki-internal || true
+      - name: Start backend and parser API
+        env:
+          WEBHOOK_SECRET: test-webhook-secret
+          TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: 0123456789abcdef0123456789abcdef
+          TELEGRAM_SESSION_STRING: test-session-string-not-real
+          API_AUTH_TOKEN: test-parser-api-token
+        run: |
+          cat > .env <<'EOF'
+          TELEGRAM_BOT_TOKEN=test-bot-token
+          DATABASE_URL=postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki
+          WEBHOOK_SECRET=test-webhook-secret
+          TELEGRAM_WEBHOOK_SECRET_TOKEN=test-telegram-webhook-secret
+          SCHEDULER_ENABLED=false
+          PARSER_API_URL=http://tg-parser-api:8000
+          PARSER_API_TOKEN=test-parser-api-token
+          EOF
+          POSTGRES_USER=tg_parser POSTGRES_PASSWORD=tg_parser POSTGRES_DB=tg_parser \
+            DATABASE_URL=postgresql+asyncpg://tg_parser:tg_parser@tg-parser-postgres:5432/tg_parser \
+            TELEGRAM_API_ID=12345 \
+            TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
+            TELEGRAM_SESSION_STRING=test-session-string-not-real \
+            docker compose -f tg-channel-parser/docker-compose.tg-parser.yml up -d --build tg-parser-api
+          POSTGRES_USER=zakupki POSTGRES_PASSWORD=zakupki POSTGRES_DB=zakupki \
+            DATABASE_URL=postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki \
+            docker compose -f docker-compose.yml up -d --build backend
+      - name: Smoke and recreate
+        env:
+          POSTGRES_USER: zakupki
+          POSTGRES_PASSWORD: zakupki
+          POSTGRES_DB: zakupki
+          DATABASE_URL: postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki
+          WEBHOOK_SECRET: test-webhook-secret
+          TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: 0123456789abcdef0123456789abcdef
+          TELEGRAM_SESSION_STRING: test-session-string-not-real
+          API_AUTH_TOKEN: test-parser-api-token
+        run: |
+          docker compose -f docker-compose.yml cp scripts/discovery_smoke.py backend:/tmp/discovery_smoke.py
+          docker compose -f docker-compose.yml exec -T backend python /tmp/discovery_smoke.py
+          POSTGRES_USER=tg_parser POSTGRES_PASSWORD=tg_parser POSTGRES_DB=tg_parser \
+            DATABASE_URL=postgresql+asyncpg://tg_parser:tg_parser@tg-parser-postgres:5432/tg_parser \
+            docker compose -f tg-channel-parser/docker-compose.tg-parser.yml up -d --force-recreate --no-deps tg-parser-api
+          docker compose -f docker-compose.yml exec -T backend python -c "import socket; socket.getaddrinfo('tg-parser-api', 8000)"
+      - name: Tear down
+        if: always()
+        env:
+          POSTGRES_USER: zakupki
+          POSTGRES_PASSWORD: zakupki
+          POSTGRES_DB: zakupki
+          DATABASE_URL: postgresql+asyncpg://zakupki:zakupki@postgres:5432/zakupki
+          WEBHOOK_SECRET: test-webhook-secret
+          TELEGRAM_WEBHOOK_SECRET_TOKEN: test-telegram-webhook-secret
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: 0123456789abcdef0123456789abcdef
+          TELEGRAM_SESSION_STRING: test-session-string-not-real
+        run: |
+          docker compose -f docker-compose.yml down -v || true
+          POSTGRES_USER=tg_parser POSTGRES_PASSWORD=tg_parser POSTGRES_DB=tg_parser \
+            DATABASE_URL=postgresql+asyncpg://tg_parser:tg_parser@tg-parser-postgres:5432/tg_parser \
+            docker compose -f tg-channel-parser/docker-compose.tg-parser.yml down -v || true
+
+  secrets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
