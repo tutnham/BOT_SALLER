@@ -27,9 +27,16 @@ async def _run_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:
     while True:
         async with session_factory() as session:
             try:
-                inbox_n = await process_inbox_batch(session, worker_id=worker_id)
-                outbox_n = await process_outbox_batch(session, worker_id=worker_id)
-                await session.commit()
+                inbox_n = await process_inbox_batch(
+                    session,
+                    worker_id=worker_id,
+                    session_factory=session_factory,
+                )
+                outbox_n = await process_outbox_batch(
+                    session,
+                    worker_id=worker_id,
+                    session_factory=session_factory,
+                )
                 if inbox_n or outbox_n:
                     logger.info(
                         "Worker tick inbox={} outbox_sent={}",

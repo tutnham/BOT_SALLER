@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db.unit_of_work import commit_or_flush
 from app.services.app_settings_service import (
     LLM_TOPUP_PRICE_TEXT_KEY,
     get_setting,
@@ -66,7 +67,7 @@ async def handle_set_llm_price(
         price_text,
         updated_by=owner.id,
     )
-    await session.commit()
+    await commit_or_flush(session)
 
     await telegram.send_message(
         chat_id,
