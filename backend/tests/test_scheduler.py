@@ -25,6 +25,12 @@ class _DummySession:
     async def rollback(self) -> None:
         self.rolled_back = True
 
+    def add(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
     async def execute(self, *args: object, **kwargs: object) -> _LockResult:
         return _LockResult()
 
@@ -32,12 +38,14 @@ class _DummySession:
 class _DummySessionFactory:
     def __init__(self) -> None:
         self.last_session: _DummySession | None = None
+        self.sessions: list[_DummySession] = []
 
     def __call__(self) -> _DummySessionFactory:
         return self
 
     async def __aenter__(self) -> _DummySession:
         self.last_session = _DummySession()
+        self.sessions.append(self.last_session)
         return self.last_session
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
@@ -116,8 +124,7 @@ async def test_job_morning_price_alerts_on_failure(monkeypatch: pytest.MonkeyPat
 
     await scheduler_mod.job_morning_price()
 
-    assert session_factory.last_session is not None
-    assert session_factory.last_session.rolled_back is True
+    assert any(session.rolled_back for session in session_factory.sessions)
     assert alert.await_count == 1
     assert "morning-price" in alert.await_args.args[0]
 
@@ -184,8 +191,7 @@ async def test_non_alerting_jobs_do_not_notify_on_failure(
 
     await getattr(scheduler_mod, f"job_{job_name.replace('-', '_')}")()
 
-    assert session_factory.last_session is not None
-    assert session_factory.last_session.rolled_back is True
+    assert any(session.rolled_back for session in session_factory.sessions)
     assert alert.await_count == 0
 
 
@@ -208,8 +214,7 @@ async def test_job_llm_billing_reminder_alerts_on_failure(
 
     await scheduler_mod.job_llm_billing_reminder()
 
-    assert session_factory.last_session is not None
-    assert session_factory.last_session.rolled_back is True
+    assert any(session.rolled_back for session in session_factory.sessions)
     assert alert.await_count == 1
     assert "llm-billing-reminder" in alert.await_args.args[0]
 
