@@ -174,6 +174,74 @@ async def _dispatch_callback(
         await _send_main_menu(session, telegram, chat_id, message_id=message_id)
         return
 
+    if action == "dlq":
+        await _send_dlq_list(session, telegram, chat_id, message_id=message_id)
+        return
+
+    if action in ("dlqin", "dlqout"):
+        await _send_dlq_item(
+            session,
+            telegram,
+            chat_id,
+            queue="inbox" if action == "dlqin" else "outbox",
+            row_id=cd.arg,
+            message_id=message_id,
+        )
+        return
+
+    if action == "dlqin_go":
+        from app.services.dlq_service import replay_inbox
+
+        outcome = await replay_inbox(session, cd.arg, actor_telegram_id=owner_id)
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text="Повтор поставлен в очередь." if outcome == "replayed" else "Строка уже закрыта.",
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К ошибкам", "dlq")]]),
+        )
+        return
+
+    if action == "dlqout_go":
+        from app.services.dlq_service import ReplayNeedsConfirmation, replay_outbox
+
+        try:
+            outcome = await replay_outbox(
+                session,
+                cd.arg,
+                actor_telegram_id=owner_id,
+                confirmed=True,
+            )
+        except ReplayNeedsConfirmation:
+            outcome = "confirm"
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text="Повтор поставлен в очередь." if outcome == "replayed" else "Строка уже закрыта.",
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К ошибкам", "dlq")]]),
+        )
+        return
+
+    if action in ("dlqin_ok", "dlqout_ok"):
+        from app.services.dlq_service import resolve_row
+
+        outcome = await resolve_row(
+            session,
+            queue="inbox" if action == "dlqin_ok" else "outbox",
+            row_id=cd.arg,
+            actor_telegram_id=owner_id,
+            reason="operator_resolved",
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text="Закрыто без повтора." if outcome == "resolved" else "Строка уже закрыта.",
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("К ошибкам", "dlq")]]),
+        )
+        return
+
     if action == "report_day":
         from app.handlers.owner_commands import send_owner_report
 
@@ -843,6 +911,89 @@ async def _pending_count(session: AsyncSession) -> int:
     return int(count)
 
 
+async def _send_dlq_list(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    from app.services.dlq_service import list_open_failures
+
+    data = await list_open_failures(session)
+    lines = ["Ошибки очереди. Текст поставщика и секреты сюда не попадают."]
+    rows: list[list[dict[str, Any]]] = []
+    if not data["inbox"] and not data["outbox"]:
+        lines.append("Открытых ошибок нет.")
+    for item in data["inbox"]:
+        lines.append(
+            f"вход #{item['id']} попыток {item['attempts']} {item['last_error'] or ''}".rstrip()
+        )
+        rows.append([menu_button(f"Вход #{item['id']}", "dlqin", int(str(item["id"])))])
+    for item in data["outbox"]:
+        lines.append(
+            f"исход #{item['id']} {item['status']} {item['kind']} "
+            f"поставщик {item['supplier_id'] or '—'} {item['last_error'] or ''}".rstrip()
+        )
+        rows.append([menu_button(f"Исход #{item['id']}", "dlqout", int(str(item["id"])))])
+    rows.append([menu_button("В меню", "main_menu")])
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text="\n".join(lines)[:3500],
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_dlq_item(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    *,
+    queue: str,
+    row_id: int,
+    message_id: int | None,
+) -> None:
+    from app.services.dlq_service import list_open_failures
+
+    data = await list_open_failures(session, limit=50)
+    item = next((row for row in data[queue] if row["id"] == row_id), None)
+    if item is None:
+        await _send_dlq_list(session, telegram, chat_id, message_id=message_id)
+        return
+    text = (
+        f"{'Вход' if queue == 'inbox' else 'Исход'} #{item['id']}\n"
+        f"Статус: {item['status']}\n"
+        f"Тип: {item['kind']}\n"
+        f"Попыток: {item['attempts']}\n"
+        f"Заявка: {item['request_id'] or '—'}\n"
+        f"Поставщик: {item['supplier_id'] or '—'}\n"
+        f"Ошибка: {item['last_error'] or '—'}\n"
+        f"Время: {item['created_at']}"
+    )
+    go = "dlqin_go" if queue == "inbox" else "dlqout_go"
+    ok = "dlqin_ok" if queue == "inbox" else "dlqout_ok"
+    confirm = (
+        "Повтор отправит сообщение ещё раз. Нажмите только если прошлый вызов не дошёл."
+        if queue == "outbox"
+        else "Повтор снова обработает это обновление."
+    )
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=f"{text}\n\n{confirm}",
+        message_id=message_id,
+        markup=inline_keyboard(
+            [
+                [menu_button("Повторить", go, row_id)],
+                [menu_button("Закрыть без повтора", ok, row_id)],
+                [menu_button("К ошибкам", "dlq")],
+            ]
+        ),
+    )
+
+
 async def _send_main_menu(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
@@ -864,6 +1015,7 @@ async def _send_main_menu(
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],
         [menu_button("Business", "business_status")],
+        [menu_button("Ошибки системы", "dlq")],
     ]
     await _send_or_edit(
         telegram,

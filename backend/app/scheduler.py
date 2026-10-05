@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -13,6 +16,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.db.models import JobRun
 from app.db.session import get_scheduler_session_factory
 from app.jobs import (
     run_daily_report,
@@ -52,6 +56,7 @@ def build_job_specs(settings: Settings) -> tuple[JobSpec, ...]:
             True,
             3600,
         ),
+        JobSpec("retention", "30 3 * * *", "retention", 120.0, False, 3600),
     )
 
 
@@ -63,6 +68,7 @@ async def _run_guarded(
     alert_on_failure: bool,
 ) -> None:
     logger.info("Job {} started", job_name)
+    started = datetime.now(UTC)
     session_factory = get_scheduler_session_factory()
     telegram = get_telegram_client()
     async with session_factory() as session:
@@ -76,6 +82,7 @@ async def _run_guarded(
                 timeout=timeout_seconds,
             )
             logger.info("Job {} finished successfully", job_name)
+            await _record_job_run(job_name, "ok", started)
         except Exception as exc:
             try:
                 await session.rollback()
@@ -83,6 +90,7 @@ async def _run_guarded(
                 logger.exception("Job {} rollback failed after error", job_name)
             err_type = type(exc).__name__
             logger.exception("Job {} failed: {}", job_name, err_type)
+            await _record_job_run(job_name, "failed", started, error_type=err_type)
             if alert_on_failure:
                 await send_admin_alert(
                     (
@@ -143,6 +151,41 @@ async def job_weekly_report() -> None:
     )
 
 
+async def _record_job_run(
+    job_name: str,
+    status: str,
+    started: datetime,
+    *,
+    error_type: str | None = None,
+) -> None:
+    try:
+        factory = get_scheduler_session_factory()
+        async with factory() as session:
+            session.add(
+                JobRun(
+                    job_name=job_name,
+                    status=status,
+                    started_at=started,
+                    finished_at=datetime.now(UTC),
+                    error_type=error_type,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("Job {} result was not recorded", job_name)
+
+
+async def job_retention() -> None:
+    from app.services.retention_service import run_retention
+
+    await _run_guarded(
+        "retention",
+        lambda session, telegram: run_retention(session),
+        timeout_seconds=120.0,
+        alert_on_failure=False,
+    )
+
+
 async def job_llm_billing_reminder() -> None:
     await _run_guarded(
         "llm-billing-reminder",
@@ -158,7 +201,51 @@ _JOB_CALLABLES: dict[str, Callable[[], Awaitable[None]]] = {
     "daily_report_day": job_daily_report_day,
     "weekly_report": job_weekly_report,
     "llm_billing_reminder": job_llm_billing_reminder,
+    "retention": job_retention,
 }
+
+
+def main() -> None:
+    """Scheduler process. Web should set SCHEDULER_ENABLED=false when this runs."""
+    asyncio.run(_scheduler_main())
+
+
+async def _scheduler_main() -> None:
+    stop = asyncio.Event()
+    try:
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, stop.set)
+        loop.add_signal_handler(signal.SIGTERM, stop.set)
+    except (NotImplementedError, ValueError):
+        pass
+    scheduler = setup_scheduler()
+    scheduler.start()
+    instance_id = os.environ.get("HOSTNAME", "backend-scheduler")
+    logger.info("Scheduler process started")
+    while not stop.is_set():
+        try:
+            factory = get_scheduler_session_factory()
+            async with factory() as session:
+                from app.services.heartbeat_service import touch_heartbeat
+
+                await touch_heartbeat(
+                    session, process_type="scheduler", instance_id=instance_id
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Scheduler heartbeat failed: {}", type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=15)
+        except TimeoutError:
+            continue
+    scheduler.shutdown(wait=True)
+    from app.db.session import dispose_engine
+
+    await dispose_engine()
+
+
+if __name__ == "__main__":
+    main()
 
 
 def setup_scheduler() -> AsyncIOScheduler:

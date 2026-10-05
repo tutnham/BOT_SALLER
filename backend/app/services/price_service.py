@@ -33,6 +33,7 @@ from app.llm.schemas import (
 )
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
 from app.services.alert_service import send_admin_alert
+from app.services.audit_service import record_audit
 from app.services.markup_service import apply_markup, load_rules
 from app.services.parser_client import ParserClientError, iter_posts
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
@@ -612,7 +613,16 @@ async def approve_price_draft(
                 exc,
             )
             failed += 1
-    return "approved_partial" if failed else "approved"
+    outcome = "approved_partial" if failed else "approved"
+    await record_audit(
+        session,
+        action="price_draft_approve",
+        entity_type="price_list_draft",
+        entity_id=str(draft_id),
+        actor_telegram_id=approver_telegram_id,
+        new_state={"status": outcome},
+    )
+    return outcome
 
 
 async def reject_price_draft(
@@ -649,4 +659,12 @@ async def reject_price_draft(
         if existing is None:
             return "not_found"
         return "already_processed"
+    await record_audit(
+        session,
+        action="price_draft_reject",
+        entity_type="price_list_draft",
+        entity_id=str(draft_id),
+        actor_telegram_id=approver_telegram_id,
+        new_state={"status": "rejected"},
+    )
     return "rejected"

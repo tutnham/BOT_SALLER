@@ -29,13 +29,14 @@ services:
       # Drives both container clock and Settings.tz / cron schedules.
       TZ: ${TZ:-Europe/Moscow}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_EXPECTED: ${SCHEDULER_EXPECTED:-false}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/live')\""]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -68,6 +69,23 @@ services:
       postgres:
         condition: service_healthy
       backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?required}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?required}
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: ${TELEGRAM_WEBHOOK_SECRET_TOKEN:?required}
+      TZ: ${TZ:-Europe/Moscow}
+      SCHEDULER_ENABLED: "true"
+    command: ["python", "-m", "app.scheduler"]
+    depends_on:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 

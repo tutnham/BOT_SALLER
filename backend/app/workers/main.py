@@ -57,6 +57,16 @@ async def _run_loop(
         settings.worker_outbox_batch_size,
     )
     while not stop.is_set():
+        try:
+            async with session_factory() as session:
+                from app.services.heartbeat_service import touch_heartbeat
+
+                await touch_heartbeat(
+                    session, process_type="worker", instance_id=worker_id
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Worker heartbeat failed: {}", type(exc).__name__)
         tick = asyncio.create_task(_tick(session_factory, worker_id))
         waiter = asyncio.create_task(stop.wait())
         await asyncio.wait({tick, waiter}, return_when=asyncio.FIRST_COMPLETED)
