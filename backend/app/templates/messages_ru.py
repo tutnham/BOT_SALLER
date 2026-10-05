@@ -61,6 +61,11 @@ TEMPLATES: dict[str, str] = {
     "supplier_need_reply": (
         "Пожалуйста, ответьте на сообщение с номером заявки (#N)"
     ),
+    "supplier_bind_confirm": "Это на {request_text}?",
+    "supplier_bind_gave_up": (
+        "Не удалось привязать ответ к заявке. "
+        "Ответьте reply на сообщение с номером заявки (#N)."
+    ),
     "supplier_quote_parsed": (
         "По вашему запросу · Заявка #{request_id}\n"
         "Наличие: {available_text}\n"

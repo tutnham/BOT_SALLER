@@ -36,10 +36,16 @@ from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
+from app.parsers.product_normalizer import extract_product_attrs
 from app.services.reply_binding_service import (
     BindingDecision,
     merge_llm_price,
     resolve_binding,
+)
+from app.services.supplier_bind_prompt_service import (
+    clear_supplier_bind_prompt,
+    start_supplier_bind_prompt,
+    try_handle_supplier_bind_prompt_reply,
 )
 from app.services.routing_service import resolve_supplier_by_chat
 from app.telegram.client import TelegramClientProtocol
@@ -319,55 +325,6 @@ async def _notify_unbound(
     )
 
 
-async def _notify_auto_bound(
-    session: AsyncSession,
-    *,
-    message_in: MessageIn,
-    supplier: Supplier,
-    request: Request,
-    quote: Quote,
-    raw_text: str,
-    candidates: list[Request],
-    telegram: TelegramClientProtocol,
-) -> None:
-    """Owner card after order-based auto bind: rebind buttons + undo."""
-    rows: list[list[dict[str, Any]]] = []
-    for candidate in candidates[:8]:
-        if candidate.id == request.id:
-            continue
-        label = candidate_label(candidate)
-        rows.append(
-            [
-                menu_button(
-                    f"#{candidate.id} {label}"[:40],
-                    "bind_pick",
-                    message_in.id,
-                    page=candidate.id,
-                )
-            ]
-        )
-    rows.append([menu_button("Отменить привязку", "bind_unbind", message_in.id)])
-
-    final_price = display_price_for_group(quote)
-    await notify_operators(
-        session,
-        render_template(
-            "alert_auto_bound_supplier_price",
-            supplier_name=supplier.name,
-            supplier_id=supplier.id,
-            raw_text=raw_text[:500],
-            request_id=request.id,
-            request_label=candidate_label(request),
-            final_price=f"{final_price} ₽" if final_price is not None else "—",
-            supplier_price=(
-                f"{quote.price_initial} ₽" if quote.price_initial is not None else "—"
-            ),
-        ),
-        telegram=telegram,
-        reply_markup=inline_keyboard(rows),
-    )
-
-
 async def handle_reply(
     session: AsyncSession,
     message: dict,
@@ -406,6 +363,17 @@ async def handle_reply(
     if chat_id is None or message_id is None:
         return "ignored"
 
+    if await try_handle_supplier_bind_prompt_reply(
+        session,
+        supplier=supplier,
+        raw_text=raw_text,
+        chat_id=int(chat_id),
+        message_id=int(message_id),
+        telegram=telegram,
+        business_connection_id=business_connection_id,
+    ):
+        return "ok"
+
     price_match = _PRICE_LIST_MARKER_RE.match(raw_text.strip())
     if price_match is not None:
         price_body = (price_match.group(1) or "").strip() or raw_text.strip()
@@ -441,6 +409,9 @@ async def handle_reply(
         supplier_id=supplier.id,
         message=message,
     )
+    if reply_request is None and parse_supplier_reply(raw_text).price is not None:
+        await clear_supplier_bind_prompt(session, supplier_id=supplier.id)
+
     decision: BindingDecision = await resolve_binding(
         session,
         supplier=supplier,
@@ -481,6 +452,24 @@ async def handle_reply(
         candidates = decision.candidates
         if not candidates:
             candidates = await load_open_requests_for_supplier(session, supplier=supplier)
+        if not candidates:
+            logger.info(
+                "supplier_message unbound silent supplier_id={} no open requests",
+                supplier.id,
+            )
+            return "ok"
+        if decision.needs_supplier_confirm:
+            await start_supplier_bind_prompt(
+                session,
+                supplier=supplier,
+                message_in=message_in,
+                candidates=candidates,
+                raw_text=raw_text,
+                message_attrs=extract_product_attrs(raw_text),
+                telegram=telegram,
+                business_connection_id=business_connection_id,
+            )
+            return "ok"
         await _notify_unbound(
             session,
             message_in=message_in,
@@ -491,7 +480,7 @@ async def handle_reply(
         )
         return "ok"
 
-    quote = await process_bound_supplier_reply(
+    await process_bound_supplier_reply(
         session,
         request=decision.request,
         supplier=supplier,
@@ -503,21 +492,6 @@ async def handle_reply(
         bind_method=decision.method,
         binding_price=decision.binding_price,
     )
-    if (
-        decision.method == "order"
-        and len(decision.candidates) > 1
-        and quote is not None
-    ):
-        await _notify_auto_bound(
-            session,
-            message_in=message_in,
-            supplier=supplier,
-            request=decision.request,
-            quote=quote,
-            raw_text=raw_text,
-            candidates=decision.candidates,
-            telegram=telegram,
-        )
     return "ok"
 
 

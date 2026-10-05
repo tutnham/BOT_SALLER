@@ -294,6 +294,31 @@ class AdminDialog(Base):
     )
 
 
+class SupplierBindPrompt(Base):
+    """Pending supplier confirmation for ambiguous price without Telegram reply."""
+
+    __tablename__ = "supplier_bind_prompts"
+
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id", ondelete="CASCADE"), primary_key=True
+    )
+    message_in_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("messages_in.id", ondelete="CASCADE"), nullable=False
+    )
+    request_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("requests.id"), nullable=False
+    )
+    pending_request_ids: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class SupplierBindToken(Base):
     __tablename__ = "supplier_bind_tokens"
 

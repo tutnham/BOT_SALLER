@@ -150,22 +150,39 @@ async def test_supplier_without_reply_binds_single_open_request(
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
-    payload = _supplier_reply_update(
+    price_payload = _supplier_reply_update(
         update_id=20003,
         supplier_telegram_id=supplier.telegram_id,
         text="В наличии 70000",
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
-        json=payload,
+        json=price_payload,
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
     )
     assert resp.status_code == 200
 
     msg_in = await db_session.scalar(
-        select(MessageIn).where(MessageIn.tg_message_id == payload["message"]["message_id"])
+        select(MessageIn).where(
+            MessageIn.tg_message_id == price_payload["message"]["message_id"]
+        )
     )
     assert msg_in is not None
+    assert msg_in.request_id is None
+
+    confirm_payload = _supplier_reply_update(
+        update_id=20004,
+        supplier_telegram_id=supplier.telegram_id,
+        text="да",
+    )
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=confirm_payload,
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
+    )
+    assert resp.status_code == 200
+
+    await db_session.refresh(msg_in)
     assert msg_in.request_id == request.id
 
     group_sends = [

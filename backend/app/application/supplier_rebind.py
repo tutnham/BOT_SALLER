@@ -22,10 +22,7 @@ async def retry_unbound_supplier_prices(
     telegram: TelegramClientProtocol,
 ) -> int:
     """Re-run binding for recent unbound price messages after a new RFQ."""
-    from app.handlers.supplier_messages import (
-        _notify_auto_bound,
-        process_bound_supplier_reply,
-    )
+    from app.handlers.supplier_messages import process_bound_supplier_reply
 
     window = get_settings().supplier_rebind_window_hours
     if window <= 0:
@@ -51,6 +48,7 @@ async def retry_unbound_supplier_prices(
             message={},
             raw_text=message_in.raw_text,
             reply_request=None,
+            for_rebind=True,
         )
         if decision.status != "bound" or decision.request is None:
             continue
@@ -73,19 +71,4 @@ async def retry_unbound_supplier_prices(
             decision.request.id,
             decision.method,
         )
-        if (
-            decision.method == "order"
-            and len(decision.candidates) > 1
-            and quote is not None
-        ):
-            await _notify_auto_bound(
-                session,
-                message_in=message_in,
-                supplier=supplier,
-                request=decision.request,
-                quote=quote,
-                raw_text=message_in.raw_text,
-                candidates=decision.candidates,
-                telegram=telegram,
-            )
     return rebound
