@@ -118,7 +118,13 @@ async def test_bare_price_with_two_requests_does_not_create_quote(
     )
     count = await db_session.scalar(select(func.count()).select_from(Quote))
     assert count == 0
-    assert any("К какой заявке" in text for _chat, text, _markup in mock_telegram.sent)
+    supplier_dms = [
+        text
+        for chat_id, text, _markup in mock_telegram.sent
+        if chat_id == supplier.telegram_id
+    ]
+    assert not any("К какой заявке" in text for text in supplier_dms)
+    assert not any("Это на" in text for text in supplier_dms)
 
 
 @pytest.mark.asyncio

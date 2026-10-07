@@ -142,6 +142,8 @@ async def _send_supplier_prompt(
     business_connection_id: str | None,
     use_yes_no_fallback: bool,
 ) -> None:
+    if not get_settings().supplier_bind_ask_enabled:
+        return
     settings = get_settings()
     if use_yes_no_fallback and len(candidates) == 1:
         await telegram.send_message(
@@ -444,11 +446,12 @@ async def _advance_yes_no_session(
         bind_session.status = SupplierBindSessionStatus.ignored.value
         bind_session.resolved_at = datetime.now(UTC)
         await session.flush()
-        await telegram.send_message(
-            bind_session.chat_id,
-            render_template("supplier_bind_gave_up"),
-            business_connection_id=bind_session.business_connection_id,
-        )
+        if get_settings().supplier_bind_ask_enabled:
+            await telegram.send_message(
+                bind_session.chat_id,
+                render_template("supplier_bind_gave_up"),
+                business_connection_id=bind_session.business_connection_id,
+            )
         return
     next_id = int(pending_ids[0])
     bind_session.current_candidate_id = next_id
@@ -457,11 +460,12 @@ async def _advance_yes_no_session(
     request = await session.get(Request, next_id)
     if request is None:
         return
-    await telegram.send_message(
-        bind_session.chat_id,
-        render_template("supplier_bind_confirm", request_text=request_preview_text(request)),
-        business_connection_id=bind_session.business_connection_id,
-    )
+    if get_settings().supplier_bind_ask_enabled:
+        await telegram.send_message(
+            bind_session.chat_id,
+            render_template("supplier_bind_confirm", request_text=request_preview_text(request)),
+            business_connection_id=bind_session.business_connection_id,
+        )
 
 
 async def handle_supplier_bind_callback(

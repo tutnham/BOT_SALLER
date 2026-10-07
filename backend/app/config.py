@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     supplier_batch_reply_enabled: bool = False
     supplier_single_candidate_auto_bind_enabled: bool = False
     supplier_bind_buttons_enabled: bool = False
+    # Ask supplier "which request is this price for?" (confirm / ambiguous). Off: silent pending + operator inbox.
+    supplier_bind_ask_enabled: bool = False
     suppliers_without_categories_policy: str = "skip_and_notify"
     tz: str = "Europe/Moscow"
     # Used for NL synonym @mention gating in groups (Phase 5). Optional.
