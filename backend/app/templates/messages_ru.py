@@ -17,6 +17,36 @@ TEMPLATES: dict[str, str] = {
     "ask_empty": "Нужен текст запроса или reply на сообщение клиента",
     "ask_sent": "Запрос #{request_id} отправлен {N} поставщикам",
     "ask_sent_multi": "Запросы {request_ids} отправлены ({N} доставок поставщикам)",
+    "batch_preview": (
+        "Заявка-пакет #{batch_id}\n"
+        "Распознано: {recognized}\n"
+        "Требуют проверки: {needs_review}\n"
+        "Дубли: {duplicates}\n"
+        "{items_block}"
+    ),
+    "batch_preview_item": "{line_no}. {source_text}{review_mark}",
+    "batch_ask_supplier": (
+        "Запрос #{batch_id}\n"
+        "{lines_block}\n\n"
+        "Укажите наличие и цену по каждой позиции."
+    ),
+    "batch_status_card": (
+        "Заявка-пакет #{batch_id}\n"
+        "Позиций: {items_total}\n"
+        "Известна цена сегодня: {known_today}\n"
+        "Ожидают поставщиков: {awaiting}\n"
+        "Требуют проверки: {unresolved}\n"
+        "Готовы к публикации: {ready}\n"
+        "Без цены: {no_price}"
+    ),
+    "batch_client_header": "Прайс по заявке-пакету #{batch_id}",
+    "batch_client_line": "{product} — {qty} шт. × {price_text}",
+    "purchase_report_header": "Закупки за {day}",
+    "purchase_report_line": "{product} — {qty} шт. × {price} ₽",
+    "purchase_report_supplier_block": (
+        "{supplier_name}\n{lines_block}\nИтого: {subtotal} ₽"
+    ),
+    "purchase_report_grand_total": "Общий итог: {total} ₽",
     "supplier_review_card": (
         "Неразобранный ответ\n"
         "Поставщик: {supplier_name}\n"

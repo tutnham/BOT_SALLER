@@ -138,6 +138,7 @@ async def test_business_message_reply_creates_quote(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("supplier_single_candidate_auto_bind")
 async def test_business_message_without_reply_binds_with_price(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
@@ -174,7 +175,7 @@ async def test_business_message_without_reply_binds_with_price(
         json=_business_message_update(
             update_id=62002,
             from_id=620002,
-            text="Есть, 88000 руб",
+            text="88000 руб",
         ),
         headers=webhook_headers,
     )

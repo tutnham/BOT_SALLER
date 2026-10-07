@@ -16,8 +16,10 @@ from app.db.models import (
     Quote,
     Request,
     RequestStatus,
+    RfqItemDeliveryStatus,
     Supplier,
     SupplierCategory,
+    SupplierRfqBatchItem,
 )
 from app.services.product_classifier import (
     category_from_normalized,
@@ -81,6 +83,34 @@ async def load_eligible_candidates(
 
     latest_by_request: dict[int, EligibleCandidate] = {}
     for outbound, request in rows:
+        if not routes_match(outbound.business_connection_id, business_connection_id):
+            continue
+        if request.id in latest_by_request:
+            continue
+        latest_by_request[request.id] = EligibleCandidate(
+            request=request,
+            latest_kind=outbound.kind,
+            latest_sent_at=outbound.sent_at,
+        )
+
+    batch_stmt = (
+        select(MessageOut, Request)
+        .join(
+            SupplierRfqBatchItem,
+            SupplierRfqBatchItem.message_out_id == MessageOut.id,
+        )
+        .join(Request, Request.id == SupplierRfqBatchItem.request_id)
+        .where(
+            MessageOut.supplier_id == supplier.id,
+            MessageOut.chat_id == chat_id,
+            MessageOut.send_status == MessageSendStatus.sent.value,
+            MessageOut.sent_at >= cutoff,
+            SupplierRfqBatchItem.delivery_status == RfqItemDeliveryStatus.sent.value,
+            Request.status.in_(_ACTIVE_STATUSES),
+        )
+        .order_by(Request.id, MessageOut.sent_at.desc())
+    )
+    for outbound, request in (await session.execute(batch_stmt)).all():
         if not routes_match(outbound.business_connection_id, business_connection_id):
             continue
         if request.id in latest_by_request:

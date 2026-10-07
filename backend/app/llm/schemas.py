@@ -21,6 +21,24 @@ class NormalizedRequest(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class BatchNormalizedItem(BaseModel):
+    """Structured LLM item for one batch source line. Money fields forbidden."""
+
+    source_line_no: int
+    source_text: str
+    brand: str | None = None
+    family: str | None = None
+    model: str = ""
+    variant: str | None = None
+    storage_gb: int | None = None
+    color: str | None = None
+    sim: str | None = None
+    region: str | None = None
+    quantity: int | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    ambiguities: list[str] = Field(default_factory=list)
+
+
 class ProductClassification(BaseModel):
     category: str
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)

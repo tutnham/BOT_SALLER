@@ -447,6 +447,17 @@ async def handle_owner_message(
     if chat_id is None or not text:
         return "ignored"
 
+    from app.handlers.purchase_report_commands import handle_purchase_report_command
+
+    if await handle_purchase_report_command(
+        session,
+        text=text,
+        chat_id=int(chat_id),
+        telegram_id=int(telegram_id),
+        telegram=telegram,
+    ):
+        return "ok"
+
     if text.startswith("/purge_request"):
         return await _handle_purge_request(
             chat_id=int(chat_id),

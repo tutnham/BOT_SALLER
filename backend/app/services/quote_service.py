@@ -144,6 +144,21 @@ async def upsert_quote(
         )
 
     await _maybe_transition_to_priced(session, request_id)
+    if quote is not None:
+        request = await session.get(Request, request_id)
+        if request is not None:
+            try:
+                from app.services.daily_sku_price_service import on_quote_upserted
+
+                await on_quote_upserted(session, quote=quote, request=request)
+            except Exception:
+                from loguru import logger
+
+                logger.exception(
+                    "daily/best-quote projection failed request_id={} quote_id={}",
+                    request_id,
+                    quote.id,
+                )
     return quote
 
 

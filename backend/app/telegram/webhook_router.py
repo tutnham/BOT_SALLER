@@ -189,6 +189,7 @@ async def _route_message(
                 )
                 from app.telegram.home_buttons import (
                     OWNER_MARKUP,
+                    OWNER_PURCHASE_REPORT,
                     OWNER_REPORT_DAY,
                     OWNER_REPORT_WEEK,
                 )
@@ -201,6 +202,19 @@ async def _route_message(
                 if text == OWNER_REPORT_WEEK:
                     await send_owner_report(
                         session, chat_id=int(chat["id"]), period="week", telegram=telegram
+                    )
+                    return "ok"
+                if text == OWNER_PURCHASE_REPORT:
+                    from app.handlers.purchase_report_commands import (
+                        handle_purchase_report_command,
+                    )
+
+                    await handle_purchase_report_command(
+                        session,
+                        text="/purchase_report today",
+                        chat_id=int(chat["id"]),
+                        telegram_id=int(from_id),
+                        telegram=telegram,
                     )
                     return "ok"
                 if text == OWNER_MARKUP:
@@ -259,6 +273,13 @@ async def _route_callback(
         from app.handlers.employee_inbox import handle_inbox_callback
 
         return await handle_inbox_callback(
+            session, callback_query, telegram=telegram
+        )
+
+    if cd.namespace == "batch":
+        from app.handlers.batch_callbacks import handle_batch_callback
+
+        return await handle_batch_callback(
             session, callback_query, telegram=telegram
         )
 

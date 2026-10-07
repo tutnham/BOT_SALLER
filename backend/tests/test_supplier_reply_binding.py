@@ -840,6 +840,30 @@ async def test_confirm_no_advances_to_next_request(
     seed_suppliers,
     seed_client_group,
     mock_telegram: MockTelegramClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPPLIER_BIND_ASK_ENABLED", "true")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        await _confirm_no_advances_to_next_request(
+            db_session,
+            seed_employee,
+            seed_suppliers,
+            seed_client_group,
+            mock_telegram,
+        )
+    finally:
+        get_settings.cache_clear()
+
+
+async def _confirm_no_advances_to_next_request(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers,
+    seed_client_group,
+    mock_telegram: MockTelegramClient,
 ) -> None:
     first, _ = await create_request(
         db_session,

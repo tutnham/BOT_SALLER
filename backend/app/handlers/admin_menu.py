@@ -266,6 +266,18 @@ async def _dispatch_callback(
         await send_owner_report(session, chat_id=chat_id, period="week", telegram=telegram)
         return
 
+    if action == "report_purchases":
+        from app.handlers.purchase_report_commands import handle_purchase_report_command
+
+        await handle_purchase_report_command(
+            session,
+            text="/purchase_report today",
+            chat_id=chat_id,
+            telegram_id=owner_id,
+            telegram=telegram,
+        )
+        return
+
     if action == "markup_list":
         from app.handlers.owner_commands import send_markup_list
 
@@ -1050,6 +1062,7 @@ async def _send_main_menu(
             menu_button("Отчёт за день", "report_day"),
             menu_button("Отчёт за неделю", "report_week"),
         ],
+        [menu_button("Закупки", "report_purchases")],
         [menu_button("Наценки", "markup_list")],
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],

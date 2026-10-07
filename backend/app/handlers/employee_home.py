@@ -63,6 +63,28 @@ async def handle_employee_home_text(
         if group_chat_id == 0:
             await telegram.send_message(chat_id, render_template("employee_no_client_group"))
             return True
+        from app.db.unit_of_work import commit_or_flush
+        from app.handlers.batch_callbacks import send_batch_preview
+        from app.services.batch_request_service import (
+            create_draft_batch,
+            should_use_batch_flow,
+        )
+
+        if should_use_batch_flow(text):
+            batch = await create_draft_batch(
+                session,
+                group_chat_id=group_chat_id,
+                employee_id=employee_id,
+                source_text=text,
+            )
+            await commit_or_flush(session)
+            await send_batch_preview(
+                session,
+                batch_id=batch.id,
+                chat_id=chat_id,
+                telegram=telegram,
+            )
+            return True
         await create_request(
             session,
             group_chat_id=group_chat_id,

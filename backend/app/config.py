@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     supplier_price_min_rub: Decimal = Decimal("1000")
     supplier_price_max_rub: Decimal = Decimal("5000000")
     supplier_batch_reply_enabled: bool = False
+    daily_price_reuse_enabled: bool = True
+    daily_price_max_age_minutes: int = 720
+    daily_price_refresh_in_background: bool = False
+    quote_collection_window_minutes: int = 60
+    quote_min_valid_responses: int = 1
+    auto_finalize_when_all_responded: bool = True
+    auto_publish_client_prices: bool = False
     supplier_single_candidate_auto_bind_enabled: bool = False
     supplier_bind_buttons_enabled: bool = False
     # Ask supplier "which request is this price for?" (confirm / ambiguous). Off: silent pending + operator inbox.

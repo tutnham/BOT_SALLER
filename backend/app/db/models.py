@@ -45,6 +45,41 @@ class RequestStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class RequestBatchStatus(str, enum.Enum):
+    draft = "draft"
+    awaiting_confirmation = "awaiting_confirmation"
+    awaiting_quotes = "awaiting_quotes"
+    partially_priced = "partially_priced"
+    ready = "ready"
+    published = "published"
+    closed = "closed"
+    cancelled = "cancelled"
+
+
+class RequestPriceState(str, enum.Enum):
+    unknown = "unknown"
+    known_today = "known_today"
+    collecting = "collecting"
+    provisional = "provisional"
+    finalized = "finalized"
+    published = "published"
+    unresolved = "unresolved"
+
+
+class PriceSelectionStatus(str, enum.Enum):
+    provisional = "provisional"
+    final = "final"
+    published = "published"
+    superseded = "superseded"
+    invalidated = "invalidated"
+
+
+class RfqItemDeliveryStatus(str, enum.Enum):
+    pending = "pending"
+    sent = "sent"
+    failed = "failed"
+
+
 class QuoteSource(str, enum.Enum):
     regex = "regex"
     llm = "llm"
@@ -392,15 +427,86 @@ class ClientGroup(Base):
     bound_by_owner_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
-class Request(Base):
-    __tablename__ = "requests"
-    __table_args__ = (Index("ix_requests_employee_id", "employee_id"),)
+class RequestBatch(Base):
+    __tablename__ = "request_batches"
+    __table_args__ = (Index("ix_request_batches_employee_id", "employee_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     group_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     employee_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("employees.id"), nullable=False
     )
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'draft'"),
+    )
+    items_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    items_priced: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    items_unresolved: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa_text("0")
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    selection_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa_text("0")
+    )
+
+    employee: Mapped[Employee] = relationship()
+    requests: Mapped[list[Request]] = relationship(back_populates="batch")
+
+
+class Request(Base):
+    __tablename__ = "requests"
+    __table_args__ = (
+        Index("ix_requests_employee_id", "employee_id"),
+        Index(
+            "uq_requests_batch_line_no",
+            "batch_id",
+            "line_no",
+            unique=True,
+            postgresql_where=sa_text("batch_id IS NOT NULL AND line_no IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "normalization_confidence IS NULL OR "
+            "(normalization_confidence >= 0 AND normalization_confidence <= 1)",
+            name="ck_requests_normalization_confidence",
+        ),
+        CheckConstraint(
+            "requested_qty IS NULL OR requested_qty > 0",
+            name="ck_requests_requested_qty_positive",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    group_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    employee_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("employees.id"), nullable=False
+    )
+    batch_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("request_batches.id", ondelete="SET NULL")
+    )
+    line_no: Mapped[int | None] = mapped_column(Integer)
+    source_line: Mapped[str | None] = mapped_column(Text)
+    canonical_sku_key: Mapped[str | None] = mapped_column(Text)
+    normalizer_version: Mapped[str | None] = mapped_column(Text)
+    normalization_confidence: Mapped[float | None] = mapped_column(REAL)
+    requested_qty: Mapped[int | None] = mapped_column(Integer)
+    price_state: Mapped[str | None] = mapped_column(String(32))
+    quote_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[RequestStatus] = mapped_column(
@@ -420,10 +526,14 @@ class Request(Base):
     )
 
     employee: Mapped[Employee] = relationship(back_populates="requests")
+    batch: Mapped[RequestBatch | None] = relationship(back_populates="requests")
     messages_out: Mapped[list[MessageOut]] = relationship(back_populates="request")
     messages_in: Mapped[list[MessageIn]] = relationship(back_populates="request")
     quotes: Mapped[list[Quote]] = relationship(back_populates="request")
     deals: Mapped[list[Deal]] = relationship(back_populates="request")
+    price_selections: Mapped[list[RequestPriceSelection]] = relationship(
+        back_populates="request"
+    )
 
 
 class MessageOut(Base):
@@ -639,9 +749,166 @@ class Deal(Base):
     final_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     outcome: Mapped[DealOutcome | None] = mapped_column(deal_outcome_enum)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_quote_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("quotes.id", ondelete="SET NULL")
+    )
+    purchased_qty: Mapped[int | None] = mapped_column(Integer)
+    client_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    override_reason: Mapped[str | None] = mapped_column(Text)
+    recorded_by_employee_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("employees.id", ondelete="SET NULL")
+    )
+    selection_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("request_price_selections.id", ondelete="SET NULL")
+    )
 
     request: Mapped[Request] = relationship(back_populates="deals")
     chosen_supplier: Mapped[Supplier | None] = relationship()
+    source_quote: Mapped[Quote | None] = relationship(foreign_keys=[source_quote_id])
+
+
+class RequestPriceSelection(Base):
+    __tablename__ = "request_price_selections"
+    __table_args__ = (
+        Index("ix_request_price_selections_request_id", "request_id"),
+        Index(
+            "uq_request_price_selections_published",
+            "request_id",
+            unique=True,
+            postgresql_where=sa_text("status = 'published'"),
+        ),
+        CheckConstraint(
+            "purchase_unit_price IS NULL OR purchase_unit_price >= 0",
+            name="ck_request_price_selections_purchase_nonneg",
+        ),
+        CheckConstraint(
+            "client_unit_price IS NULL OR client_unit_price >= 0",
+            name="ck_request_price_selections_client_nonneg",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("requests.id", ondelete="CASCADE"), nullable=False
+    )
+    batch_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("request_batches.id", ondelete="SET NULL")
+    )
+    canonical_sku_key: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    selected_quote_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("quotes.id", ondelete="SET NULL")
+    )
+    selected_supplier_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id", ondelete="SET NULL")
+    )
+    purchase_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    requested_qty: Mapped[int | None] = mapped_column(Integer)
+    client_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    selection_reason: Mapped[str | None] = mapped_column(Text)
+    candidate_count: Mapped[int | None] = mapped_column(Integer)
+    rejected_candidates: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    request: Mapped[Request] = relationship(back_populates="price_selections")
+    selected_quote: Mapped[Quote | None] = relationship(foreign_keys=[selected_quote_id])
+
+
+class SupplierRfqBatch(Base):
+    __tablename__ = "supplier_rfq_batches"
+    __table_args__ = (Index("ix_supplier_rfq_batches_batch_id", "batch_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("request_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id"), nullable=False
+    )
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chunk_no: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    items: Mapped[list[SupplierRfqBatchItem]] = relationship(back_populates="rfq_batch")
+
+
+class SupplierRfqBatchItem(Base):
+    __tablename__ = "supplier_rfq_batch_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "rfq_batch_id",
+            "request_id",
+            name="uq_supplier_rfq_batch_items_batch_request",
+        ),
+        Index("ix_supplier_rfq_batch_items_message_out_id", "message_out_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rfq_batch_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("supplier_rfq_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    request_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("requests.id", ondelete="CASCADE"), nullable=False
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_code: Mapped[str] = mapped_column(Text, nullable=False)
+    message_out_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages_out.id", ondelete="SET NULL")
+    )
+    delivery_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'pending'"),
+    )
+
+    rfq_batch: Mapped[SupplierRfqBatch] = relationship(back_populates="items")
+    request: Mapped[Request] = relationship()
+    message_out: Mapped[MessageOut | None] = relationship()
+
+
+class DailySkuPrice(Base):
+    __tablename__ = "daily_sku_prices"
+    __table_args__ = (
+        UniqueConstraint(
+            "business_date",
+            "canonical_sku_key",
+            name="uq_daily_sku_prices_date_key",
+        ),
+        CheckConstraint(
+            "purchase_unit_price >= 0 AND client_unit_price >= 0",
+            name="ck_daily_sku_prices_nonneg",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    business_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_sku_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quotes.id", ondelete="CASCADE"), nullable=False
+    )
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id"), nullable=False
+    )
+    purchase_unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    client_unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    available: Mapped[bool | None] = mapped_column(Boolean)
+    available_qty: Mapped[int | None] = mapped_column(Integer)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    normalizer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    selection_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    source_quote: Mapped[Quote] = relationship()
+    supplier: Mapped[Supplier] = relationship()
 
 
 class RawPrice(Base):

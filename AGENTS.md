@@ -8,7 +8,7 @@ This document defines execution rules, code style guidelines, task workflows, an
 
 When writing or modifying code in this codebase, you must follow these principles:
 
-1. **Deterministic Business Logic:** Never allow LLM outputs to directly execute actions or write unvalidated data into business tables (`quotes`, `deals`, `requests`). LLM output must pass strict Pydantic schema validation first (Source [6]).
+1. **Deterministic Business Logic:** Never allow LLM outputs to directly execute actions or write unvalidated data into business tables (`quotes`, `deals`, `requests`). LLM output must pass strict Pydantic schema validation first (Source [6]). Best-price selection is Python/SQL only (`best_quote_service`); it never calls an LLM and never creates a `Deal`.
 2. **Safety First in Supplier Messaging:** Never write arbitrary LLM-generated text directly to suppliers. Always process outgoing supplier requests through pre-defined Jinja/string templates (`TEMPLATES` in `templates/messages_ru.py`) (Source [6]).
 3. **Idempotency Mandate:** Every endpoint handling webhooks or cron tasks must check `update_log` or `parser_tasks` status before proceeding (Source [4], Source [6]).
 4. **Explicit Fallbacks:** If an LLM provider fails, fails validation, or returns low confidence, gracefully fall back to raw human-readable outputs or regex parsers without crashing the HTTP server (Source [6]).

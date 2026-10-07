@@ -25,7 +25,7 @@ This repository houses a dual-service architecture designed to automate hardware
    - **No Userbot Code in Main Bot:** The main bot operates solely on Telegram Bot API (direct webhook) (Source [6]). MTProto/Pyrogram code lives strictly inside `tg-channel-parser` (Source [4]).
 
 2. **Strict LLM Constraints:**
-   - **No Financial Calculations or Decision Making:** LLMs are restricted strictly to structured text extraction (JSON mode with Pydantic validation) and HTML formatting (Source [6]).
+   - **No Financial Calculations or Decision Making:** LLMs are restricted strictly to structured text extraction (JSON mode with Pydantic validation) and HTML formatting (Source [6]). The bot may deterministically select the lowest eligible quote for client pricing; it must not auto-confirm a purchase (`Deal`).
    - **No Competitor Price Leakage:** Supplier bargaining templates must NEVER include or reveal competitor prices (Source [6]).
    - **Confidence Threshold:** Any LLM response with `confidence < CONFIDENCE_THRESHOLD` (default 0.75) must fall back to raw human text without automated quote creation (Source [6]).
 

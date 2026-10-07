@@ -323,7 +323,7 @@ async def process_bound_supplier_reply(
             raw_text=raw_text,
         )
 
-    if followup != "duplicate":
+    if followup != "duplicate" and request.batch_id is None:
         await telegram.send_message(request.group_chat_id, forward_text)
 
     if (

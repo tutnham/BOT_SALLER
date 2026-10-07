@@ -29,7 +29,11 @@ from app.parsers.product_normalizer import (
 )
 from app.parsers.regex_parser import ParsedSupplierReply, parse_supplier_reply
 from app.services.candidate_loader_service import load_eligible_candidates
-from app.services.explicit_request_parser import parse_explicit_request_id
+from app.services.explicit_request_parser import (
+    parse_batch_line_code,
+    parse_explicit_request_id,
+)
+from app.services.supplier_rfq_batch_service import find_request_by_line_code
 from app.services.route_identity import route_type_label
 from app.services.telemetry import record_supplier_binding_decision
 
@@ -344,6 +348,27 @@ async def resolve_binding(
             needs_supplier_confirm=False,
             price_parse=price_parse,
         )
+
+    line_code = parse_batch_line_code(raw_text)
+    if line_code is not None:
+        line_request = await find_request_by_line_code(session, line_code)
+        if line_request is not None:
+            _log_binding(
+                supplier=supplier,
+                method="batch_line_code",
+                request_id=line_request.id,
+                score=None,
+                candidate_count=len(candidates),
+                business_connection_id=business_connection_id,
+            )
+            return BindingDecision(
+                request=line_request,
+                method="batch_line_code",
+                status="bound",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+            )
 
     explicit_id = parse_explicit_request_id(raw_text)
     if explicit_id is not None:

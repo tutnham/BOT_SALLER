@@ -36,6 +36,7 @@ from app.services.recheck_service import (
     InvalidRecheckHoursError,
     schedule_recheck,
 )
+from app.services.batch_request_service import create_draft_batch, should_use_batch_flow
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import format_supplier_label, render_template
@@ -784,6 +785,17 @@ async def handle_employee_message(
 
     text = _message_text(message)
 
+    from app.handlers.purchase_report_commands import handle_purchase_report_command
+
+    if await handle_purchase_report_command(
+        session,
+        text=text,
+        chat_id=int(chat_id),
+        telegram_id=int(telegram_id),
+        telegram=telegram,
+    ):
+        return "ok"
+
     if text.startswith("/setprice"):
         return await _handle_setprice(
             session,
@@ -860,6 +872,25 @@ async def handle_employee_message(
         text_req = text_req[:max_len]
     if not text_req:
         await telegram.send_message(int(chat_id), render_template("ask_empty"))
+        return "ok"
+
+    if should_use_batch_flow(text_req):
+        from app.handlers.batch_callbacks import send_batch_preview
+        from app.db.unit_of_work import commit_or_flush
+
+        batch = await create_draft_batch(
+            session,
+            group_chat_id=int(chat_id),
+            employee_id=employee.id,
+            source_text=text_req,
+        )
+        await commit_or_flush(session)
+        await send_batch_preview(
+            session,
+            batch_id=batch.id,
+            chat_id=int(chat_id),
+            telegram=telegram,
+        )
         return "ok"
 
     outcome = await create_request(

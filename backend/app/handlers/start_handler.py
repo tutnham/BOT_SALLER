@@ -12,6 +12,7 @@ from app.telegram.client import TelegramClientProtocol
 from app.telegram.home_buttons import (
     OWNER_MARKUP,
     OWNER_MENU,
+    OWNER_PURCHASE_REPORT,
     OWNER_REPORT_DAY,
     OWNER_REPORT_WEEK,
 )
@@ -110,6 +111,7 @@ async def handle_start(
                 [
                     [OWNER_MENU],
                     [OWNER_REPORT_DAY, OWNER_REPORT_WEEK],
+                    [OWNER_PURCHASE_REPORT],
                     [OWNER_MARKUP],
                 ]
             ),
