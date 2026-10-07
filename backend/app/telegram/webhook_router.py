@@ -261,6 +261,15 @@ async def _route_callback(
             return "ignored"
         return await handle_price_callback(session, callback_query)
 
+    if cd.namespace == "sup":
+        from app.services.supplier_bind_session_service import (
+            handle_supplier_bind_callback,
+        )
+
+        return await handle_supplier_bind_callback(
+            session, callback_query=callback_query, telegram=telegram
+        )
+
     return "ignored"
 
 

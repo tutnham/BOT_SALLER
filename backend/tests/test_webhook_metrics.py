@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
-import pytest
-
-from app.services.telemetry import configure_registry, get_metrics, record_webhook_accepted
+from app.services.telemetry import configure_registry
 
 
 @pytest.fixture
 def metrics_registry() -> CollectorRegistry:
-    return configure_registry(CollectorRegistry())
+    registry = CollectorRegistry()
+    configure_registry(registry)
+    return registry
 
 
 def _counter_value(registry: CollectorRegistry, name: str) -> float:

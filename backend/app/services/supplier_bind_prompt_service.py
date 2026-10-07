@@ -295,9 +295,9 @@ async def _insert_prompt_ack_message(
     business_connection_id: str | None,
     status: str,
 ) -> None:
-    from app.handlers.supplier_messages import _insert_message_in_idempotent
+    from app.handlers.supplier_messages import insert_message_in_idempotent
 
-    await _insert_message_in_idempotent(
+    await insert_message_in_idempotent(
         session,
         supplier_id=supplier_id,
         chat_id=chat_id,

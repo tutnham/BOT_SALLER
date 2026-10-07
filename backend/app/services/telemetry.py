@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 _registry: CollectorRegistry | None = None
@@ -94,6 +95,38 @@ class _MetricBundle:
         self.morning_price_last_success_unixtime = Gauge(
             "zakupki_morning_price_last_success_unixtime",
             "Unix time of last successful morning-price job run",
+            registry=registry,
+        )
+        self.supplier_binding_total = Counter(
+            "supplier_binding_total",
+            "Supplier inbound binding decisions",
+            labelnames=("method",),
+            registry=registry,
+        )
+        self.supplier_binding_pending_total = Counter(
+            "supplier_binding_pending_total",
+            "Ambiguous supplier prices entering pending bind sessions",
+            registry=registry,
+        )
+        self.supplier_binding_resolution_seconds = Histogram(
+            "supplier_binding_resolution_seconds",
+            "Time from pending session to resolution",
+            registry=registry,
+        )
+        self.supplier_binding_prompt_expired_total = Counter(
+            "supplier_binding_prompt_expired_total",
+            "Expired supplier bind sessions",
+            registry=registry,
+        )
+        self.supplier_binding_llm_abstain_total = Counter(
+            "supplier_binding_llm_abstain_total",
+            "LLM classify_supplier_reply abstentions for binding",
+            registry=registry,
+        )
+        self.supplier_binding_rebind_total = Counter(
+            "supplier_binding_rebind_total",
+            "Supplier rebind resolutions",
+            labelnames=("original_method",),
             registry=registry,
         )
 
@@ -193,3 +226,33 @@ def observe_cron(job: str) -> Iterator[None]:
         metrics.cron_duration.labels(job=job, outcome=outcome).observe(
             time.perf_counter() - start
         )
+
+
+def record_supplier_binding_decision(method: str) -> None:
+    get_metrics().supplier_binding_total.labels(method=method).inc()
+
+
+def record_supplier_binding_pending() -> None:
+    get_metrics().supplier_binding_pending_total.inc()
+
+
+def record_supplier_binding_llm_abstain() -> None:
+    get_metrics().supplier_binding_llm_abstain_total.inc()
+
+
+def record_supplier_binding_expired() -> None:
+    get_metrics().supplier_binding_prompt_expired_total.inc()
+
+
+def record_supplier_binding_rebind(original_method: str) -> None:
+    get_metrics().supplier_binding_rebind_total.labels(original_method=original_method).inc()
+
+
+@contextmanager
+def observe_supplier_binding_resolution() -> Iterator[None]:
+    metrics = get_metrics()
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        metrics.supplier_binding_resolution_seconds.observe(time.perf_counter() - start)

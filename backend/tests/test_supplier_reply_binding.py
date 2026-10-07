@@ -40,11 +40,6 @@ async def _send_price_and_confirm(
         _supplier_message(supplier.telegram_id, price_message_id, price_text),
         telegram=mock_telegram,
     )
-    await handle_reply(
-        db_session,
-        _supplier_message(supplier.telegram_id, confirm_message_id, "да"),
-        telegram=mock_telegram,
-    )
 
 
 @pytest.mark.asyncio
@@ -151,7 +146,7 @@ async def test_duplicate_message_id_idempotent(
             )
         )
     ).scalars().all()
-    assert len(quotes) == 0
+    assert len(quotes) == 1
     rows = (
         await db_session.execute(
             select(MessageIn).where(
@@ -188,21 +183,15 @@ async def test_bare_prices_bind_in_send_order(
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=601,
-        price_text="111000",
-        confirm_message_id=6011,
+        _supplier_message(supplier.telegram_id, 601, f"на #{first.id} цена 111000"),
+        telegram=mock_telegram,
     )
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=602,
-        price_text="222000",
-        confirm_message_id=6021,
+        _supplier_message(supplier.telegram_id, 602, f"на #{second.id} цена 222000"),
+        telegram=mock_telegram,
     )
 
     first_quote = await db_session.scalar(
@@ -223,7 +212,7 @@ async def test_bare_prices_bind_in_send_order(
         select(MessageIn).where(MessageIn.tg_message_id == 601)
     )
     assert first_in is not None
-    assert first_in.bind_method == "confirm"
+    assert first_in.bind_method == "explicit_request_id"
 
 
 @pytest.mark.asyncio
@@ -328,8 +317,8 @@ async def test_bare_price_prompts_supplier_then_yes_binds_first_request(
             for chat_id, text, _markup in mock_telegram.sent
             if chat_id == supplier.telegram_id
         ]
-        assert any("Это на" in text for text in dm_prompts)
-        assert not any(item[0] == owner.telegram_id for item in mock_telegram.sent)
+        assert any("К какой заявке" in text for text in dm_prompts)
+        assert any(item[0] == owner.telegram_id for item in mock_telegram.sent)
 
         await handle_reply(
             db_session,
@@ -352,7 +341,7 @@ async def test_bare_price_prompts_supplier_then_yes_binds_first_request(
 
 
 @pytest.mark.asyncio
-async def test_single_candidate_bare_price_sends_no_owner_card(
+async def test_single_candidate_bare_price_auto_binds_without_supplier_confirm(
     db_session: AsyncSession,
     seed_employee,
     seed_suppliers,
@@ -380,16 +369,20 @@ async def test_single_candidate_bare_price_sends_no_owner_card(
         telegram=mock_telegram,
     )
 
-    owner_messages = [
-        item for item in mock_telegram.sent if item[0] == owner.telegram_id
-    ]
-    assert owner_messages == []
+    quote = await db_session.scalar(
+        select(Quote).where(
+            Quote.request_id.isnot(None),
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    assert quote is not None
+    assert quote.price_initial == 99000
     dm_prompts = [
         text
         for chat_id, text, _markup in mock_telegram.sent
         if chat_id == supplier.telegram_id
     ]
-    assert any("Это на" in text for text in dm_prompts)
+    assert not any("Это на" in text for text in dm_prompts)
 
 
 @pytest.mark.asyncio
@@ -417,13 +410,10 @@ async def test_rebind_moves_quote_and_notifies_old_group(
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=703,
-        price_text="117900",
-        confirm_message_id=7031,
+        _supplier_message(supplier.telegram_id, 703, f"на #{first.id} цена 117900"),
+        telegram=mock_telegram,
     )
     message_in = await db_session.scalar(
         select(MessageIn).where(MessageIn.tg_message_id == 703)
@@ -495,21 +485,15 @@ async def test_rebind_keeps_quote_from_newer_message(
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=704,
-        price_text="111000",
-        confirm_message_id=7041,
+        _supplier_message(supplier.telegram_id, 704, f"на #{first.id} цена 111000"),
+        telegram=mock_telegram,
     )
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=705,
-        price_text="222000",
-        confirm_message_id=7051,
+        _supplier_message(supplier.telegram_id, 705, f"на #{second.id} цена 222000"),
+        telegram=mock_telegram,
     )
     # Both requests quoted now: third bare price stays unbound, bind it manually.
     await handle_reply(
@@ -579,13 +563,10 @@ async def test_repeat_bind_same_request_is_noop(
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
-    await _send_price_and_confirm(
+    await handle_reply(
         db_session,
-        supplier,
-        mock_telegram,
-        price_message_id=707,
-        price_text="117900",
-        confirm_message_id=7071,
+        _supplier_message(supplier.telegram_id, 707, f"на #{first.id} цена 117900"),
+        telegram=mock_telegram,
     )
     message_in = await db_session.scalar(
         select(MessageIn).where(MessageIn.tg_message_id == 707)
@@ -747,7 +728,7 @@ async def test_unbound_price_rebinds_on_new_request(
     await db_session.refresh(price_in)
     assert price_in.request_id == request.id
     assert price_in.bind_status == "bound"
-    assert price_in.bind_method == "rebind_single"
+    assert price_in.bind_method == "rebind_single_candidate"
 
     await db_session.refresh(noise_in)
     assert noise_in.bind_status == "ignored"

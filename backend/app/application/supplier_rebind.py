@@ -48,6 +48,8 @@ async def retry_unbound_supplier_prices(
             message={},
             raw_text=message_in.raw_text,
             reply_request=None,
+            chat_id=message_in.chat_id,
+            business_connection_id=message_in.business_connection_id,
             for_rebind=True,
         )
         if decision.status != "bound" or decision.request is None:
@@ -64,6 +66,9 @@ async def retry_unbound_supplier_prices(
             bind_method=f"rebind_{decision.method}",
             binding_price=decision.binding_price,
         )
+        from app.services.telemetry import record_supplier_binding_rebind
+
+        record_supplier_binding_rebind(decision.method)
         rebound += 1
         logger.info(
             "supplier_rebind message_in_id={} request_id={} method=rebind_{}",

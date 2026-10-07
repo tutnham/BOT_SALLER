@@ -164,6 +164,7 @@ async def test_business_message_without_reply_binds_with_price(
             text="ask",
             kind=MessageKind.ask,
             send_status="sent",
+            business_connection_id="bc_msg",
         )
     )
     await db_session.flush()
@@ -178,19 +179,6 @@ async def test_business_message_without_reply_binds_with_price(
         headers=webhook_headers,
     )
     assert resp.json()["status"] == "ok"
-    pending = await db_session.scalar(select(Quote).where(Quote.request_id == request.id))
-    assert pending is None
-
-    confirm = await webhook_client.post(
-        "/telegram/webhook",
-        json=_business_message_update(
-            update_id=62003,
-            from_id=620002,
-            text="да",
-        ),
-        headers=webhook_headers,
-    )
-    assert confirm.json()["status"] == "ok"
     quote = await db_session.scalar(select(Quote).where(Quote.request_id == request.id))
     assert quote is not None
     assert quote.price_initial == 88000
@@ -262,6 +250,7 @@ async def test_business_message_idempotent_replay(
             text=f"Запрос #{request.id}",
             kind=MessageKind.ask,
             send_status="sent",
+            business_connection_id="bc_msg",
         )
     )
     await db_session.flush()
