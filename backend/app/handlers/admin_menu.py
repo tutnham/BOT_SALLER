@@ -1759,6 +1759,14 @@ async def _handle_dialog_text(
                 rule_label=label,
                 amount=int(amount),
             ),
+            reply_markup=inline_keyboard(
+                [
+                    [
+                        menu_button("К наценкам", "markup_list"),
+                        menu_button("В меню", "main_menu"),
+                    ]
+                ]
+            ),
         )
         return "ok"
 

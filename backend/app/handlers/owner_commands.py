@@ -185,6 +185,12 @@ async def send_markup_list(
         await telegram.send_message(
             chat_id,
             render_template("markup_rules_list", rules_block="—"),
+            reply_markup=inline_keyboard(
+                [
+                    [menu_button("Добавить правило", "mk_add")],
+                    [menu_button("В меню", "main_menu")],
+                ]
+            ),
         )
         return
     lines: list[str] = []
@@ -197,6 +203,7 @@ async def send_markup_list(
             [menu_button(f"{label} · {amount} ₽"[:40], "mk_open", int(rule.id))]
         )
     rows.append([menu_button("Добавить правило", "mk_add")])
+    rows.append([menu_button("В меню", "main_menu")])
     await telegram.send_message(
         chat_id,
         render_template("markup_rules_list", rules_block="\n".join(lines)),
@@ -224,7 +231,10 @@ async def send_markup_edit(
     rows = [
         amount_row,
         [menu_button("Своя сумма", "mk_custom", rule_id)],
-        [menu_button("К списку", "markup_list")],
+        [
+            menu_button("К списку", "markup_list"),
+            menu_button("В меню", "main_menu"),
+        ],
     ]
     await telegram.send_message(
         chat_id,
@@ -254,6 +264,14 @@ async def apply_markup_choice(
             "markup_rule_updated",
             rule_key=_markup_label(updated),
             amount=amount,
+        ),
+        reply_markup=inline_keyboard(
+            [
+                [
+                    menu_button("К наценкам", "markup_list"),
+                    menu_button("В меню", "main_menu"),
+                ]
+            ]
         ),
     )
 
