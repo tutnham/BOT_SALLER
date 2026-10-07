@@ -89,9 +89,9 @@ async def test_confident_reply_creates_quote_and_structured_message(
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
     assert len(group_sends) == 1
-    assert "Наличие:" in group_sends[0]
     assert "Цена:" in group_sends[0]
-    assert "Кол-во:" in group_sends[0]
+    assert "Наличие:" not in group_sends[0]
+    assert "Кол-во:" not in group_sends[0]
     assert "85500" in group_sends[0]
 
 

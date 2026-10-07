@@ -90,9 +90,7 @@ TEMPLATES: dict[str, str] = {
     ),
     "supplier_quote_parsed": (
         "По вашему запросу · Заявка #{request_id}\n"
-        "Наличие: {available_text}\n"
-        "Цена: {price_text}\n"
-        "Кол-во: {qty_text}"
+        "Цена: {price_text}"
     ),
     "supplier_low_confidence": (
         "По вашему запросу · Заявка #{request_id}\n"
@@ -480,9 +478,9 @@ def render_template(name: str, **kwargs: Any) -> str:
         kwargs.setdefault("source_text", (kwargs.get("source_text") or "").strip())
 
     if name == "supplier_quote_parsed":
-        kwargs.setdefault("available_text", _format_available(kwargs.pop("available", None)))
+        kwargs.pop("available", None)
+        kwargs.pop("qty", None)
         kwargs.setdefault("price_text", _format_price(kwargs.pop("price", None)))
-        kwargs.setdefault("qty_text", _format_qty(kwargs.pop("qty", None)))
 
     if name == "status_summary":
         kwargs.setdefault("quotes_block", kwargs.get("quotes_block") or "—")
