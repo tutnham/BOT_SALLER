@@ -49,6 +49,7 @@ def test_settings_loads_required_and_defaults(monkeypatch: pytest.MonkeyPatch) -
     assert s.scheduler_enabled is True
     assert s.docs_enabled is False
     assert s.public_backend_url is None
+    assert s.supplier_bind_ask_enabled is False
 
 
 def test_settings_reject_invalid_telegram_secret_token(

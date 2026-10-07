@@ -154,14 +154,15 @@ async def start_supplier_bind_prompt(
         )
     )
     await session.flush()
-    await telegram.send_message(
-        message_in.chat_id,
-        render_template(
-            "supplier_bind_confirm",
-            request_text=request_preview_text(current),
-        ),
-        business_connection_id=business_connection_id,
-    )
+    if get_settings().supplier_bind_ask_enabled:
+        await telegram.send_message(
+            message_in.chat_id,
+            render_template(
+                "supplier_bind_confirm",
+                request_text=request_preview_text(current),
+            ),
+            business_connection_id=business_connection_id,
+        )
     logger.info(
         "supplier_bind_prompt started supplier_id={} message_in_id={} request_id={}",
         supplier.id,
@@ -181,11 +182,12 @@ async def _advance_or_give_up(
     pending = list(prompt.pending_request_ids or [])
     if not pending:
         await clear_supplier_bind_prompt(session, supplier_id=supplier.id)
-        await telegram.send_message(
-            prompt.chat_id,
-            render_template("supplier_bind_gave_up"),
-            business_connection_id=business_connection_id,
-        )
+        if get_settings().supplier_bind_ask_enabled:
+            await telegram.send_message(
+                prompt.chat_id,
+                render_template("supplier_bind_gave_up"),
+                business_connection_id=business_connection_id,
+            )
         return False
     next_id = int(pending.pop(0))
     prompt.request_id = next_id
@@ -200,14 +202,15 @@ async def _advance_or_give_up(
             telegram=telegram,
             business_connection_id=business_connection_id,
         )
-    await telegram.send_message(
-        prompt.chat_id,
-        render_template(
-            "supplier_bind_confirm",
-            request_text=request_preview_text(request),
-        ),
-        business_connection_id=business_connection_id,
-    )
+    if get_settings().supplier_bind_ask_enabled:
+        await telegram.send_message(
+            prompt.chat_id,
+            render_template(
+                "supplier_bind_confirm",
+                request_text=request_preview_text(request),
+            ),
+            business_connection_id=business_connection_id,
+        )
     return True
 
 

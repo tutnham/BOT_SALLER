@@ -319,7 +319,8 @@ async def test_bare_price_prompts_supplier_then_yes_binds_first_request(
             for chat_id, text, _markup in mock_telegram.sent
             if chat_id == supplier.telegram_id
         ]
-        assert any("К какой заявке" in text for text in dm_prompts)
+        assert not any("К какой заявке" in text for text in dm_prompts)
+        assert not any("Это на" in text for text in dm_prompts)
         assert any(item[0] == owner.telegram_id for item in mock_telegram.sent)
 
         await handle_reply(
