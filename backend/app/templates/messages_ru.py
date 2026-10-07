@@ -5,11 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 TEMPLATES: dict[str, str] = {
-    "ask": (
-        "Запрос #{request_id}: {source_text}\n"
-        "Ответьте ценой. Если открыто несколько запросов, укажите номер: "
-        "#{request_id} 117900."
-    ),
+    "ask": "Запрос #{request_id}: {source_text}",
     "bargain": (
         "По заявке #{request_id} — есть возможность сделать цену {target_price} ₽?\n"
         "Ответьте на это сообщение (reply)."
@@ -21,10 +17,6 @@ TEMPLATES: dict[str, str] = {
     "ask_empty": "Нужен текст запроса или reply на сообщение клиента",
     "ask_sent": "Запрос #{request_id} отправлен {N} поставщикам",
     "ask_sent_multi": "Запросы {request_ids} отправлены ({N} доставок поставщикам)",
-    "ask_status_card": (
-        "Заявка #{request_id}: отправлено {sent_count}, ответили {replied_count}, "
-        "цен {quoted_count}, требуют разбора {pending_review_count}."
-    ),
     "supplier_review_card": (
         "Неразобранный ответ\n"
         "Поставщик: {supplier_name}\n"

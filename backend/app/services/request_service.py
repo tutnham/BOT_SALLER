@@ -293,23 +293,6 @@ async def create_request(
         total_sent += sent_count
         if sent_count >= 1:
             request.status = RequestStatus.awaiting_answers
-        from app.services.request_status_service import load_request_rfq_counters
-
-        counters = await load_request_rfq_counters(session, request.id)
-        try:
-            await telegram.send_message(
-                request.group_chat_id,
-                render_template(
-                    "ask_status_card",
-                    request_id=request.id,
-                    sent_count=counters.sent_count,
-                    replied_count=counters.replied_count,
-                    quoted_count=counters.quoted_count,
-                    pending_review_count=counters.pending_review_count,
-                ),
-            )
-        except TelegramSendError:
-            pass
         if failed_lines:
             try:
                 await telegram.send_message(

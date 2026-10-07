@@ -92,8 +92,10 @@ async def test_employee_ask_creates_request_and_messages_out(
         (cid, txt) for cid, txt, _ in mock_telegram.sent if cid != seed_group_chat_id
     ]
     assert len(supplier_sends) == seed_supplier_count
-    assert all(f"Запрос #{request.id}" in txt for _, txt in supplier_sends)
-    assert all("iPhone 17 Pro 256" in txt for _, txt in supplier_sends)
+    assert all(
+        txt == f"Запрос #{request.id}: {request.source_text}" for _, txt in supplier_sends
+    )
+    assert all("Ответьте ценой" not in txt for _, txt in supplier_sends)
     assert all("Уточните, пожалуйста" not in txt for _, txt in supplier_sends)
 
 
