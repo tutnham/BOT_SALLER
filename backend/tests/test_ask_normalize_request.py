@@ -10,6 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MessageOut, Request
 from app.llm.client import LLMProviderError, set_llm_client
 from app.services.request_service import build_normalized_json
+from app.templates.messages_ru import render_template
+
+
+def test_ask_template_is_request_and_text_only() -> None:
+    text = render_template(
+        "ask",
+        request_id=1,
+        source_text="18 pro 1tb blue 1 сим",
+    )
+    assert text == "Запрос #1: 18 pro 1tb blue 1 сим"
+    assert "Ответьте ценой" not in text
 
 
 def _ask_update(
@@ -167,9 +178,17 @@ async def test_ask_template_has_request_id_no_competitor_prices(
     supplier_sends = [
         txt for chat_id, txt, *_ in mock_telegram.sent if chat_id > 0 and chat_id != seed_group_chat_id
     ]
+    expected_ask = f"Запрос #{request.id}: {source}"
     assert supplier_sends
-    assert all(f"Запрос #{request.id}" in txt for txt in supplier_sends)
-    assert all(source in txt for txt in supplier_sends)
+    assert all(txt == expected_ask for txt in supplier_sends)
+    assert all("Ответьте ценой" not in txt for txt in supplier_sends)
     assert all("Уточните, пожалуйста" not in txt for txt in supplier_sends)
     assert all("85000" not in txt for txt in supplier_sends)
     assert all("82000" not in txt for txt in supplier_sends)
+
+    group_sends = [
+        txt for chat_id, txt, *_ in mock_telegram.sent if chat_id == seed_group_chat_id
+    ]
+    assert group_sends
+    assert all("требуют разбора" not in txt for txt in group_sends)
+    assert all("отправлено " not in txt for txt in group_sends)
