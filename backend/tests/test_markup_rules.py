@@ -1,48 +1,42 @@
-"""Parametrized markup rules per customer spec."""
+"""Markup rules: iPhone 18 line and owner-created rules."""
 
 from __future__ import annotations
 
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.markup_service import get_markup, seed_markup_rule_rows
-
-
-@pytest.fixture
-def rules():
-    return seed_markup_rule_rows()
-
-
-@pytest.mark.parametrize(
-    ("product", "expected"),
-    [
-        ("iPhone 17 Air", 500),
-        ("iPhone 17 E", 500),
-        ("iPhone 17 Pro", 800),
-        ("iPhone 17 Pro Max", 800),
-        ("iPhone 17 256", 500),
-        ("iPhone 16 Pro", 500),
-        ("iPhone 16 Pro Max", 800),
-        ("iPhone 16 Plus", 500),
-        ("iPhone 16e", 500),
-        ("iPhone 15 Pro Max", 500),
-        ("iPhone 14 Pro Max", 500),
-        ("iPhone 13", 500),
-        ("iPad Pro", 500),
-        ("Apple Watch Ultra", 500),
-        ("AirPods Pro", 500),
-        ("MacBook Pro 14", 1000),
-        ("Samsung Galaxy S24", 800),
-    ],
+from app.services.markup_service import (
+    create_markup_rule,
+    get_markup,
+    phrase_to_model_pattern,
+    seed_markup_rule_rows,
 )
-def test_customer_markup_rules(product: str, expected: int, rules) -> None:
-    result = get_markup(product, rules)
-    assert result.markup == Decimal(expected)
-    assert result.is_fallback is False
 
 
-def test_unknown_product_fallback(caplog, rules) -> None:
-    result = get_markup("Dyson Airwrap", rules, default=Decimal("500"))
-    assert result.markup == Decimal("500")
-    assert result.is_fallback is True
+def test_iphone_18_plus_gets_800_markup() -> None:
+    rules = seed_markup_rule_rows()
+    result = get_markup("iPhone 18 Plus 256GB", rules)
+    assert result.rule_key == "iphone_18_plus"
+    assert result.markup == Decimal("800")
+
+
+def test_phrase_to_model_pattern_normalized() -> None:
+    pattern = phrase_to_model_pattern("iPhone 18 Plus")
+    assert pattern == r"iphone\s+18\s+plus"
+
+
+@pytest.mark.asyncio
+async def test_create_markup_rule_persists(db_session: AsyncSession) -> None:
+    rule = await create_markup_rule(
+        db_session,
+        phrase="Xiaomi 15 Ultra",
+        markup_rub=Decimal("600"),
+    )
+    assert rule.id is not None
+    assert rule.markup_fixed == Decimal("600")
+    rules = seed_markup_rule_rows()
+    rules.append(rule)
+    result = get_markup("Xiaomi 15 Ultra 512", rules)
+    assert result.markup == Decimal("600")

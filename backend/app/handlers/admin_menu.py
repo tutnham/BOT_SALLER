@@ -272,6 +272,19 @@ async def _dispatch_callback(
         await send_markup_list(session, chat_id=chat_id, telegram=telegram)
         return
 
+    if action == "mk_add":
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_markup_rule_phrase",
+            payload={},
+        )
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_add_enter_phrase"),
+        )
+        return
+
     if action == "mk_open":
         from app.handlers.owner_commands import send_markup_edit
 
@@ -1687,6 +1700,65 @@ async def _handle_dialog_text(
             rule_id=rule_id,
             amount=amount,
             telegram=telegram,
+        )
+        return "ok"
+
+    if state == "await_markup_rule_phrase":
+        phrase = text.strip()
+        if len(phrase) < 2:
+            await telegram.send_message(
+                chat_id, render_template("markup_add_enter_phrase")
+            )
+            return "ok"
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_markup_rule_amount",
+            payload={"phrase": phrase[:200]},
+        )
+        await telegram.send_message(
+            chat_id,
+            render_template("markup_add_enter_amount", rule_label=phrase[:80]),
+        )
+        return "ok"
+
+    if state == "await_markup_rule_amount":
+        from decimal import Decimal, InvalidOperation
+
+        from app.services.markup_service import create_markup_rule
+
+        phrase = str(payload.get("phrase") or "").strip()
+        if not phrase:
+            await admin_service.clear_dialog(session, owner_id)
+            await telegram.send_message(chat_id, render_template("admin_error", detail="нет названия товара"))
+            return "ok"
+        raw = text.replace(" ", "").replace(",", ".")
+        try:
+            amount = Decimal(raw)
+        except InvalidOperation:
+            await telegram.send_message(chat_id, "Сумма должна быть числом")
+            return "ok"
+        if amount < 0:
+            await telegram.send_message(chat_id, "Сумма не может быть отрицательной")
+            return "ok"
+        try:
+            rule = await create_markup_rule(
+                session, phrase=phrase, markup_rub=amount
+            )
+        except ValueError:
+            await telegram.send_message(
+                chat_id, render_template("markup_add_enter_phrase")
+            )
+            return "ok"
+        await admin_service.clear_dialog(session, owner_id)
+        label = (rule.rule_key or phrase).replace("_", " ")
+        await telegram.send_message(
+            chat_id,
+            render_template(
+                "markup_rule_created",
+                rule_label=label,
+                amount=int(amount),
+            ),
         )
         return "ok"
 

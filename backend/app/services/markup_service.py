@@ -17,6 +17,10 @@ from app.db.models import MarkupRule
 from app.parsers.product_normalizer import normalize_product_text
 
 CUSTOMER_MARKUP_RULES: tuple[tuple[str, str, str, str, int], ...] = (
+    ("iphone_18_pro_max", "apple", r"iphone\s+18\s+pro\s+max", "800", 105),
+    ("iphone_18_pro", "apple", r"iphone\s+18\s+pro(?:\s|$)", "800", 104),
+    ("iphone_18_plus", "apple", r"iphone\s+18\s+plus", "800", 103),
+    ("iphone_18_base", "apple", r"iphone\s+18(?:\s|$)", "500", 102),
     ("iphone_17_pro_max", "apple", r"iphone\s+17\s+pro\s+max", "800", 100),
     ("iphone_17_pro", "apple", r"iphone\s+17\s+pro(?:\s|$)", "800", 99),
     ("iphone_17_air", "apple", r"iphone\s+17\s+air", "500", 98),
@@ -196,3 +200,61 @@ async def update_rule_markup_by_id(
 
 async def list_active_rules(session: AsyncSession) -> list[MarkupRule]:
     return await load_rules(session)
+
+
+def phrase_to_model_pattern(phrase: str) -> str:
+    """Build a regex for normalized product text from a human phrase."""
+    text = _product_search_text(phrase)
+    if not text:
+        raise ValueError("empty_phrase")
+    tokens = text.split()
+    return r"\s+".join(re.escape(token) for token in tokens)
+
+
+def slug_rule_key(phrase: str) -> str:
+    text = _product_search_text(phrase).replace(" ", "_")
+    if not text:
+        raise ValueError("empty_phrase")
+    key = f"custom_{text}"
+    return key[:120]
+
+
+async def create_markup_rule(
+    session: AsyncSession,
+    *,
+    phrase: str,
+    markup_rub: Decimal,
+    priority: int = 50,
+    brand: str | None = None,
+) -> MarkupRule:
+    """Owner-defined product phrase + fixed markup (no code deploy)."""
+    pattern = phrase_to_model_pattern(phrase)
+    rule_key = slug_rule_key(phrase)
+    existing = await session.scalar(
+        select(MarkupRule).where(MarkupRule.rule_key == rule_key)
+    )
+    if existing is not None:
+        existing.model_pattern = pattern
+        existing.markup_fixed = markup_rub
+        existing.priority = priority
+        existing.active = True
+        if brand:
+            existing.brand = brand
+        existing.updated_at = datetime.now(UTC)
+        invalidate_markup_rules_cache()
+        await session.flush()
+        return existing
+
+    rule = MarkupRule(
+        category=rule_key,
+        rule_key=rule_key,
+        brand=brand or "*",
+        model_pattern=pattern,
+        markup_fixed=markup_rub,
+        priority=priority,
+        active=True,
+    )
+    session.add(rule)
+    invalidate_markup_rules_cache()
+    await session.flush()
+    return rule

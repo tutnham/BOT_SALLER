@@ -60,11 +60,25 @@ TEMPLATES: dict[str, str] = {
     "client_quote_withdrawn": (
         "Заявка #{request_id}: цена уточняется, предыдущее предложение неактуально."
     ),
-    "markup_rules_list": "Наценки. Нажмите правило, чтобы изменить сумму:\n{rules_block}",
+    "markup_rules_list": (
+        "Наценки. Нажмите правило, чтобы изменить сумму.\n"
+        "«Добавить правило» — новый товар без правки кода.\n"
+        "{rules_block}"
+    ),
     "markup_edit_prompt": "Наценка «{rule_label}» сейчас {amount} ₽. Выберите сумму или напишите свою.",
     "markup_enter_amount": "Напишите новую наценку для «{rule_label}» числом, например 800.",
     "markup_rule_updated": "Наценка {rule_key} = {amount} ₽",
     "markup_rule_not_found": "Правило {rule_key} не найдено",
+    "markup_add_enter_phrase": (
+        "Напишите название товара для наценки, как в заявке.\n"
+        "Пример: iPhone 18 Plus"
+    ),
+    "markup_add_enter_amount": (
+        "Наценка для «{rule_label}». Напишите сумму в рублях, например 800."
+    ),
+    "markup_rule_created": (
+        "Правило «{rule_label}» создано: +{amount} ₽ к закупке."
+    ),
     "supplier_categories_list": "Категории поставщиков:\n{lines}",
     "supplier_category_updated": "Поставщик #{supplier_id}: категории {categories}",
     "bind_ok": "Сообщение привязано к заявке #{request_id}",

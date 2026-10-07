@@ -196,6 +196,7 @@ async def send_markup_list(
         rows.append(
             [menu_button(f"{label} · {amount} ₽"[:40], "mk_open", int(rule.id))]
         )
+    rows.append([menu_button("Добавить правило", "mk_add")])
     await telegram.send_message(
         chat_id,
         render_template("markup_rules_list", rules_block="\n".join(lines)),
