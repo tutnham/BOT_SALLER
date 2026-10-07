@@ -7,6 +7,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.parsers.price_parse import parse_price_from_text
+
 # --- Availability patterns (negative checked first) --------------------------------
 
 _NEGATIVE_AVAILABILITY = re.compile(
@@ -50,26 +52,6 @@ _CONDITION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bб/?\s*у\b", re.IGNORECASE), "б/у"),
     (re.compile(r"\bнов(?:ый|ая|ое|ые)\b", re.IGNORECASE), "новый"),
 ]
-
-# --- Price patterns (ordered: more specific first) ---------------------------------
-
-# 85к / 85k / 85 тыс / 85т
-_PRICE_SUFFIX = re.compile(
-    r"(\d[\d\s]*)\s*(?:к|k|тыс\.?|т\.?)(?:\s*(?:руб\.?|₽|р\.?))?\b",
-    re.IGNORECASE,
-)
-
-# 85 000 руб / 85000₽ / 85 000 (spaces as thousands separator)
-_PRICE_WITH_CURRENCY = re.compile(
-    r"(\d[\d\s]+)\s*(?:руб\.?|₽|р\.?)(?:\s|$|[,.])",
-    re.IGNORECASE,
-)
-
-_PRICE_SPACED = re.compile(r"\b(\d(?:[\d\s]{2,}))\b")
-
-# Isolated 4+ digit number (strong when digits-only length >= 4)
-_PRICE_BARE = re.compile(r"\b(\d{4,})\b")
-
 
 class ParsedSupplierReply(BaseModel):
     """Structured supplier reply aligned with TECH DOC §8.3."""
@@ -130,31 +112,11 @@ def _extract_price(text: str) -> tuple[Decimal | None, str]:
     Returns:
         (price, strength) where strength is 'strong' | 'weak' | 'none'
     """
-    match = _PRICE_SUFFIX.search(text)
-    if match:
-        base = _normalize_number(match.group(1))
-        if base is not None:
-            return base * 1000, "strong"
-
-    match = _PRICE_WITH_CURRENCY.search(text)
-    if match:
-        value = _normalize_number(match.group(1))
-        if value is not None:
-            return value, "strong"
-
-    match = _PRICE_SPACED.search(text)
-    if match:
-        value = _normalize_number(match.group(1))
-        if value is not None and value >= 1000:
-            return value, "strong"
-
-    match = _PRICE_BARE.search(text)
-    if match:
-        value = _normalize_number(match.group(1))
-        if value is not None:
-            return value, "strong"
-
-    return None, "none"
+    result = parse_price_from_text(text)
+    if result.price is None:
+        return None, "none"
+    strength = "strong" if result.confidence >= 0.75 else "weak"
+    return result.price, strength
 
 
 def _compute_confidence(

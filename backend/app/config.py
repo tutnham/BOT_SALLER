@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     supplier_bind_prompt_ttl_hours: int = 4
     supplier_bind_session_ttl_hours: int = 4
     supplier_correction_window_minutes: int | None = 30
+    supplier_implicit_thousands_enabled: bool = True
+    supplier_price_min_rub: Decimal = Decimal("1000")
+    supplier_price_max_rub: Decimal = Decimal("5000000")
+    supplier_batch_reply_enabled: bool = False
     supplier_single_candidate_auto_bind_enabled: bool = False
     supplier_bind_buttons_enabled: bool = False
     suppliers_without_categories_policy: str = "skip_and_notify"
@@ -162,6 +166,13 @@ class Settings(BaseSettings):
         if self.admin_alert_chat_id is not None:
             return [self.admin_alert_chat_id]
         return []
+
+    @field_validator("supplier_price_min_rub", "supplier_price_max_rub", mode="before")
+    @classmethod
+    def _coerce_supplier_price_bounds(cls, value: object) -> object:
+        if value is None or value == "":
+            return value
+        return Decimal(str(value))
 
     @field_validator("default_markup", mode="before")
     @classmethod

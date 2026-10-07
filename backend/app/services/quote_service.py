@@ -77,10 +77,13 @@ async def upsert_quote(
     settings = get_settings()
     effective_confidence = confidence if confidence is not None else 1.0
 
-    if source != QuoteSource.manual and effective_confidence < settings.confidence_threshold:
+    if (
+        source not in (QuoteSource.manual, QuoteSource.operator_corrected)
+        and effective_confidence < settings.confidence_threshold
+    ):
         return None
 
-    if source == QuoteSource.manual and confidence is None:
+    if source in (QuoteSource.manual, QuoteSource.operator_corrected) and confidence is None:
         effective_confidence = 1.0
 
     values: dict[str, object] = {

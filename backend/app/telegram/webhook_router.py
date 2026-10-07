@@ -255,6 +255,13 @@ async def _route_callback(
             session, callback_query, telegram=telegram
         )
 
+    if cd.namespace == "inbox":
+        from app.handlers.employee_inbox import handle_inbox_callback
+
+        return await handle_inbox_callback(
+            session, callback_query, telegram=telegram
+        )
+
     if cd.namespace == "price":
         if await resolve_price_approver(session, int(from_id)) is None:
             await telegram.answer_callback_query(callback_id, text="Нет доступа")
@@ -297,9 +304,17 @@ async def _route_update(
             telegram=get_telegram_client(),
         )
     if update.get("edited_business_message") is not None:
-        return await handle_edited_business_message(update["edited_business_message"])
+        return await handle_edited_business_message(
+            session,
+            update["edited_business_message"],
+            telegram=get_telegram_client(),
+        )
     if update.get("deleted_business_messages") is not None:
-        return await handle_deleted_business_messages(update["deleted_business_messages"])
+        return await handle_deleted_business_messages(
+            session,
+            update["deleted_business_messages"],
+            telegram=get_telegram_client(),
+        )
 
     message = _get_message(update)
     if message is not None:

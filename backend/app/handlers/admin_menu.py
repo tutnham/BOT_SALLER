@@ -27,7 +27,7 @@ from app.services.deal_service import (
     cancel_request,
 )
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
-from app.telegram.home_buttons import OWNER_MENU
+from app.telegram.home_buttons import EMP_PENDING_REPLIES, OWNER_MENU
 from app.telegram.keyboards import (
     CallbackData,
     button,
@@ -111,6 +111,18 @@ async def handle_admin_message(
         return await _handle_dialog_text(
             session, dialog, owner_id, chat_id, message, telegram
         )
+
+    if text == EMP_PENDING_REPLIES:
+        from app.handlers.employee_inbox import send_pending_inbox
+
+        await send_pending_inbox(
+            session,
+            chat_id=chat_id,
+            telegram=telegram,
+            employee=None,
+            is_owner=True,
+        )
+        return "ok"
 
     if text == OWNER_MENU or text.startswith("/menu") or text.startswith("/admin") or text.startswith("/"):
         await _send_main_menu(session, telegram, chat_id)

@@ -51,6 +51,8 @@ _COLOR_ALIASES: dict[str, str] = {
     "grey": "Gray",
     "титан": "титан",
     "titanium": "Titanium",
+    "glacier": "Glacier",
+    "глетчер": "Glacier",
 }
 
 _STORAGE_RE = re.compile(
@@ -73,7 +75,10 @@ _SIM_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\besim\b", re.IGNORECASE), "eSIM"),
     (re.compile(r"dual\s*sim|2\s*sim|две\s*sim", re.IGNORECASE), "Dual SIM"),
     (re.compile(r"nano[-\s]?sim", re.IGNORECASE), "nano-SIM"),
+    (re.compile(r"\b1\s*sim\b", re.IGNORECASE), "1 SIM"),
 ]
+_SKU_RE = re.compile(r"\b(SM-[A-Z0-9]+)\b", re.IGNORECASE)
+_SAMSUNG_MODEL_RE = re.compile(r"\bS(\d{1,2})\b", re.IGNORECASE)
 _MODEL_SUFFIX_RE = re.compile(
     r"\b(?:pro\s*max|promax|pro|max|plus|ultra|mini|se|air|e\b)\b",
     re.IGNORECASE,
@@ -125,6 +130,7 @@ class ProductAttrs:
     qty: int | None
     condition: str | None
     model: str | None
+    sku: str | None = None
 
     def as_normalized_json(self, confidence: float) -> dict[str, Any]:
         return {
@@ -300,6 +306,36 @@ def _parse_variant(tail: str, brand: str) -> tuple[str | None, str | None, str |
     return family, number, variant
 
 
+def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str | None, str | None]:
+    """
+    Parse number/variant without brand (e.g. 18 Pro Max).
+
+    Does not assign family globally; family stays None unless Samsung SKU/S-series.
+    """
+    family: str | None = None
+    brand: str | None = None
+    sku_match = _SKU_RE.search(text)
+    if sku_match:
+        family = "samsung"
+        brand = "Samsung"
+    samsung_num = _SAMSUNG_MODEL_RE.search(text)
+    if samsung_num and re.search(r"\bultra\b", text, re.IGNORECASE):
+        family = "samsung"
+        brand = "Samsung"
+        number = samsung_num.group(1)
+        return brand, family, number, "ultra"
+
+    if not re.search(r"\b(?:pro|max|plus|air|ultra|mini|se)\b", text, re.IGNORECASE):
+        return None, None, None, None
+
+    number_match = _MODEL_NUMBER_RE.search(text)
+    if not number_match:
+        return None, None, None, None
+    number = number_match.group(1)
+    _, _, variant = _parse_variant(text, "iPhone")
+    return None, family, number, variant
+
+
 def _build_display_model(brand: str | None, number: str | None, variant: str | None) -> str | None:
     if brand is None:
         return None
@@ -345,11 +381,41 @@ def extract_product_attrs(source_text: str) -> ProductAttrs:
             qty=None,
             condition=None,
             model=None,
+            sku=None,
         )
 
     brand, tail = _detect_brand(text)
-    family, number, variant = _parse_variant(tail, brand) if brand else (None, None, None)
+    family: str | None = None
+    number: str | None = None
+    variant: str | None = None
+    sku: str | None = None
+    sku_match = _SKU_RE.search(raw)
+    if sku_match:
+        sku = sku_match.group(1).upper()
+
+    if brand:
+        family, number, variant = _parse_variant(tail, brand)
+    else:
+        bl_brand, bl_family, bl_number, bl_variant = _parse_brandless_apple_like(text)
+        brand = bl_brand
+        family = bl_family
+        number = bl_number
+        variant = bl_variant
+
     model = _build_display_model(brand, number, variant)
+    if model is None and number and variant:
+        parts = [number]
+        if variant == "pro max":
+            parts.extend(["Pro", "Max"])
+        elif variant == "pro":
+            parts.append("Pro")
+        elif variant == "max":
+            parts.append("Max")
+        elif variant == "plus":
+            parts.append("Plus")
+        elif variant == "ultra":
+            parts.append("Ultra")
+        model = " ".join(parts)
 
     return ProductAttrs(
         brand=brand,
@@ -363,6 +429,7 @@ def extract_product_attrs(source_text: str) -> ProductAttrs:
         qty=_extract_qty(raw) or _extract_qty(text),
         condition=extract_condition(raw),
         model=model,
+        sku=sku,
     )
 
 
@@ -401,7 +468,8 @@ def attrs_match_score(
         )
     )
     if not message_attrs.model and not req_attrs.model:
-        return 0
+        if not message_attrs.number and not req_attrs.number:
+            return 0
 
     if message_attrs.family and req_attrs.family:
         if message_attrs.family != req_attrs.family:
@@ -437,3 +505,53 @@ def attrs_match_score(
             score += 2
 
     return score
+
+
+def detect_product_contradictions(
+    message_attrs: ProductAttrs,
+    request_normalized: dict[str, Any] | None,
+) -> list[str]:
+    """Hard mismatches that block automatic single-candidate binding."""
+    if not request_normalized:
+        return []
+    req_attrs = extract_product_attrs(
+        " ".join(
+            filter(
+                None,
+                [
+                    request_normalized.get("model") or "",
+                    request_normalized.get("storage") or "",
+                    request_normalized.get("color") or "",
+                    request_normalized.get("sim") or "",
+                    request_normalized.get("region") or "",
+                ],
+            )
+        )
+    )
+    conflicts: list[str] = []
+    if message_attrs.number and req_attrs.number and message_attrs.number != req_attrs.number:
+        conflicts.append("model_number")
+    if message_attrs.variant and req_attrs.variant and message_attrs.variant != req_attrs.variant:
+        conflicts.append("variant")
+    if message_attrs.storage and req_attrs.storage:
+        if message_attrs.storage.lower() != req_attrs.storage.lower():
+            conflicts.append("storage")
+    if message_attrs.color and req_attrs.color:
+        if message_attrs.color.lower() != req_attrs.color.lower():
+            conflicts.append("color")
+    if message_attrs.sim and req_attrs.sim:
+        if message_attrs.sim.lower() != req_attrs.sim.lower():
+            conflicts.append("sim")
+    if message_attrs.region and req_attrs.region:
+        if message_attrs.region.upper() != req_attrs.region.upper():
+            conflicts.append("region")
+    if message_attrs.sku and req_attrs.sku and message_attrs.sku != req_attrs.sku:
+        conflicts.append("sku")
+    return conflicts
+
+
+def attrs_compatible_for_single_candidate(
+    message_attrs: ProductAttrs,
+    request_normalized: dict[str, Any] | None,
+) -> bool:
+    return len(detect_product_contradictions(message_attrs, request_normalized)) == 0

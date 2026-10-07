@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import (
     REAL,
     BigInteger,
@@ -48,6 +49,7 @@ class QuoteSource(str, enum.Enum):
     regex = "regex"
     llm = "llm"
     manual = "manual"
+    operator_corrected = "operator_corrected"
 
 
 class DealOutcome(str, enum.Enum):
@@ -515,9 +517,70 @@ class MessageIn(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_text_previous: Mapped[str | None] = mapped_column(Text)
 
     request: Mapped[Request | None] = relationship(back_populates="messages_in")
     supplier: Mapped[Supplier] = relationship()
+    items: Mapped[list[SupplierMessageItem]] = relationship(back_populates="message_in")
+
+
+class SupplierMessageItem(Base):
+    __tablename__ = "supplier_message_items"
+    __table_args__ = (
+        sa.UniqueConstraint("message_in_id", "line_no", name="uq_supplier_message_items_line"),
+        Index(
+            "ix_supplier_message_items_pending",
+            "bind_status",
+            postgresql_where=sa_text("bind_status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_in_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("messages_in.id", ondelete="CASCADE"), nullable=False
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_json: Mapped[dict | None] = mapped_column(JSONB)
+    parsed_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    parse_method: Mapped[str | None] = mapped_column(Text)
+    bind_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    bind_method: Mapped[str | None] = mapped_column(Text)
+    request_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("requests.id", ondelete="SET NULL")
+    )
+    confidence: Mapped[float | None] = mapped_column(REAL)
+    conflict_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    message_in: Mapped[MessageIn] = relationship(back_populates="items")
+    request: Mapped[Request | None] = relationship()
+
+
+class QuotePriceEvent(Base):
+    __tablename__ = "quote_price_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quotes.id", ondelete="CASCADE"), nullable=False
+    )
+    old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    new_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    message_in_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages_in.id", ondelete="SET NULL")
+    )
+    item_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("supplier_message_items.id", ondelete="SET NULL")
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Quote(Base):

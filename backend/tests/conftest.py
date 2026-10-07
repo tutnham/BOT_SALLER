@@ -33,10 +33,19 @@ os.environ["PRICE_APPROVAL_CHAT_IDS"] = "-1001111111111"
 os.environ["PRICE_PUBLISH_CHAT_IDS"] = "-1002222222222"
 os.environ.setdefault("PARSER_API_TOKEN", "test-parser-token")
 os.environ.setdefault("DEFAULT_MARKUP", "500")
-os.environ.setdefault("SUPPLIER_SINGLE_CANDIDATE_AUTO_BIND_ENABLED", "true")
 os.environ.setdefault("SUPPLIER_REPLY_MAX_AGE_HOURS", "48")
 
 from app.config import get_settings  # noqa: E402
+
+
+@pytest.fixture
+def supplier_single_candidate_auto_bind(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enable production-like single-candidate auto-bind only in tests that opt in."""
+    monkeypatch.setenv("SUPPLIER_SINGLE_CANDIDATE_AUTO_BIND_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
 from app.db.models import (  # noqa: E402
     ClientGroup,
     Employee,

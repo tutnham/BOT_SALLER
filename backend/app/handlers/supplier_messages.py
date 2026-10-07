@@ -214,7 +214,29 @@ async def process_bound_supplier_reply(
         )
         return None
 
+    from app.parsers.price_parse import parse_price_from_text
+
+    price_result = parse_price_from_text(raw_text)
     parsed: Any = parse_supplier_reply(raw_text)
+    if price_result.price is not None:
+        parsed = parsed.model_copy(
+            update={
+                "price": price_result.price,
+                "confidence": max(parsed.confidence, price_result.confidence),
+            }
+        )
+    elif price_result.validation_errors and message_in.bind_status == "bound":
+        from app.services.supplier_review_service import ensure_review_item_for_message
+
+        message_in.bind_status = "pending_binding"
+        await ensure_review_item_for_message(
+            session,
+            message_in=message_in,
+            conflict_reason="price_untrusted",
+        )
+        await session.flush()
+        return None
+
     source = QuoteSource.regex
     if parsed.price is None and parsed.qty is None:
         parsed = await _parse_with_llm_cache(session, raw_text)
@@ -233,6 +255,22 @@ async def process_bound_supplier_reply(
     )
     previous_price_final = display_price_for_group(existing_quote)
 
+    from app.services.supplier_correction_service import (
+        classify_supplier_followup,
+        record_quote_correction,
+    )
+
+    followup = await classify_supplier_followup(
+        session,
+        supplier_id=supplier.id,
+        request_id=request.id,
+        new_price=parsed.price,
+        new_text=raw_text,
+        message_in_id=message_in.id,
+    )
+    if followup == "duplicate" and existing_quote is not None:
+        return existing_quote
+
     is_bargain = request.status is RequestStatus.bargaining
     quote = await upsert_quote(
         session,
@@ -247,7 +285,30 @@ async def process_bound_supplier_reply(
         bargain=is_bargain,
     )
 
-    if quote is not None:
+    if quote is not None and followup == "correction" and parsed.price is not None:
+        await record_quote_correction(
+            session,
+            quote_id=quote.id,
+            old_price=previous_price_initial,
+            new_price=parsed.price,
+            message_in_id=message_in.id,
+        )
+        from app.services.alert_service import notify_operators
+
+        await notify_operators(
+            session,
+            render_template(
+                "supplier_price_corrected_employee",
+                request_id=request.id,
+                old_price=previous_price_initial,
+                new_price=parsed.price,
+                client_old=previous_price_final,
+                client_new=display_price_for_group(quote),
+            ),
+            telegram=telegram,
+        )
+
+    if quote is not None and followup != "duplicate":
         forward_text = render_template(
             "supplier_quote_parsed",
             request_id=request.id,
@@ -262,7 +323,8 @@ async def process_bound_supplier_reply(
             raw_text=raw_text,
         )
 
-    await telegram.send_message(request.group_chat_id, forward_text)
+    if followup != "duplicate":
+        await telegram.send_message(request.group_chat_id, forward_text)
 
     if (
         quote is not None
@@ -418,6 +480,11 @@ async def handle_reply(
         business_connection_id=business_connection_id,
     )
 
+    from app.services.supplier_batch_service import (
+        is_multiline_rfq_candidate,
+        process_batch_supplier_reply,
+    )
+
     decision: BindingDecision = await resolve_binding(
         session,
         supplier=supplier,
@@ -457,6 +524,19 @@ async def handle_reply(
         )
         return "ok"
 
+    if get_settings().supplier_batch_reply_enabled and is_multiline_rfq_candidate(raw_text):
+        batch_result = await process_batch_supplier_reply(
+            session,
+            supplier=supplier,
+            raw_text=raw_text,
+            message_in=message_in,
+            chat_id=int(chat_id),
+            business_connection_id=business_connection_id,
+            telegram=telegram,
+        )
+        if batch_result == "ok":
+            return "ok"
+
     if decision.status == "ignored":
         logger.info(
             "supplier_message ignored supplier_id={} reason={}",
@@ -480,6 +560,14 @@ async def handle_reply(
                 supplier.id,
             )
             return "ok"
+        from app.services.supplier_review_service import ensure_review_item_for_message
+
+        await ensure_review_item_for_message(
+            session,
+            message_in=message_in,
+            conflict_reason=decision.conflict_reason,
+            candidate_request_ids=[r.id for r in candidates],
+        )
         if decision.status == "pending_binding" or decision.needs_supplier_confirm:
             record_supplier_binding_pending()
             bind_session = await create_bind_session(

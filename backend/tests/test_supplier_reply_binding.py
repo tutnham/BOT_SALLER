@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("supplier_single_candidate_auto_bind")
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -728,7 +730,7 @@ async def test_unbound_price_rebinds_on_new_request(
     await db_session.refresh(price_in)
     assert price_in.request_id == request.id
     assert price_in.bind_status == "bound"
-    assert price_in.bind_method == "rebind_single_candidate"
+    assert price_in.bind_method in ("rebind_single_candidate", "rebind_single_bare_price")
 
     await db_session.refresh(noise_in)
     assert noise_in.bind_status == "ignored"

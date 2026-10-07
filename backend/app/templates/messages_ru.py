@@ -21,6 +21,24 @@ TEMPLATES: dict[str, str] = {
     "ask_empty": "Нужен текст запроса или reply на сообщение клиента",
     "ask_sent": "Запрос #{request_id} отправлен {N} поставщикам",
     "ask_sent_multi": "Запросы {request_ids} отправлены ({N} доставок поставщикам)",
+    "ask_status_card": (
+        "Заявка #{request_id}: отправлено {sent_count}, ответили {replied_count}, "
+        "цен {quoted_count}, требуют разбора {pending_review_count}."
+    ),
+    "supplier_review_card": (
+        "Неразобранный ответ\n"
+        "Поставщик: {supplier_name}\n"
+        "{raw_line}\n"
+        "Цена: {price_line}\n"
+        "Атрибуты: {attrs_line}\n"
+        "Конфликт: {conflict_line}\n"
+        "Заявки: {candidates_line}\n"
+        "Возраст: {age_minutes} мин"
+    ),
+    "supplier_price_corrected_employee": (
+        "Заявка #{request_id}: поставщик исправил цену {old_price} → {new_price} "
+        "(клиенту: {client_old} → {client_new})"
+    ),
     "ask_no_suppliers": (
         "Заявка #{request_id}: нет поставщиков для категории «{category}». "
         "Оператор уведомлён."

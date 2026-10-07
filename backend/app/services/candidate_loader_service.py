@@ -56,6 +56,7 @@ async def load_eligible_candidates(
     business_connection_id: str | None,
     received_at: datetime | None = None,
     expected_purpose: MessageKind | None = None,
+    include_quoted_ask_for_correction: bool = False,
 ) -> list[Request]:
     """Return open requests eligible for binding on this supplier route."""
     settings = get_settings()
@@ -111,7 +112,11 @@ async def load_eligible_candidates(
         kind = candidate.latest_kind
         if expected_purpose is not None and kind != expected_purpose:
             continue
-        if kind is MessageKind.ask and candidate.request.id in quoted_ids:
+        if (
+            kind is MessageKind.ask
+            and candidate.request.id in quoted_ids
+            and not include_quoted_ask_for_correction
+        ):
             continue
         if kind is MessageKind.bargain and candidate.request.status is not RequestStatus.bargaining:
             continue
