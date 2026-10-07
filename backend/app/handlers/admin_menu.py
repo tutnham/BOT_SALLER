@@ -361,6 +361,21 @@ async def _dispatch_callback(
         )
         return
 
+    if action == "bind_stop":
+        try:
+            await cancel_request(session, request_id=cd.arg)
+            text = render_template("bind_stop_ok", request_id=cd.arg)
+        except RequestNotFoundError:
+            text = render_template("purge_request_not_found", request_id=cd.arg)
+        except RequestNotOpenError:
+            text = render_template(
+                "admin_request_already_done", request_id=cd.arg
+            )
+        await _send_or_edit(
+            telegram, chat_id=chat_id, text=text, message_id=message_id
+        )
+        return
+
     if action == "requests":
         await _send_request_list(session, telegram, chat_id, cd.page, message_id=message_id)
         return

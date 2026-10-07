@@ -375,7 +375,12 @@ async def _notify_unbound(
                         "bind_pick",
                         message_in.id,
                         page=request.id,
-                    )
+                    ),
+                    menu_button(
+                        f"Остановить #{request.id}",
+                        "bind_stop",
+                        request.id,
+                    ),
                 ]
             )
         block = "\n".join(lines)

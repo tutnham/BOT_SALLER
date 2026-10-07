@@ -1008,6 +1008,80 @@ async def test_request_menu_cancel_and_purge(
 
 
 @pytest.mark.asyncio
+async def test_bind_stop_cancels_open_request(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_employee: Employee,
+    seed_suppliers: list[Supplier],
+    seed_client_group,
+    mock_telegram,
+) -> None:
+    from sqlalchemy import select
+
+    from app.db.models import Quote
+    from app.handlers.supplier_messages import handle_reply
+    from app.services.request_service import create_request
+
+    request, _ = await create_request(
+        db_session,
+        group_chat_id=seed_client_group.chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 18 Pro Max 256GB",
+        telegram=mock_telegram,
+    )
+    request_id = request.id
+    supplier = seed_suppliers[0]
+    assert supplier.telegram_id is not None
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind_stop",
+            CallbackData(namespace="admin", action="bind_stop", arg=request_id, page=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(request)
+    assert request.status is RequestStatus.cancelled
+    assert mock_telegram.edited
+    assert "остановлена" in mock_telegram.edited[-1][2].lower()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind_stop_again",
+            CallbackData(namespace="admin", action="bind_stop", arg=request_id, page=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    mock_telegram.sent.clear()
+    await handle_reply(
+        db_session,
+        {
+            "message_id": 88001,
+            "chat": {"id": supplier.telegram_id, "type": "private"},
+            "from": {"id": supplier.telegram_id},
+            "text": "127500",
+        },
+        telegram=mock_telegram,
+    )
+    quote = await db_session.scalar(
+        select(Quote).where(
+            Quote.request_id == request_id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    assert quote is None
+
+
+@pytest.mark.asyncio
 async def test_delete_employee_without_requests(
     db_session: AsyncSession,
     webhook_client: AsyncClient,

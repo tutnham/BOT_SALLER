@@ -261,21 +261,31 @@ async def resolve_binding(
     message_attrs = extract_product_attrs(raw_text)
 
     if reply_request is not None:
-        _log_binding(
-            supplier=supplier,
-            method="reply",
-            request_id=reply_request.id,
-            score=None,
-            candidate_count=1,
-            business_connection_id=business_connection_id,
+        reply_conflicts = detect_product_contradictions(
+            message_attrs, reply_request.normalized_json
         )
-        return BindingDecision(
-            request=reply_request,
-            method="reply",
-            status="bound",
-            score=None,
-            parsed=parsed,
-            price_parse=price_parse,
+        if not reply_conflicts:
+            _log_binding(
+                supplier=supplier,
+                method="reply",
+                request_id=reply_request.id,
+                score=None,
+                candidate_count=1,
+                business_connection_id=business_connection_id,
+            )
+            return BindingDecision(
+                request=reply_request,
+                method="reply",
+                status="bound",
+                score=None,
+                parsed=parsed,
+                price_parse=price_parse,
+            )
+        logger.info(
+            "supplier_bind reply_product_mismatch supplier_id={} request_id={} conflicts={}",
+            supplier.id,
+            reply_request.id,
+            reply_conflicts,
         )
 
     ignored = is_neutral_or_noise(raw_text, check_price_list=False)

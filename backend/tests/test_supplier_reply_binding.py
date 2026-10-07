@@ -271,6 +271,7 @@ async def test_named_model_unbound_alert_has_bind_buttons(
         for button in row
     ]
     assert any("bind_pick" in data for data in callbacks)
+    assert any("bind_stop" in data for data in callbacks)
     assert any("bind_ignore" in data for data in callbacks)
     quotes = (await db_session.execute(select(Quote))).scalars().all()
     assert quotes == []
