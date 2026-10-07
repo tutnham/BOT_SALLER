@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,9 +32,10 @@ from app.llm.client import (
 )
 from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
-from app.parsers.product_normalizer import extract_product_attrs
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
+from app.services.binding_labels import candidate_label
+from app.services.candidate_loader_service import load_eligible_candidates
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
 from app.services.reply_binding_service import (
@@ -42,12 +43,13 @@ from app.services.reply_binding_service import (
     merge_llm_price,
     resolve_binding,
 )
+from app.services.route_identity import routes_match
 from app.services.routing_service import resolve_supplier_by_chat
-from app.services.supplier_bind_prompt_service import (
-    clear_supplier_bind_prompt,
-    start_supplier_bind_prompt,
-    try_handle_supplier_bind_prompt_reply,
+from app.services.supplier_bind_session_service import (
+    create_bind_session,
+    try_handle_supplier_bind_session_reply,
 )
+from app.services.telemetry import record_supplier_binding_pending
 from app.telegram.client import TelegramClientProtocol
 from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
@@ -65,20 +67,6 @@ _ACTIVE_STATUSES = (
     RequestStatus.priced,
     RequestStatus.open,
 )
-
-
-def candidate_label(request: Request) -> str:
-    """Human label for a request in owner bind buttons/cards."""
-    normalized = request.normalized_json or {}
-    model = normalized.get("model")
-    if model:
-        parts = [str(model)]
-        for key in ("storage", "color"):
-            value = normalized.get(key)
-            if value:
-                parts.append(str(value))
-        return " ".join(parts)
-    return (request.source_text or "").strip()[:48]
 
 
 async def _parse_with_llm_cache(
@@ -113,6 +101,8 @@ async def _resolve_request_from_outbound_reply(
     *,
     supplier_id: int,
     message: dict,
+    chat_id: int,
+    business_connection_id: str | None,
 ) -> Request | None:
     """Bind supplier reply only to a prior bot ``messages_out`` row (strict reply)."""
     reply_to = message.get("reply_to_message")
@@ -125,12 +115,15 @@ async def _resolve_request_from_outbound_reply(
     outbound = await session.scalar(
         select(MessageOut).where(
             MessageOut.supplier_id == supplier_id,
+            MessageOut.chat_id == chat_id,
             MessageOut.tg_message_id == int(reply_message_id),
             MessageOut.send_status == MessageSendStatus.sent.value,
             MessageOut.request_id.isnot(None),
         )
     )
     if outbound is None or outbound.request_id is None:
+        return None
+    if not routes_match(outbound.business_connection_id, business_connection_id):
         return None
 
     result = await session.execute(
@@ -142,7 +135,7 @@ async def _resolve_request_from_outbound_reply(
     return result.scalar_one_or_none()
 
 
-async def _insert_message_in_idempotent(
+async def insert_message_in_idempotent(
     session: AsyncSession,
     *,
     supplier_id: int,
@@ -155,22 +148,37 @@ async def _insert_message_in_idempotent(
     bind_status: str | None,
     bind_score: float | None,
 ) -> MessageIn | None:
-    stmt = (
-        insert(MessageIn)
-        .values(
-            request_id=request_id,
-            supplier_id=supplier_id,
-            tg_message_id=message_id,
-            chat_id=chat_id,
-            business_connection_id=business_connection_id,
-            raw_text=raw_text,
-            bind_method=bind_method,
-            bind_status=bind_status,
-            bind_score=bind_score,
+    values = {
+        "request_id": request_id,
+        "supplier_id": supplier_id,
+        "tg_message_id": message_id,
+        "chat_id": chat_id,
+        "business_connection_id": business_connection_id,
+        "raw_text": raw_text,
+        "bind_method": bind_method,
+        "bind_status": bind_status,
+        "bind_score": bind_score,
+    }
+    if business_connection_id:
+        stmt = (
+            insert(MessageIn)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["business_connection_id", "chat_id", "tg_message_id"],
+                index_where=text("business_connection_id IS NOT NULL"),
+            )
+            .returning(MessageIn.id)
         )
-        .on_conflict_do_nothing(index_elements=["chat_id", "tg_message_id"])
-        .returning(MessageIn.id)
-    )
+    else:
+        stmt = (
+            insert(MessageIn)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["chat_id", "tg_message_id"],
+                index_where=text("business_connection_id IS NULL"),
+            )
+            .returning(MessageIn.id)
+        )
     new_id = (await session.execute(stmt)).scalar_one_or_none()
     if new_id is None:
         return None
@@ -337,8 +345,6 @@ async def handle_reply(
 
     Returns webhook status ``ok``.
     """
-    from app.services.reply_binding_service import load_open_requests_for_supplier
-
     from_user = message.get("from") or {}
     telegram_id = from_user.get("id")
     chat = message.get("chat") or {}
@@ -363,7 +369,7 @@ async def handle_reply(
     if chat_id is None or message_id is None:
         return "ignored"
 
-    if await try_handle_supplier_bind_prompt_reply(
+    if await try_handle_supplier_bind_session_reply(
         session,
         supplier=supplier,
         raw_text=raw_text,
@@ -377,7 +383,7 @@ async def handle_reply(
     price_match = _PRICE_LIST_MARKER_RE.match(raw_text.strip())
     if price_match is not None:
         price_body = (price_match.group(1) or "").strip() or raw_text.strip()
-        row = await _insert_message_in_idempotent(
+        row = await insert_message_in_idempotent(
             session,
             supplier_id=supplier.id,
             chat_id=int(chat_id),
@@ -408,9 +414,9 @@ async def handle_reply(
         session,
         supplier_id=supplier.id,
         message=message,
+        chat_id=int(chat_id),
+        business_connection_id=business_connection_id,
     )
-    if reply_request is None and parse_supplier_reply(raw_text).price is not None:
-        await clear_supplier_bind_prompt(session, supplier_id=supplier.id)
 
     decision: BindingDecision = await resolve_binding(
         session,
@@ -418,9 +424,20 @@ async def handle_reply(
         message=message,
         raw_text=raw_text,
         reply_request=reply_request,
+        chat_id=int(chat_id),
+        business_connection_id=business_connection_id,
     )
 
-    message_in = await _insert_message_in_idempotent(
+    bind_status = decision.status
+    if bind_status == "bound":
+        bind_method = decision.method
+    elif bind_status == "pending_binding":
+        bind_method = "none"
+        bind_status = "pending_binding"
+    else:
+        bind_method = "none"
+
+    message_in = await insert_message_in_idempotent(
         session,
         supplier_id=supplier.id,
         chat_id=int(chat_id),
@@ -428,8 +445,8 @@ async def handle_reply(
         raw_text=raw_text,
         business_connection_id=business_connection_id,
         request_id=decision.request.id if decision.request else None,
-        bind_method=decision.method if decision.status == "bound" else "none",
-        bind_status=decision.status,
+        bind_method=bind_method,
+        bind_status=bind_status,
         bind_score=decision.score,
     )
     if message_in is None:
@@ -451,23 +468,40 @@ async def handle_reply(
     if decision.request is None:
         candidates = decision.candidates
         if not candidates:
-            candidates = await load_open_requests_for_supplier(session, supplier=supplier)
+            candidates = await load_eligible_candidates(
+                session,
+                supplier=supplier,
+                chat_id=int(chat_id),
+                business_connection_id=business_connection_id,
+            )
         if not candidates:
             logger.info(
                 "supplier_message unbound silent supplier_id={} no open requests",
                 supplier.id,
             )
             return "ok"
-        if decision.needs_supplier_confirm:
-            await start_supplier_bind_prompt(
+        if decision.status == "pending_binding" or decision.needs_supplier_confirm:
+            record_supplier_binding_pending()
+            bind_session = await create_bind_session(
                 session,
                 supplier=supplier,
                 message_in=message_in,
                 candidates=candidates,
                 raw_text=raw_text,
-                message_attrs=extract_product_attrs(raw_text),
                 telegram=telegram,
                 business_connection_id=business_connection_id,
+                use_yes_no_fallback=decision.needs_supplier_confirm,
+            )
+            if bind_session is not None:
+                message_in.bind_status = "pending_binding"
+                await session.flush()
+            await _notify_unbound(
+                session,
+                message_in=message_in,
+                supplier=supplier,
+                raw_text=raw_text,
+                candidates=candidates,
+                telegram=telegram,
             )
             return "ok"
         await _notify_unbound(

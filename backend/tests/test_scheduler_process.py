@@ -60,7 +60,7 @@ async def test_scheduler_process_writes_heartbeat_and_sigterm_clean(
         env=env,
     )
     try:
-        await _wait_scheduler_heartbeat(session_factory, "pytest-scheduler", timeout=30.0)
+        await _wait_scheduler_heartbeat(session_factory, "pytest-scheduler", wait_seconds=30.0)
         proc.send_signal(signal.SIGTERM)
         exit_code = await asyncio.to_thread(proc.wait, 30)
         assert exit_code == 0
@@ -74,9 +74,9 @@ async def _wait_scheduler_heartbeat(
     session_factory: async_sessionmaker,
     instance_id: str,
     *,
-    timeout: float,
+    wait_seconds: float,
 ) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         async with session_factory() as session:
             row = await session.scalar(

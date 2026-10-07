@@ -34,10 +34,15 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.75
     supplier_bind_min_score: int = 3
     supplier_bind_min_margin: int = 2
-    supplier_reply_max_age_hours: int | None = None
+    supplier_reply_max_age_hours: int = 48
+    supplier_bind_llm_threshold: float = 0.85
     # Window for retrying unbound supplier price messages after a new RFQ (0 = off).
     supplier_rebind_window_hours: int = 24
     supplier_bind_prompt_ttl_hours: int = 4
+    supplier_bind_session_ttl_hours: int = 4
+    supplier_correction_window_minutes: int | None = 30
+    supplier_single_candidate_auto_bind_enabled: bool = False
+    supplier_bind_buttons_enabled: bool = False
     suppliers_without_categories_policy: str = "skip_and_notify"
     tz: str = "Europe/Moscow"
     # Used for NL synonym @mention gating in groups (Phase 5). Optional.
@@ -173,6 +178,27 @@ class Settings(BaseSettings):
                 "TELEGRAM_WEBHOOK_SECRET_TOKEN must match "
                 r"^[A-Za-z0-9_-]{1,256}$ (Telegram setWebhook secret_token)"
             )
+        return value
+
+    @field_validator("confidence_threshold", "supplier_bind_llm_threshold")
+    @classmethod
+    def _validate_unit_interval(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("confidence thresholds must be in (0, 1]")
+        return value
+
+    @field_validator("supplier_reply_max_age_hours", "supplier_bind_session_ttl_hours")
+    @classmethod
+    def _validate_positive_hours(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("hour-based supplier settings must be positive")
+        return value
+
+    @field_validator("supplier_correction_window_minutes")
+    @classmethod
+    def _validate_correction_window(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("SUPPLIER_CORRECTION_WINDOW_MINUTES must be positive when set")
         return value
 
     @field_validator("llm_billing_reminder_day")

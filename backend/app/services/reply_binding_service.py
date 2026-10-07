@@ -4,23 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import (
-    MessageOut,
-    MessageSendStatus,
-    Request,
-    RequestStatus,
-    Supplier,
-    SupplierCategory,
-)
+from app.db.models import Request, Supplier
 from app.llm.client import (
     LLMProviderError,
     get_llm_client,
@@ -34,25 +25,10 @@ from app.parsers.product_normalizer import (
     normalize_product_text,
 )
 from app.parsers.regex_parser import ParsedSupplierReply, parse_supplier_reply
-from app.services.product_classifier import (
-    category_from_normalized,
-    classify_product_deterministic,
-)
-
-
-def _request_category(request: Request) -> str | None:
-    category = category_from_normalized(request.normalized_json)
-    if category:
-        return category
-    return classify_product_deterministic(request.source_text)
-
-_ACTIVE_STATUSES = (
-    RequestStatus.awaiting_answers,
-    RequestStatus.bargaining,
-    RequestStatus.needs_recheck,
-    RequestStatus.priced,
-    RequestStatus.open,
-)
+from app.services.candidate_loader_service import load_eligible_candidates
+from app.services.explicit_request_parser import parse_explicit_request_id
+from app.services.route_identity import route_type_label
+from app.services.telemetry import record_supplier_binding_decision
 
 _NEUTRAL_RE = re.compile(
     r"^(?:"
@@ -76,6 +52,7 @@ class BindingDecision:
     candidates: list[Request] = field(default_factory=list)
     binding_price: Decimal | None = None
     needs_supplier_confirm: bool = False
+    bind_session_id: int | None = None
 
 
 def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
@@ -108,7 +85,6 @@ def find_clear_text_match(
     message_attrs: ProductAttrs,
     candidates: list[Request],
 ) -> Request | None:
-    """One candidate clearly matches supplier product text (not a bare price)."""
     if not _has_product_identity(message_attrs):
         return None
     settings = get_settings()
@@ -133,21 +109,6 @@ def find_clear_text_match(
     return None
 
 
-def _should_confirm_with_supplier(
-    *,
-    message_attrs: ProductAttrs,
-    candidates: list[Request],
-    scored: list[tuple[Request, int]],
-) -> bool:
-    if not candidates:
-        return False
-    if not _has_product_identity(message_attrs):
-        return True
-    if not scored:
-        return False
-    return True
-
-
 def is_neutral_or_noise(raw_text: str) -> str | None:
     text = (raw_text or "").strip()
     if not text:
@@ -163,72 +124,23 @@ def is_neutral_or_noise(raw_text: str) -> str | None:
     return None
 
 
-async def load_open_requests_for_supplier(
-    session: AsyncSession,
-    *,
-    supplier: Supplier,
-) -> list[Request]:
-    settings = get_settings()
-    stmt = (
-        select(Request)
-        .join(
-            MessageOut,
-            MessageOut.request_id == Request.id,
-        )
-        .where(
-            MessageOut.supplier_id == supplier.id,
-            MessageOut.send_status == MessageSendStatus.sent.value,
-            MessageOut.request_id.isnot(None),
-            Request.status.in_(_ACTIVE_STATUSES),
-        )
-        .distinct()
-        .order_by(Request.id.desc())
-    )
-    if settings.supplier_reply_max_age_hours is not None:
-        cutoff = datetime.now(UTC) - timedelta(hours=settings.supplier_reply_max_age_hours)
-        stmt = stmt.where(Request.updated_at >= cutoff)
-
-    result = await session.execute(stmt)
-    requests = list(result.scalars().all())
-
-    cat_result = await session.execute(
-        select(SupplierCategory.category).where(
-            SupplierCategory.supplier_id == supplier.id
-        )
-    )
-    supplier_categories = set(cat_result.scalars().all())
-    if not supplier_categories:
-        return []
-
-    filtered: list[Request] = []
-    for request in requests:
-        category = _request_category(request)
-        if category is None or category == "unknown":
-            continue
-        if category in supplier_categories:
-            filtered.append(request)
-    return filtered
-
-
-def _candidate_payload(request: Request) -> dict[str, Any]:
-    normalized = request.normalized_json or {}
-    return {
-        "id": request.id,
-        "model": normalized.get("model"),
-        "storage": normalized.get("storage"),
-        "color": normalized.get("color"),
-        "sim": normalized.get("sim"),
-        "region": normalized.get("region"),
-        "qty": normalized.get("qty"),
-    }
-
-
 async def _resolve_with_llm(
     session: AsyncSession,
     raw_text: str,
     candidates: list[Request],
 ) -> tuple[Request | None, float, Decimal | None]:
-    payload_candidates = [_candidate_payload(request) for request in candidates]
+    payload_candidates = [
+        {
+            "id": request.id,
+            "model": (request.normalized_json or {}).get("model"),
+            "storage": (request.normalized_json or {}).get("storage"),
+            "color": (request.normalized_json or {}).get("color"),
+            "sim": (request.normalized_json or {}).get("sim"),
+            "region": (request.normalized_json or {}).get("region"),
+            "qty": (request.normalized_json or {}).get("qty"),
+        }
+        for request in candidates
+    ]
     allowed_ids = {request.id for request in candidates}
     cache_key = f"{raw_text}\n---\n" + "|".join(str(c["id"]) for c in payload_candidates)
     kind = "classify_supplier_reply"
@@ -250,8 +162,11 @@ async def _resolve_with_llm(
             model_used=settings.llm_model or settings.llm_provider,
         )
 
-    threshold = get_settings().confidence_threshold
+    threshold = get_settings().supplier_bind_llm_threshold
     if not binding.related or binding.confidence < threshold:
+        from app.services.telemetry import record_supplier_binding_llm_abstain
+
+        record_supplier_binding_llm_abstain()
         return None, binding.confidence, None
     if binding.request_id not in allowed_ids:
         return None, binding.confidence, None
@@ -261,6 +176,30 @@ async def _resolve_with_llm(
     return None, binding.confidence, None
 
 
+def _log_binding(
+    *,
+    supplier: Supplier,
+    method: str,
+    request_id: int | None,
+    score: float | None,
+    candidate_count: int,
+    business_connection_id: str | None,
+    bind_confidence: float | None = None,
+) -> None:
+    logger.info(
+        "supplier_bind supplier_id={} request_id={} method={} score={} "
+        "candidate_count={} route_type={} bind_confidence={}",
+        supplier.id,
+        request_id,
+        method,
+        score,
+        candidate_count,
+        route_type_label(business_connection_id),
+        bind_confidence,
+    )
+    record_supplier_binding_decision(method=method)
+
+
 async def resolve_binding(
     session: AsyncSession,
     *,
@@ -268,16 +207,21 @@ async def resolve_binding(
     message: dict[str, Any],
     raw_text: str,
     reply_request: Request | None,
+    chat_id: int,
+    business_connection_id: str | None,
     for_rebind: bool = False,
 ) -> BindingDecision:
     parsed = parse_supplier_reply(raw_text)
     message_attrs = extract_product_attrs(raw_text)
 
     if reply_request is not None:
-        logger.info(
-            "supplier_bind message supplier_id={} request_id={} method=reply score=null",
-            supplier.id,
-            reply_request.id,
+        _log_binding(
+            supplier=supplier,
+            method="reply",
+            request_id=reply_request.id,
+            score=None,
+            candidate_count=1,
+            business_connection_id=business_connection_id,
         )
         return BindingDecision(
             request=reply_request,
@@ -308,7 +252,12 @@ async def resolve_binding(
             ignored_reason="no_price",
         )
 
-    candidates = await load_open_requests_for_supplier(session, supplier=supplier)
+    candidates = await load_eligible_candidates(
+        session,
+        supplier=supplier,
+        chat_id=chat_id,
+        business_connection_id=business_connection_id,
+    )
     if not candidates:
         return BindingDecision(
             request=None,
@@ -318,27 +267,79 @@ async def resolve_binding(
             parsed=parsed,
         )
 
-    if for_rebind and len(candidates) == 1:
-        logger.info(
-            "supplier_bind message supplier_id={} request_id={} method=single score=null",
-            supplier.id,
-            candidates[0].id,
-        )
+    explicit_id = parse_explicit_request_id(raw_text)
+    if explicit_id is not None:
+        for request in candidates:
+            if request.id == explicit_id:
+                _log_binding(
+                    supplier=supplier,
+                    method="explicit_request_id",
+                    request_id=request.id,
+                    score=None,
+                    candidate_count=len(candidates),
+                    business_connection_id=business_connection_id,
+                )
+                return BindingDecision(
+                    request=request,
+                    method="explicit_request_id",
+                    status="bound",
+                    score=None,
+                    parsed=parsed,
+                    candidates=candidates,
+                )
         return BindingDecision(
-            request=candidates[0],
-            method="single",
-            status="bound",
+            request=None,
+            method="none",
+            status="unbound",
             score=None,
             parsed=parsed,
             candidates=candidates,
         )
 
+    if len(candidates) == 1:
+        settings = get_settings()
+        only = candidates[0]
+        if settings.supplier_single_candidate_auto_bind_enabled or for_rebind:
+            _log_binding(
+                supplier=supplier,
+                method="single_candidate",
+                request_id=only.id,
+                score=None,
+                candidate_count=1,
+                business_connection_id=business_connection_id,
+            )
+            return BindingDecision(
+                request=only,
+                method="single_candidate",
+                status="bound",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+            )
+        logger.info(
+            "supplier_bind_shadow single_candidate supplier_id={} would_request_id={}",
+            supplier.id,
+            only.id,
+        )
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="pending_binding",
+            score=None,
+            parsed=parsed,
+            candidates=candidates,
+            needs_supplier_confirm=True,
+        )
+
     text_match = find_clear_text_match(raw_text, message_attrs, candidates)
     if text_match is not None:
-        logger.info(
-            "supplier_bind message supplier_id={} request_id={} method=text score=null",
-            supplier.id,
-            text_match.id,
+        _log_binding(
+            supplier=supplier,
+            method="text",
+            request_id=text_match.id,
+            score=None,
+            candidate_count=len(candidates),
+            business_connection_id=business_connection_id,
         )
         return BindingDecision(
             request=text_match,
@@ -365,11 +366,13 @@ async def resolve_binding(
             top_score >= settings.supplier_bind_min_score
             and margin >= settings.supplier_bind_min_margin
         ):
-            logger.info(
-                "supplier_bind message supplier_id={} request_id={} method=attrs score={}",
-                supplier.id,
-                top_request.id,
-                top_score,
+            _log_binding(
+                supplier=supplier,
+                method="attrs",
+                request_id=top_request.id,
+                score=float(top_score),
+                candidate_count=len(candidates),
+                business_connection_id=business_connection_id,
             )
             return BindingDecision(
                 request=top_request,
@@ -384,20 +387,23 @@ async def resolve_binding(
         return BindingDecision(
             request=None,
             method="none",
-            status="unbound",
+            status="pending_binding",
             score=None,
             parsed=parsed,
             candidates=candidates,
-            needs_supplier_confirm=True,
+            needs_supplier_confirm=False,
         )
 
     llm_request, llm_conf, llm_price = await _resolve_with_llm(session, raw_text, candidates)
     if llm_request is not None:
-        logger.info(
-            "supplier_bind message supplier_id={} request_id={} method=llm score={}",
-            supplier.id,
-            llm_request.id,
-            llm_conf,
+        _log_binding(
+            supplier=supplier,
+            method="llm",
+            request_id=llm_request.id,
+            score=llm_conf,
+            candidate_count=len(candidates),
+            business_connection_id=business_connection_id,
+            bind_confidence=llm_conf,
         )
         return BindingDecision(
             request=llm_request,
@@ -409,19 +415,14 @@ async def resolve_binding(
             binding_price=llm_price,
         )
 
-    needs_confirm = _should_confirm_with_supplier(
-        message_attrs=message_attrs,
-        candidates=candidates,
-        scored=scored,
-    )
     return BindingDecision(
         request=None,
         method="none",
-        status="unbound",
+        status="pending_binding",
         score=None,
         parsed=parsed,
         candidates=candidates,
-        needs_supplier_confirm=needs_confirm,
+        needs_supplier_confirm=False,
     )
 
 

@@ -15,6 +15,7 @@ from loguru import logger
 from pyrogram.handlers import MessageHandler
 
 from app.config import get_settings
+from app.db.session import get_session_factory
 from app.logging_setup import setup_logging
 from app.mtproto.client_factory import create_client
 from app.mtproto.realtime import (
@@ -22,7 +23,6 @@ from app.mtproto.realtime import (
     _load_active_channel_ids,
     _reload_loop,
 )
-from app.db.session import get_session_factory
 from app.services.heartbeat_service import touch_runtime_heartbeat
 from app.worker.task_worker import run_task_poll_loop
 

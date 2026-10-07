@@ -53,7 +53,8 @@ async def health_details_route(
     session: AsyncSession = Depends(get_db),
     x_internal_token: str | None = Header(default=None),
 ) -> JSONResponse | dict[str, object]:
-    from app.services.ops_status_service import details_token_ok, health_details as build_details
+    from app.services.ops_status_service import details_token_ok
+    from app.services.ops_status_service import health_details as build_details
 
     if not details_token_ok(x_internal_token):
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})

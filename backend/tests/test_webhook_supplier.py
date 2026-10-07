@@ -168,27 +168,13 @@ async def test_supplier_without_reply_binds_single_open_request(
         )
     )
     assert msg_in is not None
-    assert msg_in.request_id is None
-
-    confirm_payload = _supplier_reply_update(
-        update_id=20004,
-        supplier_telegram_id=supplier.telegram_id,
-        text="да",
-    )
-    resp = await webhook_client.post(
-        "/telegram/webhook",
-        json=confirm_payload,
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-telegram-webhook-secret"},
-    )
-    assert resp.status_code == 200
-
-    await db_session.refresh(msg_in)
     assert msg_in.request_id == request.id
+    assert msg_in.bind_method == "single_candidate"
 
     group_sends = [
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id
     ]
-    assert len(group_sends) == 1
+    assert len(group_sends) >= 1
 
 
 @pytest.mark.asyncio

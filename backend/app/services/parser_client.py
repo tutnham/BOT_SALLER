@@ -285,17 +285,3 @@ async def fetch_parser_ready(
     if isinstance(payload, dict) and payload.get("status") == "ok":
         return True, payload
     return False, payload if isinstance(payload, dict) else {"status": "unknown"}
-
-
-async def fetch_parser_ready(
-    *,
-    http_client: httpx.AsyncClient | None = None,
-) -> tuple[bool, dict[str, Any]]:
-    """Short-timeout readiness probe for morning-price dependency status."""
-    try:
-        payload = await _request("GET", "/ready", http_client=http_client)
-    except ParserClientError:
-        return False, {"status": "unreachable"}
-    if isinstance(payload, dict) and payload.get("status") == "ok":
-        return True, payload
-    return False, payload if isinstance(payload, dict) else {"status": "unknown"}

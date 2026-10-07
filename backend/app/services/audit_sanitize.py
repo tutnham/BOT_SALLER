@@ -33,7 +33,7 @@ def sanitize_audit_state(data: dict[str, Any] | None) -> dict[str, Any] | None:
                 cleaned[key] = nested
         elif isinstance(value, list):
             cleaned[key] = [str(item)[:120] for item in value[:20]]
-        elif isinstance(value, (str, int, float, bool)) or value is None:
+        elif isinstance(value, str | int | float | bool) or value is None:
             if isinstance(value, str) and len(value) > 500:
                 cleaned[key] = value[:500]
             else:

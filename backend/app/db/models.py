@@ -294,6 +294,49 @@ class AdminDialog(Base):
     )
 
 
+class SupplierBindSessionStatus(str, enum.Enum):
+    pending = "pending"
+    resolved = "resolved"
+    ignored = "ignored"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
+class SupplierBindSession(Base):
+    """One bind session per ambiguous inbound supplier price message."""
+
+    __tablename__ = "supplier_bind_sessions"
+    __table_args__ = (
+        UniqueConstraint("message_in_id", name="uq_supplier_bind_sessions_message_in_id"),
+        Index("ix_supplier_bind_sessions_supplier_status", "supplier_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False
+    )
+    message_in_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("messages_in.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    business_connection_id: Mapped[str | None] = mapped_column(Text)
+    candidate_request_ids: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")
+    )
+    current_candidate_id: Mapped[int | None] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("'pending'"))
+    resolution_method: Mapped[str | None] = mapped_column(Text)
+    resolved_request_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("requests.id", ondelete="SET NULL")
+    )
+    resolved_by_telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class SupplierBindPrompt(Base):
     """Pending supplier confirmation for ambiguous price without Telegram reply."""
 
@@ -384,7 +427,21 @@ class Request(Base):
 class MessageOut(Base):
     __tablename__ = "messages_out"
     __table_args__ = (
-        UniqueConstraint("chat_id", "tg_message_id"),
+        Index(
+            "uq_messages_out_bot_route",
+            "chat_id",
+            "tg_message_id",
+            unique=True,
+            postgresql_where=sa_text("business_connection_id IS NULL"),
+        ),
+        Index(
+            "uq_messages_out_business_route",
+            "business_connection_id",
+            "chat_id",
+            "tg_message_id",
+            unique=True,
+            postgresql_where=sa_text("business_connection_id IS NOT NULL"),
+        ),
         CheckConstraint(
             "send_status IN ('pending', 'sent', 'failed')",
             name="ck_messages_out_send_status",
@@ -422,7 +479,21 @@ class MessageOut(Base):
 class MessageIn(Base):
     __tablename__ = "messages_in"
     __table_args__ = (
-        UniqueConstraint("chat_id", "tg_message_id"),
+        Index(
+            "uq_messages_in_bot_route",
+            "chat_id",
+            "tg_message_id",
+            unique=True,
+            postgresql_where=sa_text("business_connection_id IS NULL"),
+        ),
+        Index(
+            "uq_messages_in_business_route",
+            "business_connection_id",
+            "chat_id",
+            "tg_message_id",
+            unique=True,
+            postgresql_where=sa_text("business_connection_id IS NOT NULL"),
+        ),
         Index("ix_messages_in_request_id", "request_id"),
         Index("ix_messages_in_supplier_id", "supplier_id"),
     )

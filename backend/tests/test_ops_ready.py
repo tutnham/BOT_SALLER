@@ -10,8 +10,8 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db.models import AdminAuditLog, TelegramOutbox, WebhookInbox
 from app.services.dlq_service import ReplayNeedsConfirmation, replay_outbox
-from app.services.ops_status_service import sanitize_error
 from app.services.heartbeat_service import touch_heartbeat
+from app.services.ops_status_service import sanitize_error
 from app.services.retention_service import run_retention
 
 

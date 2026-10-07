@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.models import ParserPost, ParserStatus, ParserTask
 from app.db.revision import EXPECTED_ALEMBIC_REVISION
-from app.services.heartbeat_service import heartbeat_is_fresh, latest_runtime_heartbeat_at
+from app.services.heartbeat_service import (
+    heartbeat_is_fresh,
+    latest_runtime_heartbeat_at,
+)
 
 
 def details_token_ok(presented: str | None) -> bool:
