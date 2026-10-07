@@ -185,7 +185,7 @@ async def test_business_connection_id_change_deactivates_old(
 
 
 @pytest.mark.asyncio
-async def test_edited_and_deleted_business_updates_ignored(
+async def test_edited_and_deleted_business_updates_no_message_in(
     webhook_client: AsyncClient,
     webhook_headers: dict[str, str],
 ) -> None:
@@ -206,4 +206,4 @@ async def test_edited_and_deleted_business_updates_ignored(
         },
         headers=webhook_headers,
     )
-    assert deleted.json()["status"] == "ignored"
+    assert deleted.json()["status"] == "ok"

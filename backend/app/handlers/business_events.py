@@ -111,20 +111,174 @@ async def handle_business_connection(
     return "ok"
 
 
-async def handle_edited_business_message(payload: dict[str, Any]) -> str:
-    message_id = (payload or {}).get("message_id")
-    logger.info("edited_business_message ignored message_id={}", message_id)
-    return "ignored"
+async def handle_edited_business_message(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    *,
+    telegram: TelegramClientProtocol,
+) -> str:
+    from sqlalchemy import select
 
+    from app.db.models import MessageIn, Quote, Request
+    from app.parsers.price_parse import parse_price_from_text
+    from app.services.alert_service import notify_operators
+    from app.services.supplier_review_service import ensure_review_item_for_message
+    from app.services.supplier_correction_service import record_quote_correction
+    from app.services.quote_service import display_price_for_group
+    from app.templates.messages_ru import render_template
 
-async def handle_deleted_business_messages(payload: dict[str, Any]) -> str:
-    chat = (payload or {}).get("chat") or {}
-    logger.info(
-        "deleted_business_messages ignored chat_id={} count={}",
-        chat.get("id"),
-        len((payload or {}).get("message_ids") or []),
+    connection_id = payload.get("business_connection_id")
+    chat = payload.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = payload.get("message_id")
+    new_text = (payload.get("text") or payload.get("caption") or "").strip()
+    if connection_id is None or chat_id is None or message_id is None:
+        return "ignored"
+
+    message_in = await session.scalar(
+        select(MessageIn).where(
+            MessageIn.business_connection_id == str(connection_id),
+            MessageIn.chat_id == int(chat_id),
+            MessageIn.tg_message_id == int(message_id),
+        )
     )
-    return "ignored"
+    if message_in is None:
+        return "ignored"
+
+    previous = message_in.raw_text
+    message_in.raw_text_previous = previous
+    message_in.raw_text = new_text[:4000]
+    await session.flush()
+
+    if message_in.bind_status != "bound" or message_in.request_id is None:
+        await ensure_review_item_for_message(
+            session,
+            message_in=message_in,
+            conflict_reason="edited_message",
+        )
+        return "ok"
+
+    price_result = parse_price_from_text(new_text)
+    quote = await session.scalar(
+        select(Quote).where(
+            Quote.request_id == message_in.request_id,
+            Quote.supplier_id == message_in.supplier_id,
+        )
+    )
+    if quote is None or price_result.price is None:
+        await ensure_review_item_for_message(
+            session,
+            message_in=message_in,
+            conflict_reason="edited_bound_no_price",
+        )
+        return "ok"
+
+    if quote.price_initial == price_result.price:
+        return "ok"
+
+    old_price = quote.price_initial
+    old_final = display_price_for_group(quote)
+    request = await session.get(Request, message_in.request_id)
+    if request is None:
+        return "ignored"
+
+    await ensure_review_item_for_message(
+        session,
+        message_in=message_in,
+        conflict_reason="edited_price_change",
+    )
+    await record_quote_correction(
+        session,
+        quote_id=quote.id,
+        old_price=old_price,
+        new_price=price_result.price,
+        message_in_id=message_in.id,
+        reason="edit",
+    )
+    await notify_operators(
+        session,
+        render_template(
+            "supplier_price_corrected_employee",
+            request_id=request.id,
+            old_price=old_price,
+            new_price=price_result.price,
+            client_old=old_final,
+            client_new=old_final,
+        ),
+        telegram=telegram,
+    )
+    return "ok"
+
+
+async def handle_deleted_business_messages(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    *,
+    telegram: TelegramClientProtocol,
+) -> str:
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models import Deal, MessageIn, Quote
+    from app.services.alert_service import notify_operators
+    from app.templates.messages_ru import render_template
+
+    chat = payload.get("chat") or {}
+    chat_id = chat.get("id")
+    message_ids = payload.get("message_ids") or []
+    connection_id = payload.get("business_connection_id")
+    if chat_id is None:
+        return "ignored"
+
+    for message_id in message_ids:
+        stmt = select(MessageIn).where(
+            MessageIn.chat_id == int(chat_id),
+            MessageIn.tg_message_id == int(message_id),
+        )
+        if connection_id is not None:
+            stmt = stmt.where(MessageIn.business_connection_id == str(connection_id))
+        message_in = await session.scalar(stmt)
+        if message_in is None:
+            continue
+        message_in.deleted_at = datetime.now(timezone.utc)
+        if message_in.request_id is None:
+            continue
+        in_deal = await session.scalar(
+            select(Deal.id).where(Deal.request_id == message_in.request_id)
+        )
+        quote = await session.scalar(
+            select(Quote).where(
+                Quote.request_id == message_in.request_id,
+                Quote.supplier_id == message_in.supplier_id,
+            )
+        )
+        if in_deal is not None:
+            await notify_operators(
+                session,
+                render_template(
+                    "alert_unbound_supplier_message",
+                    supplier_label=str(message_in.supplier_id),
+                    supplier_id=message_in.supplier_id,
+                    raw_text=f"Удалено business-сообщение по заявке #{message_in.request_id}",
+                    candidates_block="—",
+                ),
+                telegram=telegram,
+            )
+        elif quote is not None:
+            await notify_operators(
+                session,
+                render_template(
+                    "alert_unbound_supplier_message",
+                    supplier_label=str(message_in.supplier_id),
+                    supplier_id=message_in.supplier_id,
+                    raw_text=f"Поставщик удалил сообщение по заявке #{message_in.request_id}",
+                    candidates_block="—",
+                ),
+                telegram=telegram,
+            )
+    await session.flush()
+    return "ok"
 
 
 async def _autobind_business_dm(

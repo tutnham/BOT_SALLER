@@ -127,6 +127,7 @@ async def test_unbound_supplier_reply_saves_null_request_and_stays_silent(
     assert dm_sends == []
 
 
+@pytest.mark.usefixtures("supplier_single_candidate_auto_bind")
 @pytest.mark.asyncio
 async def test_supplier_without_reply_binds_single_open_request(
     webhook_client: AsyncClient,
@@ -153,7 +154,7 @@ async def test_supplier_without_reply_binds_single_open_request(
     price_payload = _supplier_reply_update(
         update_id=20003,
         supplier_telegram_id=supplier.telegram_id,
-        text="В наличии 70000",
+        text="70000",
     )
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -169,7 +170,7 @@ async def test_supplier_without_reply_binds_single_open_request(
     )
     assert msg_in is not None
     assert msg_in.request_id == request.id
-    assert msg_in.bind_method == "single_candidate"
+    assert msg_in.bind_method in ("single_candidate", "single_bare_price")
 
     group_sends = [
         txt for cid, txt, *_ in mock_telegram.sent if cid == seed_group_chat_id

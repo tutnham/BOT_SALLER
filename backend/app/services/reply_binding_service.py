@@ -18,9 +18,12 @@ from app.llm.client import (
     validate_supplier_reply_binding,
 )
 from app.parsers.cache import get_cached, set_cached
+from app.parsers.price_parse import is_bare_full_price_only, parse_price_from_text
 from app.parsers.product_normalizer import (
     ProductAttrs,
+    attrs_compatible_for_single_candidate,
     attrs_match_score,
+    detect_product_contradictions,
     extract_product_attrs,
     normalize_product_text,
 )
@@ -53,6 +56,8 @@ class BindingDecision:
     binding_price: Decimal | None = None
     needs_supplier_confirm: bool = False
     bind_session_id: int | None = None
+    conflict_reason: str | None = None
+    price_parse: Any | None = None
 
 
 def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
@@ -77,7 +82,7 @@ def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
 
 
 def _has_product_identity(attrs: ProductAttrs) -> bool:
-    return bool(attrs.model or attrs.family or attrs.number)
+    return bool(attrs.model or attrs.family or attrs.number or attrs.variant or attrs.sku)
 
 
 def find_clear_text_match(
@@ -109,7 +114,7 @@ def find_clear_text_match(
     return None
 
 
-def is_neutral_or_noise(raw_text: str) -> str | None:
+def is_neutral_or_noise(raw_text: str, *, check_price_list: bool = True) -> str | None:
     text = (raw_text or "").strip()
     if not text:
         return "empty"
@@ -117,11 +122,52 @@ def is_neutral_or_noise(raw_text: str) -> str | None:
         return "neutral"
     if _URL_RE.search(text) and not _PRICE_LINE_RE.search(text):
         return "advertisement"
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    price_lines = sum(1 for line in lines if _PRICE_LINE_RE.search(line))
-    if len(lines) >= 3 and price_lines >= 3:
-        return "price_list"
+    if check_price_list:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        price_lines = sum(1 for line in lines if _PRICE_LINE_RE.search(line))
+        if len(lines) >= 3 and price_lines >= 3:
+            return "price_list"
     return None
+
+
+def _price_from_multiline_text(raw_text: str) -> tuple[ParsedSupplierReply, Any]:
+    """When whole message has ambiguous multi-price, use last line with a price."""
+    from app.parsers.price_parse import PriceParseResult
+
+    parsed = parse_supplier_reply(raw_text)
+    price_parse = parse_price_from_text(raw_text)
+    if price_parse.price is not None:
+        return (
+            parsed.model_copy(
+                update={
+                    "price": price_parse.price,
+                    "confidence": max(parsed.confidence, price_parse.confidence),
+                }
+            ),
+            price_parse,
+        )
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return parsed, price_parse
+    for line in reversed(lines):
+        line_result = parse_price_from_text(line)
+        if line_result.price is None:
+            continue
+        line_parsed = parse_supplier_reply(line)
+        merged = line_parsed.model_copy(
+            update={
+                "price": line_result.price,
+                "confidence": max(line_parsed.confidence, line_result.confidence),
+            }
+        )
+        return merged, line_result
+    return parsed, price_parse
+
+
+def is_generic_price_list(text: str) -> bool:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    price_lines = sum(1 for line in lines if _PRICE_LINE_RE.search(line))
+    return len(lines) >= 3 and price_lines >= 3
 
 
 async def _resolve_with_llm(
@@ -211,7 +257,7 @@ async def resolve_binding(
     business_connection_id: str | None,
     for_rebind: bool = False,
 ) -> BindingDecision:
-    parsed = parse_supplier_reply(raw_text)
+    parsed, price_parse = _price_from_multiline_text(raw_text)
     message_attrs = extract_product_attrs(raw_text)
 
     if reply_request is not None:
@@ -229,9 +275,10 @@ async def resolve_binding(
             status="bound",
             score=None,
             parsed=parsed,
+            price_parse=price_parse,
         )
 
-    ignored = is_neutral_or_noise(raw_text)
+    ignored = is_neutral_or_noise(raw_text, check_price_list=False)
     if ignored is not None:
         return BindingDecision(
             request=None,
@@ -259,12 +306,33 @@ async def resolve_binding(
         business_connection_id=business_connection_id,
     )
     if not candidates:
+        if is_generic_price_list(raw_text):
+            return BindingDecision(
+                request=None,
+                method="none",
+                status="ignored",
+                score=None,
+                parsed=parsed,
+                ignored_reason="price_list",
+            )
         return BindingDecision(
             request=None,
             method="none",
             status="unbound",
             score=None,
             parsed=parsed,
+        )
+
+    if is_generic_price_list(raw_text) and not get_settings().supplier_batch_reply_enabled:
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="pending_binding",
+            score=None,
+            parsed=parsed,
+            candidates=candidates,
+            needs_supplier_confirm=False,
+            price_parse=price_parse,
         )
 
     explicit_id = parse_explicit_request_id(raw_text)
@@ -299,10 +367,30 @@ async def resolve_binding(
     if len(candidates) == 1:
         settings = get_settings()
         only = candidates[0]
-        if settings.supplier_single_candidate_auto_bind_enabled or for_rebind:
+        conflicts = detect_product_contradictions(message_attrs, only.normalized_json)
+        bare_price = is_bare_full_price_only(raw_text, parsed.price)
+        has_product = _has_product_identity(message_attrs)
+        safe_single = not conflicts and (
+            bare_price
+            or (has_product and attrs_compatible_for_single_candidate(message_attrs, only.normalized_json))
+        )
+        if conflicts:
+            return BindingDecision(
+                request=None,
+                method="none",
+                status="pending_binding",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+                needs_supplier_confirm=False,
+                conflict_reason="product_mismatch",
+                price_parse=price_parse,
+            )
+        bind_method = "single_bare_price" if bare_price and not has_product else "single_candidate"
+        if safe_single and (settings.supplier_single_candidate_auto_bind_enabled or for_rebind):
             _log_binding(
                 supplier=supplier,
-                method="single_candidate",
+                method=bind_method,
                 request_id=only.id,
                 score=None,
                 candidate_count=1,
@@ -310,16 +398,18 @@ async def resolve_binding(
             )
             return BindingDecision(
                 request=only,
-                method="single_candidate",
+                method=bind_method,
                 status="bound",
                 score=None,
                 parsed=parsed,
                 candidates=candidates,
+                price_parse=price_parse,
             )
         logger.info(
-            "supplier_bind_shadow single_candidate supplier_id={} would_request_id={}",
+            "supplier_bind_shadow single_candidate supplier_id={} would_request_id={} safe={}",
             supplier.id,
             only.id,
+            safe_single,
         )
         return BindingDecision(
             request=None,
@@ -328,7 +418,8 @@ async def resolve_binding(
             score=None,
             parsed=parsed,
             candidates=candidates,
-            needs_supplier_confirm=True,
+            needs_supplier_confirm=safe_single,
+            price_parse=price_parse,
         )
 
     text_match = find_clear_text_match(raw_text, message_attrs, candidates)

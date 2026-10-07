@@ -15,7 +15,12 @@ from app.services.deal_service import SupplierNotFoundError, create_deal
 from app.services.recheck_service import RECHECK_HOURS_DEFAULT, schedule_recheck
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
-from app.telegram.home_buttons import EMP_MY_REQUESTS, EMP_NEW_REQUEST, EMPLOYEE_BUTTONS
+from app.telegram.home_buttons import (
+    EMP_MY_REQUESTS,
+    EMP_NEW_REQUEST,
+    EMP_PENDING_REPLIES,
+    EMPLOYEE_BUTTONS,
+)
 from app.telegram.keyboards import CallbackData, button, inline_keyboard
 from app.templates.messages_ru import format_supplier_label, render_template
 
@@ -96,6 +101,22 @@ async def handle_employee_home_text(
             employee_id=employee_id,
             chat_id=chat_id,
             telegram=telegram,
+        )
+        return True
+
+    if text == EMP_PENDING_REPLIES:
+        from app.handlers.employee_inbox import send_pending_inbox
+        from app.utils.whitelist import get_employee_by_telegram_id
+
+        employee = await get_employee_by_telegram_id(session, telegram_id)
+        if employee is None:
+            return True
+        await send_pending_inbox(
+            session,
+            chat_id=chat_id,
+            telegram=telegram,
+            employee=employee,
+            is_owner=False,
         )
         return True
 
