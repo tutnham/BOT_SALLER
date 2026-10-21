@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Capture metadata
         run: |
           echo "commit_sha=${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
