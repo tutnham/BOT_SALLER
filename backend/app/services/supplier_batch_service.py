@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +61,33 @@ async def process_batch_supplier_reply(
         line_attrs = extract_product_attrs(line)
         match = find_clear_text_match(line, line_attrs, candidates)
         price_result = parse_price_from_text(line)
+        jev_decision = None
+        matched_by_jev = False
+        if match is None and settings.jev_enabled:
+            from app.services.jev_supplier_classifier import classify_with_jev
+
+            jev_decision = await classify_with_jev(
+                session,
+                supplier=supplier,
+                business_connection_id=business_connection_id,
+                chat_id=chat_id,
+                message_id=message_in.tg_message_id,
+                message_text=line,
+                candidates=candidates,
+                line_no=line_no,
+                message_in_id=message_in.id,
+            )
+            if (
+                not settings.jev_shadow_mode
+                and jev_decision.action.value == "auto_bind"
+                and jev_decision.selected_candidate_id is not None
+                and price_result.price is not None
+            ):
+                match = next(
+                    (item for item in candidates if item.id == jev_decision.selected_candidate_id),
+                    None,
+                )
+                matched_by_jev = match is not None
         if match is not None and price_result.price is not None:
             parsed = parse_supplier_reply(line)
             quote = await upsert_quote(
@@ -93,18 +121,35 @@ async def process_batch_supplier_reply(
             )
             item.bind_status = "resolved"
             item.request_id = match.id
-            item.bind_method = "product_match"
+            item.bind_method = "jev" if matched_by_jev else "product_match"
             handled = True
         else:
-            await ensure_review_item_for_message(
+            reason = "ambiguous_line"
+            if jev_decision is not None and not settings.jev_shadow_mode:
+                reason = jev_decision.reason_code
+            item = await ensure_review_item_for_message(
                 session,
                 message_in=message_in,
                 line_no=line_no,
                 raw_line=line,
-                conflict_reason="ambiguous_line",
+                conflict_reason=reason,
                 candidate_request_ids=[c.id for c in candidates],
             )
+            _stamp_jev_metadata(item, jev_decision)
             handled = True
     message_in.bind_status = "bound" if handled else message_in.bind_status
     await session.flush()
     return "ok" if handled else "skip"
+
+
+def _stamp_jev_metadata(item: Any, jev_decision: Any | None) -> None:
+    if jev_decision is None:
+        return
+    payload = dict(item.parsed_json or {})
+    payload["jev"] = {
+        "reason_code": jev_decision.reason_code,
+        "action": jev_decision.action.value,
+        "message_class": jev_decision.message_class.value,
+        "confidence": str(jev_decision.confidence),
+    }
+    item.parsed_json = payload

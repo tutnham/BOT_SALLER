@@ -33,8 +33,8 @@ from app.services.explicit_request_parser import (
     parse_batch_line_code,
     parse_explicit_request_id,
 )
-from app.services.supplier_rfq_batch_service import find_request_by_line_code
 from app.services.route_identity import route_type_label
+from app.services.supplier_rfq_batch_service import find_request_by_line_code
 from app.services.telemetry import record_supplier_binding_decision
 
 _NEUTRAL_RE = re.compile(
@@ -62,6 +62,7 @@ class BindingDecision:
     bind_session_id: int | None = None
     conflict_reason: str | None = None
     price_parse: Any | None = None
+    jev: Any | None = None
 
 
 def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
@@ -136,7 +137,6 @@ def is_neutral_or_noise(raw_text: str, *, check_price_list: bool = True) -> str 
 
 def _price_from_multiline_text(raw_text: str) -> tuple[ParsedSupplierReply, Any]:
     """When whole message has ambiguous multi-price, use last line with a price."""
-    from app.parsers.price_parse import PriceParseResult
 
     parsed = parse_supplier_reply(raw_text)
     price_parse = parse_price_from_text(raw_text)
@@ -304,6 +304,45 @@ async def resolve_binding(
         )
 
     if parsed.price is None:
+        jev_decision = None
+        if get_settings().jev_enabled:
+            early_candidates = await load_eligible_candidates(
+                session,
+                supplier=supplier,
+                chat_id=chat_id,
+                business_connection_id=business_connection_id,
+            )
+            jev_decision = await _maybe_classify_with_jev(
+                session,
+                supplier=supplier,
+                message=message,
+                raw_text=raw_text,
+                candidates=early_candidates,
+                chat_id=chat_id,
+                business_connection_id=business_connection_id,
+            )
+            if jev_decision is not None and not get_settings().jev_shadow_mode:
+                if jev_decision.action.value == "ignore":
+                    return BindingDecision(
+                        request=None,
+                        method="none",
+                        status="ignored",
+                        score=None,
+                        parsed=parsed,
+                        ignored_reason=jev_decision.reason_code,
+                        candidates=early_candidates,
+                        jev=jev_decision,
+                    )
+                return BindingDecision(
+                    request=None,
+                    method="none",
+                    status="pending_binding",
+                    score=None,
+                    parsed=parsed,
+                    candidates=early_candidates,
+                    conflict_reason=jev_decision.reason_code,
+                    jev=jev_decision,
+                )
         return BindingDecision(
             request=None,
             method="none",
@@ -311,6 +350,7 @@ async def resolve_binding(
             score=None,
             parsed=parsed,
             ignored_reason="no_price",
+            jev=jev_decision,
         )
 
     candidates = await load_eligible_candidates(
@@ -440,22 +480,23 @@ async def resolve_binding(
                 candidates=candidates,
                 price_parse=price_parse,
             )
-        logger.info(
-            "supplier_bind_shadow single_candidate supplier_id={} would_request_id={} safe={}",
-            supplier.id,
-            only.id,
-            safe_single,
-        )
-        return BindingDecision(
-            request=None,
-            method="none",
-            status="pending_binding",
-            score=None,
-            parsed=parsed,
-            candidates=candidates,
-            needs_supplier_confirm=safe_single,
-            price_parse=price_parse,
-        )
+        if not settings.jev_enabled:
+            logger.info(
+                "supplier_bind_shadow single_candidate supplier_id={} would_request_id={} safe={}",
+                supplier.id,
+                only.id,
+                safe_single,
+            )
+            return BindingDecision(
+                request=None,
+                method="none",
+                status="pending_binding",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+                needs_supplier_confirm=safe_single,
+                price_parse=price_parse,
+            )
 
     text_match = find_clear_text_match(raw_text, message_attrs, candidates)
     if text_match is not None:
@@ -509,6 +550,26 @@ async def resolve_binding(
                 candidates=candidates,
             )
 
+    jev_decision = await _maybe_classify_with_jev(
+        session,
+        supplier=supplier,
+        message=message,
+        raw_text=raw_text,
+        candidates=candidates,
+        chat_id=chat_id,
+        business_connection_id=business_connection_id,
+    )
+    jev_gate = _binding_from_jev(
+        jev_decision,
+        supplier=supplier,
+        candidates=candidates,
+        parsed=parsed,
+        price_parse=price_parse,
+        business_connection_id=business_connection_id,
+    )
+    if jev_gate is not None:
+        return jev_gate
+
     if not _has_product_identity(message_attrs):
         return BindingDecision(
             request=None,
@@ -518,6 +579,7 @@ async def resolve_binding(
             parsed=parsed,
             candidates=candidates,
             needs_supplier_confirm=False,
+            jev=jev_decision,
         )
 
     llm_request, llm_conf, llm_price = await _resolve_with_llm(session, raw_text, candidates)
@@ -539,6 +601,7 @@ async def resolve_binding(
             parsed=merge_llm_price(parsed, llm_price),
             candidates=candidates,
             binding_price=llm_price,
+            jev=jev_decision,
         )
 
     return BindingDecision(
@@ -549,6 +612,7 @@ async def resolve_binding(
         parsed=parsed,
         candidates=candidates,
         needs_supplier_confirm=False,
+        jev=jev_decision,
     )
 
 
@@ -556,3 +620,109 @@ def merge_llm_price(parsed: ParsedSupplierReply, binding_price: Decimal | None) 
     if parsed.price is not None or binding_price is None:
         return parsed
     return parsed.model_copy(update={"price": binding_price, "confidence": max(parsed.confidence, 0.85)})
+
+
+async def _maybe_classify_with_jev(
+    session: AsyncSession,
+    *,
+    supplier: Supplier,
+    message: dict[str, Any],
+    raw_text: str,
+    candidates: list[Request],
+    chat_id: int,
+    business_connection_id: str | None,
+) -> Any | None:
+    settings = get_settings()
+    if not settings.jev_enabled or not candidates:
+        return None
+    from app.services.jev_supplier_classifier import classify_with_jev
+
+    try:
+        return await classify_with_jev(
+            session,
+            supplier=supplier,
+            business_connection_id=business_connection_id,
+            chat_id=chat_id,
+            message_id=int(message.get("message_id") or 0),
+            message_text=raw_text,
+            candidates=candidates,
+        )
+    except Exception:
+        logger.exception("jev binding step failed closed")
+        return None
+
+
+def _binding_from_jev(
+    jev_decision: Any | None,
+    *,
+    supplier: Supplier,
+    candidates: list[Request],
+    parsed: ParsedSupplierReply,
+    price_parse: Any,
+    business_connection_id: str | None,
+) -> BindingDecision | None:
+    """Apply a Jev decision only outside shadow mode."""
+    if jev_decision is None or get_settings().jev_shadow_mode:
+        return None
+    action = jev_decision.action.value
+    if action == "auto_bind" and jev_decision.selected_candidate_id is not None:
+        chosen = next(
+            (item for item in candidates if item.id == jev_decision.selected_candidate_id),
+            None,
+        )
+        if chosen is None or getattr(price_parse, "price", None) is None:
+            return BindingDecision(
+                request=None,
+                method="none",
+                status="pending_binding",
+                score=None,
+                parsed=parsed,
+                candidates=candidates,
+                conflict_reason="jev_unknown_candidate",
+                price_parse=price_parse,
+                jev=jev_decision,
+            )
+        _log_binding(
+            supplier=supplier,
+            method="jev",
+            request_id=chosen.id,
+            score=float(jev_decision.confidence),
+            candidate_count=len(candidates),
+            business_connection_id=business_connection_id,
+            bind_confidence=float(jev_decision.confidence),
+        )
+        return BindingDecision(
+            request=chosen,
+            method="jev",
+            status="bound",
+            score=float(jev_decision.confidence),
+            parsed=parsed,
+            candidates=candidates,
+            price_parse=price_parse,
+            jev=jev_decision,
+        )
+    if action == "ignore":
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="ignored",
+            score=None,
+            parsed=parsed,
+            ignored_reason=jev_decision.reason_code,
+            jev=jev_decision,
+        )
+    if action == "review" or (
+        action == "fallback" and not get_settings().jev_fallback_to_existing_llm
+    ):
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="pending_binding",
+            score=None,
+            parsed=parsed,
+            candidates=candidates,
+            conflict_reason=jev_decision.reason_code,
+            price_parse=price_parse,
+            jev=jev_decision,
+        )
+    return None

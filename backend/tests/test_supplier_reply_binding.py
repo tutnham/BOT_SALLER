@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.usefixtures("supplier_single_candidate_auto_bind")
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +15,9 @@ from app.handlers.supplier_messages import (
 from app.llm.client import set_llm_client
 from app.services.request_service import create_request
 from tests.conftest import MockLLMClient, MockTelegramClient
+
+pytestmark = pytest.mark.usefixtures("supplier_single_candidate_auto_bind")
+
 
 
 def _supplier_message(supplier_telegram_id: int, message_id: int, text: str) -> dict:

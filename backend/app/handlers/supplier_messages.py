@@ -351,6 +351,36 @@ async def process_bound_supplier_reply(
     return quote
 
 
+async def _persist_supplier_jev_decision(
+    session: AsyncSession,
+    *,
+    decision: BindingDecision,
+    message_in_id: int,
+    supplier_id: int,
+) -> None:
+    from app.services.jev_decision_store import persist_jev_decision
+    from app.services.telemetry import record_jev_shadow_disagreement
+
+    settings = get_settings()
+    jev = decision.jev
+    if jev is None:
+        return
+    actual = decision.status
+    if settings.jev_shadow_mode and jev.action.value == "auto_bind":
+        bound_id = decision.request.id if decision.request is not None else None
+        if bound_id != jev.selected_candidate_id:
+            record_jev_shadow_disagreement()
+    await persist_jev_decision(
+        session,
+        decision=jev,
+        message_in_id=message_in_id,
+        supplier_id=supplier_id,
+        line_no=1,
+        shadow_mode=settings.jev_shadow_mode,
+        actual_action="shadow" if settings.jev_shadow_mode else actual,
+    )
+
+
 async def _notify_unbound(
     session: AsyncSession,
     *,
@@ -529,6 +559,14 @@ async def handle_reply(
         )
         return "ok"
 
+    if decision.jev is not None:
+        await _persist_supplier_jev_decision(
+            session,
+            decision=decision,
+            message_in_id=message_in.id,
+            supplier_id=supplier.id,
+        )
+
     if get_settings().supplier_batch_reply_enabled and is_multiline_rfq_candidate(raw_text):
         batch_result = await process_batch_supplier_reply(
             session,
@@ -567,12 +605,21 @@ async def handle_reply(
             return "ok"
         from app.services.supplier_review_service import ensure_review_item_for_message
 
-        await ensure_review_item_for_message(
+        item = await ensure_review_item_for_message(
             session,
             message_in=message_in,
             conflict_reason=decision.conflict_reason,
             candidate_request_ids=[r.id for r in candidates],
         )
+        if decision.jev is not None:
+            payload = dict(item.parsed_json or {})
+            payload["jev"] = {
+                "reason_code": decision.jev.reason_code,
+                "action": decision.jev.action.value,
+                "message_class": decision.jev.message_class.value,
+                "confidence": str(decision.jev.confidence),
+            }
+            item.parsed_json = payload
         if decision.status == "pending_binding" or decision.needs_supplier_confirm:
             record_supplier_binding_pending()
             bind_session = await create_bind_session(
