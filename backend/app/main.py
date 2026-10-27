@@ -46,6 +46,7 @@ def _configure_logging() -> None:
             settings.telegram_webhook_secret_token,
             settings.llm_api_key,
             settings.parser_api_token,
+            settings.jev_api_key,
         ]
         secret_values = [s for s in secrets if s]
 
@@ -93,6 +94,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if scheduler is not None:
         # Wait so in-flight jobs can finish before engine disposal.
         scheduler.shutdown(wait=True)
+    from app.integrations.jev.client import close_jev_client
+
+    await close_jev_client()
     await dispose_engine()
     logger.info("Zakupki-Bot backend stopped")
 

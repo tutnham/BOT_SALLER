@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,8 +67,16 @@ async def send_pending_inbox(
         candidates = (item.parsed_json or {}).get("candidate_request_ids") or []
         candidates_line = ", ".join(f"#{cid}" for cid in candidates[:8]) or "—"
         age_minutes = int(
-            (datetime.now(timezone.utc) - item.created_at).total_seconds() // 60
+            (datetime.now(UTC) - item.created_at).total_seconds() // 60
         )
+        jev_meta = (item.parsed_json or {}).get("jev") or {}
+        reason = str(jev_meta.get("reason_code") or "")
+        if is_owner and jev_meta.get("confidence"):
+            jev_line = f"\nJev: {reason} confidence {jev_meta.get('confidence')}"
+        elif reason:
+            jev_line = f"\nПричина: {reason}"
+        else:
+            jev_line = ""
         text = render_template(
             "supplier_review_card",
             supplier_name=supplier_name,
@@ -78,6 +86,7 @@ async def send_pending_inbox(
             conflict_line=item.conflict_reason or "—",
             candidates_line=candidates_line,
             age_minutes=age_minutes,
+            jev_line=jev_line,
         )
         rows: list[list[dict[str, Any]]] = []
         for request_id in candidates[:6]:
@@ -127,6 +136,14 @@ async def handle_inbox_callback(
         if item is None:
             return "ok"
         await resolve_item(session, item, request_id=None, bind_method="ignored")
+        from app.services.jev_decision_store import record_employee_review
+
+        await record_employee_review(
+            session,
+            message_in_id=item.message_in_id,
+            outcome="ignored",
+            employee_id=employee.id if employee is not None else None,
+        )
         await telegram.send_message(chat_id, render_template("bind_ignored_ok"))
         return "ok"
 
@@ -156,6 +173,14 @@ async def handle_inbox_callback(
             telegram=telegram,
         )
         await resolve_item(session, item, request_id=request_id, bind_method="employee")
+        from app.services.jev_decision_store import record_employee_review
+
+        await record_employee_review(
+            session,
+            message_in_id=message_in.id,
+            outcome="bound",
+            employee_id=employee.id if employee is not None else None,
+        )
         await telegram.send_message(
             chat_id,
             render_template("bind_ok", request_id=request_id),

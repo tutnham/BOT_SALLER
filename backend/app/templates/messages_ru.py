@@ -56,6 +56,7 @@ TEMPLATES: dict[str, str] = {
         "Конфликт: {conflict_line}\n"
         "Заявки: {candidates_line}\n"
         "Возраст: {age_minutes} мин"
+        "{jev_line}"
     ),
     "supplier_price_corrected_employee": (
         "Заявка #{request_id}: поставщик исправил цену {old_price} → {new_price} "

@@ -42,6 +42,7 @@ def sanitize_error(value: str | None, *, limit: int = 200) -> str | None:
         settings.parser_api_token,
         settings.health_details_token,
         settings.llm_api_key,
+        settings.jev_api_key,
     ):
         if secret:
             cleaned = cleaned.replace(secret, "[redacted]")
@@ -87,6 +88,20 @@ async def readiness(session: AsyncSession) -> tuple[bool, dict[str, object]]:
         "db": "ok" if db_ok else "error",
         "schema": revision if schema_ok else "mismatch",
         "reasons": reasons,
+    }
+
+
+def _jev_details() -> dict[str, object]:
+    from app.services.telemetry import jev_health_snapshot
+
+    settings = get_settings()
+    snapshot = jev_health_snapshot()
+    return {
+        "enabled": settings.jev_enabled,
+        "shadow_mode": settings.jev_shadow_mode,
+        "configured": bool((settings.jev_api_key or "").strip()) and bool(settings.jev_model),
+        "model": settings.jev_model if settings.jev_enabled else None,
+        **snapshot,
     }
 
 
@@ -151,4 +166,5 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
             for row in runs
         ],
         "commit_sha": get_settings().commit_sha,
+        "jev": _jev_details(),
     }

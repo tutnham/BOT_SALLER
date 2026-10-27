@@ -38,12 +38,20 @@ async def test_webhook_success_increments_total_once(client, metrics_registry) -
 
 @pytest.mark.asyncio
 async def test_duplicate_webhook_still_counts_accepted_request(
-    client, db_session, metrics_registry
+    client, engine, metrics_registry
 ) -> None:
-    from app.utils.idempotency import mark_update_processed
+    from sqlalchemy import text
 
-    await mark_update_processed(db_session, 880002)
-    await db_session.commit()
+    # Seed the idempotency row on a dedicated connection with a real COMMIT:
+    # the db_session fixture holds an outer transaction open (commit there only
+    # releases a savepoint), and the webhook handler runs on its own session —
+    # an uncommitted conflicting row would block its INSERT until the 2-minute
+    # statement timeout (Supabase pooler) cancels it.
+    async with engine.connect() as ext:
+        await ext.execute(text("DELETE FROM update_log"))
+        await ext.execute(text("INSERT INTO update_log (tg_update_id) VALUES (880002)"))
+        await ext.commit()
+
     before = _counter_value(metrics_registry, "zakupki_webhook_total")
     response = await client.post(
         "/telegram/webhook",
