@@ -65,4 +65,5 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "acceptance: end-to-end scenarios with a real database and fake Telegram, LLM, and parser",
+    "staging: manual real-provider checks, excluded from normal CI",
 ]
