@@ -95,6 +95,66 @@ def test_settings_llm_billing_reminder_day_bounds(
         )
 
 
+def _base_settings() -> dict[str, str]:
+    return {
+        "telegram_bot_token": "tok",
+        "database_url": "postgresql+asyncpg://u:p@localhost/db",
+        "webhook_secret": "sec",
+        "telegram_webhook_secret_token": "sec-telegram",
+    }
+
+
+def test_jev_defaults_are_shadow_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    s = Settings(_env_file=None, **_base_settings())  # type: ignore[arg-type]
+    assert s.jev_enabled is False
+    assert s.jev_shadow_mode is True
+    assert s.jev_model == "jev-1.14.0"
+    assert s.jev_api_base_url == "https://api.typesafe.ai"
+    assert s.jev_price_threshold == pytest.approx(s.jev_price_threshold)
+    assert str(s.jev_bind_margin) == "0.20"
+
+
+def test_jev_enabled_requires_key_and_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, jev_enabled=True, **_base_settings())  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,  # type: ignore[arg-type]
+            jev_enabled=True,
+            jev_api_key="secret-key",
+            jev_api_base_url="http://api.typesafe.ai",
+            jev_model="jev-1.14.0",
+            **_base_settings(),
+        )
+    s = Settings(
+        _env_file=None,  # type: ignore[arg-type]
+        jev_enabled=True,
+        jev_api_key="secret-key",
+        jev_api_base_url="http://127.0.0.1:9",
+        jev_model="jev-1.14.0",
+        **_base_settings(),
+    )
+    assert s.jev_api_key == "secret-key"
+
+
+def test_jev_thresholds_must_be_unit_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,  # type: ignore[arg-type]
+            jev_price_threshold="1.2",
+            **_base_settings(),
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,  # type: ignore[arg-type]
+            jev_timeout_seconds=0,
+            **_base_settings(),
+        )
+
+
 def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")

@@ -3,8 +3,9 @@
 import re
 from decimal import Decimal
 from functools import lru_cache
+from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _TELEGRAM_SECRET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
@@ -140,6 +141,22 @@ class Settings(BaseSettings):
     # Morning price LLM parse concurrency cap
     morning_price_llm_concurrency: int = 4
 
+    # Jev / TypeSafe supplier-message classifier. Not a value of LLM_PROVIDER.
+    jev_enabled: bool = False
+    jev_shadow_mode: bool = True
+    jev_api_key: str | None = None
+    jev_api_base_url: str = "https://api.typesafe.ai"
+    jev_model: str = "jev-1.14.0"
+    jev_timeout_seconds: float = 3.0
+    jev_max_retries: int = 1
+    jev_max_candidates: int = 20
+    jev_cache_ttl_seconds: int = 86400
+    jev_price_threshold: Decimal = Decimal("0.95")
+    jev_bind_threshold: Decimal = Decimal("0.95")
+    jev_bind_margin: Decimal = Decimal("0.20")
+    jev_store_raw_payloads: bool = False
+    jev_fallback_to_existing_llm: bool = True
+
     @staticmethod
     def _parse_csv_chat_ids(raw: str | None) -> list[int]:
         raw = (raw or "").strip()
@@ -175,6 +192,56 @@ class Settings(BaseSettings):
         if self.admin_alert_chat_id is not None:
             return [self.admin_alert_chat_id]
         return []
+
+    @field_validator("jev_price_threshold", "jev_bind_threshold", "jev_bind_margin", mode="before")
+    @classmethod
+    def _coerce_jev_unit(cls, value: object) -> object:
+        if value is None or value == "":
+            return value
+        return Decimal(str(value))
+
+    @field_validator("jev_price_threshold", "jev_bind_threshold", "jev_bind_margin")
+    @classmethod
+    def _validate_jev_unit(cls, value: Decimal) -> Decimal:
+        if value < 0 or value > 1:
+            raise ValueError("Jev thresholds and bind margin must be between 0 and 1")
+        return value
+
+    @field_validator("jev_timeout_seconds")
+    @classmethod
+    def _validate_jev_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("JEV_TIMEOUT_SECONDS must be positive")
+        return value
+
+    @field_validator("jev_max_retries")
+    @classmethod
+    def _validate_jev_retries(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("JEV_MAX_RETRIES must be >= 0")
+        return value
+
+    @field_validator("jev_max_candidates", "jev_cache_ttl_seconds")
+    @classmethod
+    def _validate_jev_positive_ints(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Jev candidate cap and cache TTL must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_jev_when_enabled(self) -> "Settings":
+        if not self.jev_enabled:
+            return self
+        if not (self.jev_api_key or "").strip():
+            raise ValueError("JEV_API_KEY is required when JEV_ENABLED=true")
+        if not (self.jev_model or "").strip():
+            raise ValueError("JEV_MODEL must not be empty when JEV_ENABLED=true")
+        base = (self.jev_api_base_url or "").strip()
+        parsed = urlparse(base)
+        local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+        if parsed.scheme != "https" and not local_http:
+            raise ValueError("JEV_API_BASE_URL must use HTTPS")
+        return self
 
     @field_validator("supplier_price_min_rub", "supplier_price_max_rub", mode="before")
     @classmethod
