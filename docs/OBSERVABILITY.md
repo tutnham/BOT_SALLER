@@ -12,7 +12,13 @@
 | `GET /health/details` | Те же данные плюс мёртвая очередь и последние cron. Заголовок `X-Internal-Token` равен `HEALTH_DETAILS_TOKEN` или `WEBHOOK_SECRET`. |
 | `GET /metrics` | Текст Prometheus. Заголовок `X-Metrics-Token` = `METRICS_TOKEN`. Без токена HTTP 401. |
 
-Счётчики и гистограммы webhook/HTTP/LLM/cron — **process-local** (не суммируются между `backend`, worker и scheduler). Очереди, heartbeat age и morning-price last success берутся из Postgres при каждом scrape.
+`/ready` не зависит от Jev: при недоступности TypeSafe бот остаётся ready и уходит в детерминированный путь, существующий LLM или разбор сотрудником.
+
+`/health/details` добавляет блок `jev`: enabled, shadow_mode, configured, last success/failure, error code, rolling latency, failure count. Платный запрос в Jev на health не выполняется.
+
+Метрики Jev (bounded labels result, error_code, shadow_mode, model, action): `jev_requests_total`, `jev_errors_total`, `jev_timeouts_total`, `jev_rate_limits_total`, `jev_invalid_responses_total`, `jev_latency_seconds`, `jev_decisions_total`, `jev_shadow_disagreements_total`, `jev_auto_bind_candidates_total`, `jev_review_total`, `jev_cache_hits_total`.
+
+В лейблах нет supplier id, chat id и текста сообщения.
 
 `/ready` требует heartbeat worker, когда `WEBHOOK_ASYNC_ENABLED=true`. Heartbeat scheduler требуется, когда `SCHEDULER_ENABLED=true` или `SCHEDULER_EXPECTED=true`. Свежесть — `HEARTBEAT_STALE_SECONDS` (по умолчанию 90).
 
