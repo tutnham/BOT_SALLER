@@ -129,6 +129,65 @@ class _MetricBundle:
             labelnames=("original_method",),
             registry=registry,
         )
+        self.jev_requests_total = Counter(
+            "jev_requests_total",
+            "Jev provider calls",
+            labelnames=("result",),
+            registry=registry,
+        )
+        self.jev_errors_total = Counter(
+            "jev_errors_total",
+            "Jev provider errors",
+            labelnames=("error_code",),
+            registry=registry,
+        )
+        self.jev_timeouts_total = Counter(
+            "jev_timeouts_total",
+            "Jev timeouts",
+            registry=registry,
+        )
+        self.jev_rate_limits_total = Counter(
+            "jev_rate_limits_total",
+            "Jev rate limits",
+            registry=registry,
+        )
+        self.jev_invalid_responses_total = Counter(
+            "jev_invalid_responses_total",
+            "Jev invalid responses",
+            registry=registry,
+        )
+        self.jev_latency_seconds = Histogram(
+            "jev_latency_seconds",
+            "Jev call latency",
+            labelnames=("model",),
+            registry=registry,
+        )
+        self.jev_decisions_total = Counter(
+            "jev_decisions_total",
+            "Jev decisions after application policy",
+            labelnames=("action", "shadow_mode"),
+            registry=registry,
+        )
+        self.jev_shadow_disagreements_total = Counter(
+            "jev_shadow_disagreements_total",
+            "Shadow decisions that differ from the production outcome",
+            registry=registry,
+        )
+        self.jev_auto_bind_candidates_total = Counter(
+            "jev_auto_bind_candidates_total",
+            "Decisions that passed the auto-bind policy",
+            registry=registry,
+        )
+        self.jev_review_total = Counter(
+            "jev_review_total",
+            "Decisions sent to employee review",
+            registry=registry,
+        )
+        self.jev_cache_hits_total = Counter(
+            "jev_cache_hits_total",
+            "Reused Jev decisions",
+            registry=registry,
+        )
 
 
 def get_registry() -> CollectorRegistry:
@@ -246,6 +305,95 @@ def record_supplier_binding_expired() -> None:
 
 def record_supplier_binding_rebind(original_method: str) -> None:
     get_metrics().supplier_binding_rebind_total.labels(original_method=original_method).inc()
+
+
+def record_jev_request(result: str) -> None:
+    get_metrics().jev_requests_total.labels(result=result).inc()
+
+
+def record_jev_error(error_code: str) -> None:
+    metrics = get_metrics()
+    metrics.jev_errors_total.labels(error_code=error_code).inc()
+    if error_code == "jev_timeout":
+        metrics.jev_timeouts_total.inc()
+    elif error_code == "jev_rate_limited":
+        metrics.jev_rate_limits_total.inc()
+    elif error_code == "jev_invalid_response":
+        metrics.jev_invalid_responses_total.inc()
+    note_jev_failure(error_code)
+
+
+def record_jev_latency(seconds: float) -> None:
+    get_metrics().jev_latency_seconds.labels(model=_jev_model_label()).observe(seconds)
+    note_jev_latency(seconds)
+
+
+def record_jev_decision(*, action: str, shadow_mode: bool) -> None:
+    get_metrics().jev_decisions_total.labels(
+        action=action,
+        shadow_mode="true" if shadow_mode else "false",
+    ).inc()
+
+
+def record_jev_shadow_disagreement() -> None:
+    get_metrics().jev_shadow_disagreements_total.inc()
+
+
+def record_jev_auto_bind_candidate() -> None:
+    get_metrics().jev_auto_bind_candidates_total.inc()
+
+
+def record_jev_review() -> None:
+    get_metrics().jev_review_total.inc()
+
+
+def record_jev_cache_hit() -> None:
+    get_metrics().jev_cache_hits_total.inc()
+
+
+def _jev_model_label() -> str:
+    try:
+        from app.config import get_settings
+
+        model = get_settings().jev_model or "unset"
+    except Exception:
+        model = "unset"
+    return model[:64]
+
+
+_jev_last_success: float | None = None
+_jev_last_failure: float | None = None
+_jev_last_error_code: str | None = None
+_jev_latencies: list[float] = []
+_jev_failure_count: int = 0
+
+
+def note_jev_success() -> None:
+    global _jev_last_success
+    _jev_last_success = time.time()
+
+
+def note_jev_failure(error_code: str) -> None:
+    global _jev_last_failure, _jev_last_error_code, _jev_failure_count
+    _jev_last_failure = time.time()
+    _jev_last_error_code = error_code
+    _jev_failure_count += 1
+
+
+def note_jev_latency(seconds: float) -> None:
+    _jev_latencies.append(seconds)
+    del _jev_latencies[:-50]
+
+
+def jev_health_snapshot() -> dict[str, object]:
+    rolling = sum(_jev_latencies) / len(_jev_latencies) if _jev_latencies else None
+    return {
+        "last_success_unixtime": _jev_last_success,
+        "last_failure_unixtime": _jev_last_failure,
+        "last_error_code": _jev_last_error_code,
+        "rolling_latency_seconds": rolling,
+        "rolling_failure_count": _jev_failure_count,
+    }
 
 
 @contextmanager
