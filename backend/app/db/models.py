@@ -1013,6 +1013,80 @@ class ParseCache(Base):
     )
 
 
+class SupplierAiDecision(Base):
+    """Jev/TypeSafe classification audit. Not a quote or a deal."""
+
+    __tablename__ = "supplier_ai_decisions"
+    __table_args__ = (
+        Index("ix_supplier_ai_decisions_message_in", "message_in_id"),
+        Index("ix_supplier_ai_decisions_provider_created", "provider", "created_at"),
+        Index("ix_supplier_ai_decisions_shadow_action", "shadow_mode", "actual_action"),
+        Index(
+            "uq_supplier_ai_decisions_cache",
+            "message_in_id",
+            "line_no",
+            "input_hash",
+            "candidate_set_hash",
+            "model",
+            "prompt_version",
+            "schema_version",
+            unique=True,
+            postgresql_where=sa_text("error_code IS NULL AND superseded_at IS NULL"),
+        ),
+        Index(
+            "ix_supplier_ai_decisions_review_pending",
+            "review_outcome",
+            postgresql_where=sa_text("review_outcome IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_in_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("messages_in.id", ondelete="CASCADE"), nullable=False
+    )
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id"), nullable=False
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    input_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_set_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    message_class: Mapped[str | None] = mapped_column(Text)
+    price_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    selected_request_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("requests.id", ondelete="SET NULL")
+    )
+    selected_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    second_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    recommended_action: Mapped[str | None] = mapped_column(Text)
+    actual_action: Mapped[str | None] = mapped_column(Text)
+    reason_code: Mapped[str | None] = mapped_column(Text)
+    shadow_mode: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    is_current: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("employees.id", ondelete="SET NULL")
+    )
+    review_outcome: Mapped[str | None] = mapped_column(Text)
+
+    message_in: Mapped[MessageIn] = relationship()
+    supplier: Mapped[Supplier] = relationship()
+
+
 class ReportCache(Base):
     __tablename__ = "report_cache"
 

@@ -30,17 +30,17 @@ def test_parent_revision_is_defined() -> None:
     assert revision.down_revision is not None
 
 
-def test_head_is_deal_purchase_audit() -> None:
+def test_head_is_supplier_ai_decisions() -> None:
     from app.db.revision import EXPECTED_ALEMBIC_REVISION
 
     head = _script_dir().get_current_head()
-    assert head == "0026_deal_purchase_audit"
+    assert head == "0027_supplier_ai_decisions"
     assert EXPECTED_ALEMBIC_REVISION == head
 
 
 def test_batch_revisions_follow_0021() -> None:
     script = _script_dir()
-    rev = script.get_revision("0026_deal_purchase_audit")
+    rev = script.get_revision("0027_supplier_ai_decisions")
     chain: list[str] = []
     while rev is not None:
         chain.append(rev.revision)
@@ -50,6 +50,7 @@ def test_batch_revisions_follow_0021() -> None:
         assert isinstance(down, str)
         rev = script.get_revision(down)
     assert chain == [
+        "0027_supplier_ai_decisions",
         "0026_deal_purchase_audit",
         "0025_request_price_selections",
         "0024_daily_sku_prices",

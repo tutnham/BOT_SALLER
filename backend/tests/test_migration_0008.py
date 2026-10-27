@@ -45,8 +45,12 @@ def _alembic_cfg(url: str) -> Config:
 
 
 def _can_create_database() -> bool:
-    admin_url, _test_url = _urls()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        admin_url, _test_url = _urls()
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    except ModuleNotFoundError:
+        # Sync driver (psycopg) not installed in this environment — skip.
+        return False
     try:
         with engine.connect() as conn:
             conn.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}"'))
@@ -54,6 +58,9 @@ def _can_create_database() -> bool:
             conn.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}"'))
         return True
     except ProgrammingError:
+        return False
+    except OSError:
+        # DB unreachable in this environment (no local Postgres) — skip.
         return False
     finally:
         engine.dispose()
