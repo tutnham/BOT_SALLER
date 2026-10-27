@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from loguru import logger
@@ -122,9 +123,9 @@ async def handle_edited_business_message(
     from app.db.models import MessageIn, Quote, Request
     from app.parsers.price_parse import parse_price_from_text
     from app.services.alert_service import notify_operators
-    from app.services.supplier_review_service import ensure_review_item_for_message
-    from app.services.supplier_correction_service import record_quote_correction
     from app.services.quote_service import display_price_for_group
+    from app.services.supplier_correction_service import record_quote_correction
+    from app.services.supplier_review_service import ensure_review_item_for_message
     from app.templates.messages_ru import render_template
 
     connection_id = payload.get("business_connection_id")
@@ -149,6 +150,38 @@ async def handle_edited_business_message(
     message_in.raw_text_previous = previous
     message_in.raw_text = new_text[:4000]
     await session.flush()
+
+    from app.config import get_settings
+    from app.services.jev_decision_store import supersede_decisions_for_message
+
+    await supersede_decisions_for_message(session, message_in.id)
+    if get_settings().jev_enabled:
+        from app.db.models import Supplier
+        from app.services.candidate_loader_service import load_eligible_candidates
+        from app.services.jev_supplier_classifier import classify_with_jev
+
+        supplier = await session.get(Supplier, message_in.supplier_id)
+        if supplier is not None:
+            candidates = await load_eligible_candidates(
+                session,
+                supplier=supplier,
+                chat_id=int(chat_id),
+                business_connection_id=str(connection_id),
+                # Edited message is usually a price correction on an already
+                # quoted request — without this flag candidates would be empty
+                # and the new text would never be reclassified.
+                include_quoted_ask_for_correction=True,
+            )
+            await classify_with_jev(
+                session,
+                supplier=supplier,
+                business_connection_id=str(connection_id),
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                message_text=new_text,
+                candidates=candidates,
+                message_in_id=message_in.id,
+            )
 
     if message_in.bind_status != "bound" or message_in.request_id is None:
         await ensure_review_item_for_message(
@@ -216,7 +249,7 @@ async def handle_deleted_business_messages(
     *,
     telegram: TelegramClientProtocol,
 ) -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -241,7 +274,7 @@ async def handle_deleted_business_messages(
         message_in = await session.scalar(stmt)
         if message_in is None:
             continue
-        message_in.deleted_at = datetime.now(timezone.utc)
+        message_in.deleted_at = datetime.now(UTC)
         if message_in.request_id is None:
             continue
         in_deal = await session.scalar(
