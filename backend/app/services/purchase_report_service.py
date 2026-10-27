@@ -185,7 +185,7 @@ async def build_purchase_report_csv(
                 deal.client_unit_price or "",
                 client_total,
                 margin if margin is not None else "",
-                _csv_cell(employee_name),
+                _csv_cell(employee_name or ""),
                 deal.source_quote_id or "",
                 _csv_cell(deal.override_reason or ""),
             ]

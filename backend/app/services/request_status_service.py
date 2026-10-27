@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MessageIn, MessageOut, Quote, Request, SupplierMessageItem
+from app.db.models import MessageIn, MessageOut, Quote, SupplierMessageItem
 
 
 @dataclass(frozen=True)

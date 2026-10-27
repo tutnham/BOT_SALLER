@@ -135,24 +135,24 @@ def _collect_explicit_price_candidates(
 
     for match in _PRICE_WITH_CURRENCY.finditer(text):
         token = match.group(1)
-        value = _parse_decimal_token(token)
-        if value is None:
+        currency_value = _parse_decimal_token(token)
+        if currency_value is None:
             continue
-        found.append((value, match.group(0).strip(), "currency_marked", token))
+        found.append((currency_value, match.group(0).strip(), "currency_marked", token))
 
     for match in _PRICE_SPACED.finditer(text):
         token = match.group(1)
-        value = _parse_decimal_token(token)
-        if value is not None and value >= 1000:
-            found.append((value, match.group(0).strip(), "spaced_thousands", token))
+        spaced_value = _parse_decimal_token(token)
+        if spaced_value is not None and spaced_value >= 1000:
+            found.append((spaced_value, match.group(0).strip(), "spaced_thousands", token))
 
     for match in _PRICE_BARE.finditer(text):
         token = match.group(1)
         if _STORAGE_TOKEN.search(token):
             continue
-        value = _parse_decimal_token(token)
-        if value is not None:
-            found.append((value, match.group(0).strip(), "full_integer", token))
+        bare_value = _parse_decimal_token(token)
+        if bare_value is not None:
+            found.append((bare_value, match.group(0).strip(), "full_integer", token))
 
     return found
 

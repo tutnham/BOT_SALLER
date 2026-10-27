@@ -20,6 +20,7 @@ from app.services.bargain_service import (
     SupplierUnavailableError,
     start_bargain,
 )
+from app.services.batch_request_service import create_draft_batch, should_use_batch_flow
 from app.services.deal_service import (
     DealAlreadyExistsError,
     RequestNotFoundError,
@@ -36,7 +37,6 @@ from app.services.recheck_service import (
     InvalidRecheckHoursError,
     schedule_recheck,
 )
-from app.services.batch_request_service import create_draft_batch, should_use_batch_flow
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import format_supplier_label, render_template
@@ -875,8 +875,8 @@ async def handle_employee_message(
         return "ok"
 
     if should_use_batch_flow(text_req):
-        from app.handlers.batch_callbacks import send_batch_preview
         from app.db.unit_of_work import commit_or_flush
+        from app.handlers.batch_callbacks import send_batch_preview
 
         batch = await create_draft_batch(
             session,

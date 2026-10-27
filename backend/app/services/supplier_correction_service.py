@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -42,7 +42,7 @@ async def classify_supplier_followup(
     if window is None:
         return "new"
 
-    since = datetime.now(timezone.utc) - timedelta(minutes=window)
+    since = datetime.now(UTC) - timedelta(minutes=window)
     prior = await session.scalar(
         select(MessageIn)
         .where(

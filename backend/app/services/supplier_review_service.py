@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.db.models import (
     Employee,
     MessageIn,
     Request,
-    Supplier,
     SupplierMessageItem,
 )
 from app.parsers.price_parse import parse_price_from_text
@@ -122,7 +119,8 @@ async def lock_pending_item(
         .options(joinedload(SupplierMessageItem.message_in))
         .with_for_update()
     )
-    return await session.scalar(stmt)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def resolve_item(
@@ -135,7 +133,7 @@ async def resolve_item(
     item.request_id = request_id
     item.bind_status = "resolved"
     item.bind_method = bind_method
-    item.resolved_at = datetime.now(timezone.utc)
+    item.resolved_at = datetime.now(UTC)
     await session.flush()
 
 
