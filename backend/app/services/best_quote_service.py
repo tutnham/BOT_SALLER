@@ -84,7 +84,7 @@ async def select_best_quote_for_request(
             continue
         price = quote.price_bargain or quote.price_initial
         assert price is not None
-        observed = quote.updated_at or quote.created_at
+        observed = quote.observed_at or quote.created_at
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=UTC)
         eligible.append((quote, Decimal(str(price)), observed))

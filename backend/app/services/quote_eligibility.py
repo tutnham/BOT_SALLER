@@ -47,7 +47,7 @@ def is_quote_eligible_for_selection(
         return False, "price_out_of_sanity"
 
     age_cutoff = moment - timedelta(hours=settings.supplier_reply_max_age_hours)
-    observed = quote.updated_at or quote.created_at
+    observed = quote.observed_at or quote.created_at
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     if observed < age_cutoff:

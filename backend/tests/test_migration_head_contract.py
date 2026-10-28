@@ -34,13 +34,13 @@ def test_head_is_supplier_ai_decisions() -> None:
     from app.db.revision import EXPECTED_ALEMBIC_REVISION
 
     head = _script_dir().get_current_head()
-    assert head == "0027_supplier_ai_decisions"
+    assert head == "0028_price_publication"
     assert EXPECTED_ALEMBIC_REVISION == head
 
 
 def test_batch_revisions_follow_0021() -> None:
     script = _script_dir()
-    rev = script.get_revision("0027_supplier_ai_decisions")
+    rev = script.get_revision("0028_price_publication")
     chain: list[str] = []
     while rev is not None:
         chain.append(rev.revision)
@@ -50,6 +50,7 @@ def test_batch_revisions_follow_0021() -> None:
         assert isinstance(down, str)
         rev = script.get_revision(down)
     assert chain == [
+        "0028_price_publication",
         "0027_supplier_ai_decisions",
         "0026_deal_purchase_audit",
         "0025_request_price_selections",

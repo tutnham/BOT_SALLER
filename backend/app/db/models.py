@@ -719,6 +719,9 @@ class Quote(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -811,6 +814,18 @@ class RequestPriceSelection(Base):
     selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
     selected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("employees.id", ondelete="SET NULL")
+    )
+    publication_reason: Mapped[str | None] = mapped_column(Text)
+    telegram_outbox_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("telegram_outbox.id", ondelete="SET NULL")
+    )
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("request_price_selections.id", ondelete="SET NULL")
     )
 
     request: Mapped[Request] = relationship(back_populates="price_selections")
