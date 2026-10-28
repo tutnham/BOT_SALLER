@@ -671,6 +671,13 @@ async def _handle_status(
         return "ok"
 
     deal = request.deals[0] if request.deals else None
+    from app.services.request_card_service import (
+        render_request_card,
+        request_card_keyboard,
+    )
+
+    card = await render_request_card(session, request)
+    quotes_block = card + "\n" + _format_quotes_block(request.quotes)
     await telegram.send_message(
         chat_id,
         render_template(
@@ -678,9 +685,10 @@ async def _handle_status(
             request_id=request.id,
             status=request.status.value,
             source_text=request.source_text,
-            quotes_block=_format_quotes_block(request.quotes),
+            quotes_block=quotes_block,
             deal_block=_format_deal_block(deal),
         ),
+        reply_markup=request_card_keyboard(request),
     )
     return "ok"
 

@@ -298,6 +298,20 @@ async def _route_callback(
             session, callback_query=callback_query, telegram=telegram
         )
 
+    if cd.namespace == "reprice":
+        from app.handlers.reprice_callbacks import handle_reprice_callback
+
+        return await handle_reprice_callback(
+            session, callback_query, telegram=telegram
+        )
+
+    if cd.namespace == "reqstatus":
+        from app.handlers.request_status_callbacks import handle_request_status_callback
+
+        return await handle_request_status_callback(
+            session, callback_query, telegram=telegram
+        )
+
     return "ignored"
 
 
