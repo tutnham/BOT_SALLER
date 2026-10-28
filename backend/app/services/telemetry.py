@@ -188,6 +188,36 @@ class _MetricBundle:
             "Reused Jev decisions",
             registry=registry,
         )
+        self.client_price_publications_total = Counter(
+            "client_price_publications_total",
+            "Client prices published",
+            labelnames=("reason",),
+            registry=registry,
+        )
+        self.same_day_price_reuse_total = Counter(
+            "same_day_price_reuse_total", "Same-day prices reused", registry=registry
+        )
+        self.prev_day_price_rejected_total = Counter(
+            "prev_day_price_rejected_total",
+            "Prices rejected because they are from a previous business day",
+            registry=registry,
+        )
+        self.duplicate_publications_prevented_total = Counter(
+            "duplicate_publications_prevented_total",
+            "Publication attempts blocked by the idempotency key",
+            registry=registry,
+        )
+        self.late_quotes_total = Counter(
+            "late_quotes_total", "Quotes received after publication", registry=registry
+        )
+        self.better_late_quotes_total = Counter(
+            "better_late_quotes_total",
+            "Late quotes cheaper than the published price",
+            registry=registry,
+        )
+        self.manual_reprice_total = Counter(
+            "manual_reprice_total", "Employee confirmed reprices", registry=registry
+        )
 
 
 def get_registry() -> CollectorRegistry:
@@ -349,6 +379,34 @@ def record_jev_review() -> None:
 
 def record_jev_cache_hit() -> None:
     get_metrics().jev_cache_hits_total.inc()
+
+
+def record_client_price_publication(reason: str) -> None:
+    get_metrics().client_price_publications_total.labels(reason=reason).inc()
+
+
+def record_same_day_price_reuse() -> None:
+    get_metrics().same_day_price_reuse_total.inc()
+
+
+def record_prev_day_price_rejected() -> None:
+    get_metrics().prev_day_price_rejected_total.inc()
+
+
+def record_duplicate_publication_prevented() -> None:
+    get_metrics().duplicate_publications_prevented_total.inc()
+
+
+def record_late_quote() -> None:
+    get_metrics().late_quotes_total.inc()
+
+
+def record_better_late_quote() -> None:
+    get_metrics().better_late_quotes_total.inc()
+
+
+def record_manual_reprice() -> None:
+    get_metrics().manual_reprice_total.inc()
 
 
 def _jev_model_label() -> str:

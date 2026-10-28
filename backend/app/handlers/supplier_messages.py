@@ -324,7 +324,8 @@ async def process_bound_supplier_reply(
         )
 
     if followup != "duplicate" and request.batch_id is None:
-        await telegram.send_message(request.group_chat_id, forward_text)
+        if not get_settings().auto_publish_first_valid_price:
+            await telegram.send_message(request.group_chat_id, forward_text)
 
     if (
         quote is not None

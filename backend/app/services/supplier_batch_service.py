@@ -101,7 +101,7 @@ async def process_batch_supplier_reply(
                 source=QuoteSource.regex,
                 confidence=max(parsed.confidence, price_result.confidence),
             )
-            if quote is not None:
+            if quote is not None and not get_settings().auto_publish_first_valid_price:
                 await telegram.send_message(
                     match.group_chat_id,
                     render_template(

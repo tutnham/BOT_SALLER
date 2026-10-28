@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -10,22 +10,30 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import DailySkuPrice, Quote, Request, RequestBatch, RequestPriceState
+from app.db.models import (
+    DailySkuPrice,
+    Quote,
+    QuoteSource,
+    Request,
+    RequestBatch,
+    RequestPriceState,
+    Supplier,
+)
 from app.parsers.canonical_sku import NORMALIZER_VERSION
 from app.services.best_quote_service import (
     select_best_quote_for_request,
     upsert_provisional_selection,
 )
 from app.services.markup_service import apply_markup, load_rules
+from app.services.quote_eligibility import is_quote_eligible_for_selection
+from app.utils.business_time import get_business_day_bounds
 
 
 def business_date_start(now: datetime | None = None) -> datetime:
     settings = get_settings()
-    tz = ZoneInfo(settings.tz)
     moment = now or datetime.now(UTC)
-    local = moment.astimezone(tz)
-    start_local = datetime.combine(local.date(), time.min, tzinfo=tz)
-    return start_local.astimezone(UTC)
+    start, _next = get_business_day_bounds(moment, settings.tz)
+    return start
 
 
 def business_date_only(now: datetime | None = None) -> date:
@@ -71,7 +79,7 @@ async def upsert_daily_from_quote(
         existing.client_unit_price = client_price
         existing.available = quote.available
         existing.available_qty = quote.qty
-        existing.observed_at = moment
+        existing.observed_at = quote.observed_at or moment
         existing.expires_at = expires
         existing.invalidated_at = None
         existing.selection_version = existing.selection_version + 1
@@ -87,7 +95,7 @@ async def upsert_daily_from_quote(
         client_unit_price=client_price,
         available=quote.available,
         available_qty=quote.qty,
-        observed_at=moment,
+        observed_at=quote.observed_at or moment,
         expires_at=expires,
         normalizer_version=NORMALIZER_VERSION,
     )
@@ -118,7 +126,45 @@ async def get_fresh_daily_price(
         return None
     if row.expires_at is not None and row.expires_at < moment:
         return None
+    if not await _daily_source_quote_eligible(session, row, now=moment):
+        return None
     return row
+
+
+async def _daily_source_quote_eligible(
+    session: AsyncSession,
+    row: DailySkuPrice,
+    *,
+    now: datetime,
+) -> bool:
+    """The projection is reusable only while its source quote stays eligible today."""
+    if row.source_quote_id is None:
+        return False
+    quote = await session.get(Quote, row.source_quote_id)
+    if quote is None:
+        return False
+    request = await session.get(Request, quote.request_id)
+    supplier = await session.get(Supplier, quote.supplier_id)
+    if request is None or supplier is None:
+        return False
+
+    settings = get_settings()
+    day_start, next_day_start = get_business_day_bounds(now, settings.tz)
+    observed = quote.observed_at or quote.created_at
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    if not (day_start <= observed < next_day_start):
+        return False
+    if quote.source not in (QuoteSource.manual, QuoteSource.operator_corrected):
+        if (quote.confidence if quote.confidence is not None else 1.0) < settings.confidence_threshold:
+            return False
+    if request.normalizer_version and request.normalizer_version != row.normalizer_version:
+        return False
+
+    eligible, _reason = is_quote_eligible_for_selection(
+        quote, request, supplier, now=now, canonical_sku_key=row.canonical_sku_key
+    )
+    return eligible
 
 
 async def apply_known_daily_prices_for_batch(
@@ -138,6 +184,11 @@ async def apply_known_daily_prices_for_batch(
             continue
         request.price_state = RequestPriceState.known_today
         applied += 1
+        from app.services.first_price_publication_service import (
+            publish_first_valid_price,
+        )
+
+        await publish_first_valid_price(session, request_id=request.id, trigger="known_today")
     batch.items_priced = applied
     await session.flush()
     return applied

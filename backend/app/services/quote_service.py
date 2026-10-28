@@ -107,6 +107,9 @@ async def upsert_quote(
     }
     if price is not None:
         update_values["price_bargain" if bargain else "price_initial"] = price
+        # A new supplier price statement is a new observation; markup-only
+        # updates must not refresh observed_at.
+        update_values["observed_at"] = func.now()
     if qty is not None:
         update_values["qty"] = qty
     if available is not None:
@@ -149,8 +152,18 @@ async def upsert_quote(
         if request is not None:
             try:
                 from app.services.daily_sku_price_service import on_quote_upserted
+                from app.services.first_price_publication_service import (
+                    publish_first_valid_price,
+                )
 
                 await on_quote_upserted(session, quote=quote, request=request)
+                published_now = await publish_first_valid_price(
+                    session, request_id=request.id, trigger="first_quote"
+                )
+                if not published_now and get_settings().auto_publish_first_valid_price:
+                    from app.services.reprice_service import notify_better_late_price
+
+                    await notify_better_late_price(session, request_id=request.id)
             except Exception:
                 from loguru import logger
 

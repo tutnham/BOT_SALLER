@@ -53,7 +53,7 @@ def test_settings_loads_required_and_defaults(monkeypatch: pytest.MonkeyPatch) -
     assert s.daily_price_reuse_enabled is True
     assert s.daily_price_max_age_minutes == 720
     assert s.quote_collection_window_minutes == 60
-    assert s.auto_publish_client_prices is False
+    assert s.auto_publish_first_valid_price is False
 
 
 def test_settings_reject_invalid_telegram_secret_token(

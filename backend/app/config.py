@@ -52,13 +52,18 @@ class Settings(BaseSettings):
     quote_collection_window_minutes: int = 60
     quote_min_valid_responses: int = 1
     auto_finalize_when_all_responded: bool = True
-    auto_publish_client_prices: bool = False
+    auto_publish_first_valid_price: bool = False
+    client_price_publication_policy: str = "first_valid_today"
+    continue_collecting_after_publication: bool = True
+    notify_employee_on_better_late_price: bool = True
     supplier_single_candidate_auto_bind_enabled: bool = False
     supplier_bind_buttons_enabled: bool = False
     # Ask supplier "which request is this price for?" (confirm / ambiguous). Off: silent pending + operator inbox.
     supplier_bind_ask_enabled: bool = False
     suppliers_without_categories_policy: str = "skip_and_notify"
     tz: str = "Europe/Moscow"
+    # CSV of telegram ids provisioned as owners by scripts/ensure_owners.py.
+    bootstrap_owner_ids: str = ""
     # Used for NL synonym @mention gating in groups (Phase 5). Optional.
     telegram_bot_username: str | None = None
     # Public HTTPS URL for setWebhook (ops); not required at runtime.

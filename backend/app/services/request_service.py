@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageKind, Request, RequestStatus
+from app.db.models import MessageKind, Request, RequestPriceState, RequestStatus
 from app.db.unit_of_work import commit_or_flush
 from app.llm.client import (
     LLMProviderError,
@@ -17,6 +17,11 @@ from app.llm.client import (
     validate_normalized_request_payload,
 )
 from app.parsers.cache import get_cached, set_cached
+from app.parsers.canonical_sku import (
+    NORMALIZER_VERSION,
+    build_canonical_sku_key,
+    parse_batch_line,
+)
 from app.parsers.request_normalizer import parse_request_text
 from app.services.alert_service import notify_operators
 from app.services.product_classifier import resolve_product_category, split_positions
@@ -138,6 +143,26 @@ async def build_normalized_json(
     category = await resolve_product_category(session, source_text)
     normalized["category"] = category
     return normalized
+
+
+async def _reuse_known_today_price(session: AsyncSession, request: Request) -> bool:
+    """Skip RFQ when an eligible same-day price already exists for the SKU."""
+    if not request.canonical_sku_key:
+        return False
+    from app.services.daily_sku_price_service import get_fresh_daily_price
+
+    daily = await get_fresh_daily_price(session, canonical_sku_key=request.canonical_sku_key)
+    if daily is None:
+        return False
+    request.price_state = RequestPriceState.known_today
+    await session.flush()
+    from app.services.telemetry import record_same_day_price_reuse
+
+    record_same_day_price_reuse()
+    from app.services.first_price_publication_service import publish_first_valid_price
+
+    await publish_first_valid_price(session, request_id=request.id, trigger="known_today")
+    return True
 
 
 async def _broadcast_request(
@@ -268,11 +293,14 @@ async def create_request(
     for segment in segments:
         normalized_json = await build_normalized_json(session, segment)
         category = str(normalized_json.get("category") or "unknown")
+        sku_key = build_canonical_sku_key(parse_batch_line(segment))
         request = Request(
             group_chat_id=group_chat_id,
             employee_id=employee_id,
             source_text=segment,
             normalized_json=normalized_json,
+            canonical_sku_key=sku_key,
+            normalizer_version=NORMALIZER_VERSION if sku_key else None,
             status=RequestStatus.open,
         )
         session.add(request)
@@ -283,6 +311,9 @@ async def create_request(
 
     for request in created:
         category = str((request.normalized_json or {}).get("category") or "unknown")
+        reused = await _reuse_known_today_price(session, request)
+        if reused:
+            continue
         sent_count, failed_lines = await _broadcast_request(
             session,
             request=request,
