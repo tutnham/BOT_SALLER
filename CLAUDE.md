@@ -27,6 +27,7 @@ This repository houses a dual-service architecture designed to automate hardware
 2. **Strict LLM Constraints:**
    - **No Financial Calculations or Decision Making:** LLMs are restricted strictly to structured text extraction (JSON mode with Pydantic validation) and HTML formatting (Source [6]). The bot may deterministically select the lowest eligible quote for client pricing; it must not auto-confirm a purchase (`Deal`).
    - **Jev is not LLM_PROVIDER:** TypeSafe Jev (`JEV_*`) may only classify whether a supplier message is a price and which supplied candidate it refers to. Application code applies thresholds. Jev must not calculate prices, markup, best quote, or deals. Default is disabled; shadow mode must not change binding. Runbook: `docs/JEV_RUNBOOK.md`.
+ - **Client price publication:** the first valid same-day price is published once via the outbox when `AUTO_PUBLISH_FIRST_VALID_PRICE=true` (`docs/PRICE_PUBLICATION_RUNBOOK.md`). Markup stays in `markup_service`; the client text is a fixed template.
    - **No Competitor Price Leakage:** Supplier bargaining templates must NEVER include or reveal competitor prices (Source [6]).
    - **Confidence Threshold:** Any LLM response with `confidence < CONFIDENCE_THRESHOLD` (default 0.75) must fall back to raw human text without automated quote creation (Source [6]).
 
