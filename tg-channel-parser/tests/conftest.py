@@ -67,9 +67,11 @@ def make_message(
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """ASGI client with stubbed DB dependency (no real Postgres)."""
     from app.api.main import app
+    from app.db.revision import EXPECTED_ALEMBIC_REVISION
 
     posts_store: list[Any] = []
     channels_store: list[Any] = []
+    runtime_store: list[Any] = []
 
     class _Result:
         def __init__(self, rows: list[Any]) -> None:
@@ -77,6 +79,9 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
         def scalars(self) -> SimpleNamespace:
             return SimpleNamespace(all=lambda: list(self._rows))
+
+        def scalar_one(self) -> Any:
+            return self._rows[0] if self._rows else 0
 
         def scalar_one_or_none(self) -> Any:
             return self._rows[0] if self._rows else None
@@ -88,11 +93,20 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
         async def execute(self, stmt: Any) -> _Result:
             sql = str(stmt)
-            if "parser_channels" in sql.lower() or "ParserChannel" in sql:
+            sql_lower = sql.lower()
+            if "alembic_version" in sql_lower:
+                return _Result([EXPECTED_ALEMBIC_REVISION])
+            if "parser_runtime_heartbeats" in sql_lower:
+                return _Result(list(runtime_store[-1:]))
+            if "parser_channels" in sql_lower or "ParserChannel" in sql:
                 return _Result(self.channels)
-            if "parser_posts" in sql.lower() or "ParserPost" in sql:
+            if "parser_posts" in sql_lower or "ParserPost" in sql:
                 rows = list(self.posts)
                 return _Result(rows)
+            if "count(" in sql_lower:
+                return _Result([0])
+            if "min(" in sql_lower or "max(" in sql_lower:
+                return _Result([])
             return _Result([])
 
         async def commit(self) -> None:
@@ -115,6 +129,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         # attach stores for tests
         ac.posts_store = posts_store  # type: ignore[attr-defined]
         ac.channels_store = channels_store  # type: ignore[attr-defined]
+        ac.runtime_store = runtime_store  # type: ignore[attr-defined]
         yield ac
 
     app.dependency_overrides.clear()

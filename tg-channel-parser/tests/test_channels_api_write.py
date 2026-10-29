@@ -141,6 +141,67 @@ async def test_delete_channel_deactivates(client: AsyncClient, fake_session: Any
 
 
 @pytest.mark.asyncio
+async def test_create_duplicate_pending_channel_returns_409(
+    client: AsyncClient, fake_session: Any
+) -> None:
+    """A second pending channel with the same @username hits the unique index -> 409."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+    original_flush = session.flush
+    # Emulate the partial unique index on pending usernames: only channels
+    # flushed in previous requests count as "already registered".
+    registered: dict[str, int] = {}
+
+    async def flush_with_unique_pending() -> None:
+        for channel in session.channels:
+            if channel.username and channel.status == ParserChannelStatus.pending:
+                key = channel.username.lower()
+                owner = registered.get(key)
+                if owner is not None and owner != id(channel):
+                    raise IntegrityError(
+                        "INSERT INTO parser_channels", {}, Exception("duplicate key")
+                    )
+        await original_flush()
+        for channel in session.channels:
+            if channel.username and channel.status == ParserChannelStatus.pending:
+                registered[channel.username.lower()] = id(channel)
+
+    session.flush = flush_with_unique_pending
+    session._rollback_calls = 0
+
+    async def rollback() -> None:
+        session._rollback_calls += 1
+
+    session.rollback = rollback
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        first = await client.post(
+            "/channels",
+            json={"handle": "@supplier_prices"},
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert first.status_code == 202
+
+        second = await client.post(
+            "/channels",
+            json={"handle": "@Supplier_Prices"},
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert second.status_code == 409
+        assert second.json()["detail"] == "pending_channel_username_exists"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_create_channel_requires_auth(client: AsyncClient) -> None:
     response = await client.post("/channels", json={"handle": "@supplier_prices"})
     assert response.status_code == 401

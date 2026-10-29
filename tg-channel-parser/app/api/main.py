@@ -38,27 +38,30 @@ async def live() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# NOTE: annotate as Response and always return JSONResponse — FastAPI 0.142+
+# rejects ``JSONResponse | dict`` unions when generating the response model,
+# and mypy strict forbids missing annotations.
 @app.get("/ready")
-async def ready(session: AsyncSession = Depends(get_db)) -> JSONResponse | dict[str, object]:
+async def ready(session: AsyncSession = Depends(get_db)) -> Response:
     from app.services.ops_status_service import readiness
 
     ok, body = await readiness(session)
     if not ok:
         return JSONResponse(status_code=503, content=body)
-    return body
+    return JSONResponse(content=body)
 
 
 @app.get("/health/details")
 async def health_details_route(
     session: AsyncSession = Depends(get_db),
     x_internal_token: str | None = Header(default=None),
-) -> JSONResponse | dict[str, object]:
+) -> Response:
     from app.services.ops_status_service import details_token_ok
     from app.services.ops_status_service import health_details as build_details
 
     if not details_token_ok(x_internal_token):
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
-    return await build_details(session)
+    return JSONResponse(content=await build_details(session))
 
 
 @app.get("/health")

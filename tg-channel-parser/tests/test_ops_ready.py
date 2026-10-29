@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 import pytest
 
 from app.config import get_settings
-from app.services.heartbeat_service import touch_runtime_heartbeat
 
 
 @pytest.mark.asyncio
@@ -18,7 +17,7 @@ async def test_live_without_db(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ready_fails_without_runtime_heartbeat(client, db_session) -> None:
+async def test_ready_fails_without_runtime_heartbeat(client) -> None:
     settings = get_settings()
     previous = settings.runtime_required
     settings.runtime_required = True
@@ -32,21 +31,11 @@ async def test_ready_fails_without_runtime_heartbeat(client, db_session) -> None
 
 @pytest.mark.asyncio
 async def test_ready_ok_with_fresh_runtime_heartbeat(client) -> None:
-    from app.db.session import get_session_factory
-
     settings = get_settings()
     previous = settings.runtime_required
     settings.runtime_required = True
     try:
-        factory = get_session_factory()
-        async with factory() as session:
-            await touch_runtime_heartbeat(
-                session,
-                instance_id="test-runtime",
-                session_state="connected",
-                started_at=datetime.now(UTC),
-            )
-            await session.commit()
+        client.runtime_store.append(datetime.now(UTC))
         response = await client.get("/ready")
     finally:
         settings.runtime_required = previous
