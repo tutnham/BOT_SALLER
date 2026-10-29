@@ -414,6 +414,17 @@ TEMPLATES: dict[str, str] = {
     "admin_need_name": "Название не может быть пустым. Введите ещё раз:",
     "admin_need_channel": "Канал не может быть пустым. Введите ещё раз:",
     "admin_channel_add_error": "Не удалось добавить канал: {detail}",
+    "admin_channel_add_duplicate": (
+        "Такой канал уже добавлен и ожидает подключения. "
+        "Дождитесь статуса ✅ или удалите старую запись."
+    ),
+    "admin_channel_add_unavailable": (
+        "Сервис парсера каналов недоступен. "
+        "Проверьте, что tg-parser-api запущен и PARSER_API_URL/PARSER_API_TOKEN заданы."
+    ),
+    "admin_price_channel_delete_error": (
+        "Не удалось удалить канал. Проверьте доступность сервиса парсера."
+    ),
     "admin_employees_list": "Список сотрудников:",
     "admin_employee_detail": (
         "Сотрудник #{employee_id} {employee_name}\n"

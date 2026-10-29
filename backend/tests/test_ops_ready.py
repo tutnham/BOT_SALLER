@@ -58,6 +58,58 @@ async def test_ready_requires_worker_when_async(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ready_requires_worker_when_auto_publish(client) -> None:
+    """AUTO_PUBLISH delivers client prices only via the outbox worker."""
+    settings = get_settings()
+    previous = settings.auto_publish_first_valid_price
+    settings.auto_publish_first_valid_price = True
+    try:
+        response = await client.get("/ready")
+    finally:
+        settings.auto_publish_first_valid_price = previous
+    assert response.status_code == 503
+    assert "worker" in response.json()["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_health_details_exposes_pending_client_prices(client) -> None:
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(
+            TelegramOutbox(
+                dedupe_key="health-client-price-1",
+                chat_id=-1001,
+                kind="client_price",
+                text="Цена: 91 500",
+                status="pending",
+            )
+        )
+        await session.commit()
+    try:
+        details = await client.get(
+            "/health/details",
+            headers={"X-Internal-Token": "test-webhook-secret"},
+        )
+    finally:
+        async with factory() as session:
+            row = await session.scalar(
+                select(TelegramOutbox).where(
+                    TelegramOutbox.dedupe_key == "health-client-price-1"
+                )
+            )
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
+    assert details.status_code == 200
+    body = details.json()
+    assert body["pending_client_prices"] >= 1
+    assert body["oldest_client_price_age_seconds"] is not None
+    assert body["auto_publish_first_valid_price"] is False
+
+
+@pytest.mark.asyncio
 async def test_ready_requires_scheduler_when_expected(client, db_session) -> None:
     settings = get_settings()
     previous_enabled = settings.scheduler_enabled

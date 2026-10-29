@@ -71,7 +71,10 @@ async def readiness(session: AsyncSession) -> tuple[bool, dict[str, object]]:
     if not schema_ok:
         reasons.append("schema")
     worker_ok = True
-    if settings.webhook_async_enabled:
+    # AUTO_PUBLISH also needs the worker: client prices only reach Telegram
+    # through telegram_outbox, which the web process never drains.
+    worker_required = settings.webhook_async_enabled or settings.auto_publish_first_valid_price
+    if worker_required:
         worker_at = await latest_heartbeat_at(session, "worker") if db_ok else None
         worker_ok = heartbeat_is_fresh(worker_at)
         if not worker_ok:
@@ -139,6 +142,31 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
         if oldest_pending.tzinfo is None:
             oldest_pending = oldest_pending.replace(tzinfo=UTC)
         oldest_age = int((now - oldest_pending).total_seconds())
+    pending_client_prices = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(TelegramOutbox)
+                .where(
+                    TelegramOutbox.kind == "client_price",
+                    TelegramOutbox.status.in_(("pending", "processing")),
+                )
+            )
+        ).scalar_one()
+    )
+    oldest_client_price_at = (
+        await session.execute(
+            select(func.min(TelegramOutbox.created_at)).where(
+                TelegramOutbox.kind == "client_price",
+                TelegramOutbox.status.in_(("pending", "processing")),
+            )
+        )
+    ).scalar_one_or_none()
+    oldest_client_price_age = None
+    if oldest_client_price_at is not None:
+        if oldest_client_price_at.tzinfo is None:
+            oldest_client_price_at = oldest_client_price_at.replace(tzinfo=UTC)
+        oldest_client_price_age = int((now - oldest_client_price_at).total_seconds())
     runs = (
         await session.execute(select(JobRun).order_by(JobRun.finished_at.desc()).limit(10))
     ).scalars().all()
@@ -156,6 +184,9 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
         "dead_inbox": dead_inbox,
         "uncertain_outbox": uncertain,
         "oldest_pending_age_seconds": oldest_age,
+        "pending_client_prices": pending_client_prices,
+        "oldest_client_price_age_seconds": oldest_client_price_age,
+        "auto_publish_first_valid_price": get_settings().auto_publish_first_valid_price,
         "recent_jobs": [
             {
                 "job_name": row.job_name,

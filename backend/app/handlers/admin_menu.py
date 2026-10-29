@@ -925,7 +925,17 @@ async def _dispatch_callback(
         return
 
     if action == "price_channel_delete":
-        await parser_client.delete_channel(int(cd.arg))
+        try:
+            await parser_client.delete_channel(int(cd.arg))
+        except parser_client.ParserClientError:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_price_channel_delete_error"),
+                message_id=message_id,
+                markup=inline_keyboard([[menu_button("К каналам", "price_channels")]]),
+            )
+            return
         await _send_price_channels(session, telegram, chat_id, message_id=message_id)
         return
 
@@ -1660,7 +1670,17 @@ async def _send_price_channels(
 
     rows: list[list[dict[str, Any]]] = []
     for ch in channels:
-        label = f"{'✅' if ch.is_active else '⏳'} {ch.title or ch.username or ch.channel_id}"
+        if not ch.is_active:
+            # Soft-deleted channels stay in the parser DB; hide them from the owner list.
+            continue
+        name = ch.title or ch.username or ch.channel_id or ch.id
+        if ch.status == "active" and ch.channel_id is not None:
+            icon = "✅"
+        elif ch.status == "failed":
+            icon = "❌"
+        else:
+            icon = "⏳"
+        label = f"{icon} {name}"
         rows.append(
             [
                 button(label, cd=_cb("noop", arg=ch.id)),
@@ -1823,9 +1843,16 @@ async def _handle_dialog_text(
         try:
             await parser_client.add_channel(handle)
         except parser_client.ParserClientError as exc:
+            detail = str(exc)
+            if "parser_http_409" in detail:
+                text_out = render_template("admin_channel_add_duplicate")
+            elif "parser_transport_error" in detail or "parser_api_url_missing" in detail:
+                text_out = render_template("admin_channel_add_unavailable")
+            else:
+                text_out = render_template("admin_channel_add_error", detail=detail)
             await telegram.send_message(
                 chat_id,
-                render_template("admin_channel_add_error", detail=str(exc)),
+                text_out,
                 reply_markup=inline_keyboard([[menu_button("К каналам", "price_channels")]]),
             )
             return "ok"

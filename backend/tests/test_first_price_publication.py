@@ -92,6 +92,50 @@ async def test_first_quote_publishes_second_does_not(
 
 
 @pytest.mark.asyncio
+async def test_outbox_worker_delivers_price_to_origin_group(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: supplier quote -> outbox -> worker -> message in the origin group."""
+    from app.services.outbox_service import process_outbox_batch
+
+    _enable(monkeypatch)
+    request = await _request(db_session, seed_employee.id)
+    await upsert_quote(
+        db_session, request.id, seed_suppliers[0].id,
+        price=Decimal("91000"), source=QuoteSource.regex, confidence=0.9,
+    )
+
+    sent = await process_outbox_batch(
+        db_session, worker_id="t-first-price", telegram=mock_telegram
+    )
+    assert sent == 1
+    group_sends = [item for item in mock_telegram.sent if item[0] == request.group_chat_id]
+    assert len(group_sends) == 1
+    assert str(request.id) in group_sends[0][1]
+
+    row = await db_session.scalar(
+        select(TelegramOutbox).where(
+            TelegramOutbox.dedupe_key == first_client_price_key(request.id)
+        )
+    )
+    assert row is not None
+    assert row.status == "sent"
+
+    # A second worker pass must not resend the same price.
+    again = await process_outbox_batch(
+        db_session, worker_id="t-first-price", telegram=mock_telegram
+    )
+    assert again == 0
+    group_sends = [item for item in mock_telegram.sent if item[0] == request.group_chat_id]
+    assert len(group_sends) == 1
+
+
+@pytest.mark.asyncio
 async def test_repeated_publish_call_is_idempotent(
     db_session: AsyncSession,
     seed_employee,
