@@ -5,6 +5,19 @@
 - Есть валидная цена текущего московского дня → клиенту уходит наименьшая, RFQ не отправляется.
 - Нет → RFQ; первый валидный ответ публикуется сразу; поздние копятся внутри. Более низкая поздняя цена даёт сотруднику уведомление с кнопками. Замена цены — только после повторного подтверждения.
 - Полночь не отзывает уже отправленную цену. Исторические котировки не удаляются.
+- Пакетная заявка (многострочный `/ask`, `batch_id`): при `AUTO_PUBLISH_FIRST_VALID_PRICE=true` первая валидная цена публикуется так же, как по одиночной. При выключенном флаге поштучные цены в чат не уходят — клиенту отправляется только сводный прайс кнопкой «Опубликовать» (`publish_batch_to_client`).
+
+## Топология процессов (обязательно)
+
+Клиентская цена доставляется **только асинхронно**: `first_price_publication_service` ставит строку `telegram_outbox` (`kind='client_price'`, `status='pending'`), а отправляет её отдельный процесс воркера. Web-процесс и планировщик outbox **не** обрабатывают. Флаг `OUTBOX_DELIVERY_ENABLED` на клиентскую цену не влияет.
+
+| Процесс | Команда | Назначение |
+| --- | --- | --- |
+| web | `uvicorn app.main:app` | webhook, jobs, API |
+| **backend-worker** | `python -m app.workers.main` | доставка `telegram_outbox` (включая клиентские цены), обработка inbox |
+| scheduler | `python -m app.scheduler` | cron-задачи |
+
+При `AUTO_PUBLISH_FIRST_VALID_PRICE=true` без живого воркера цена помечается опубликованной в БД (`request_price_selections`, `price_state=published`), но **в Telegram не уходит**. С 2026-10-29 `/ready` возвращает 503 с причиной `worker` в этой ситуации; `/health/details` показывает `pending_client_prices` и `oldest_client_price_age_seconds`.
 
 ## Флаги
 
@@ -26,7 +39,24 @@
 4. `python -m scripts.ensure_owners --telegram-id <id>`.
 5. Владелец пишет боту `/start`, проверка `/menu`.
 6. Проверка: вчерашняя цена не предлагается, повторная публикация не создаёт второе сообщение.
-7. Включить `AUTO_PUBLISH_FIRST_VALID_PRICE=true`.
+7. **Поднять `backend-worker`** (отдельный Coolify-сервис, команда `python -m app.workers.main`, те же `DATABASE_URL` и `TELEGRAM_BOT_TOKEN`). Без него шаг 8 приведёт к «молчаливой» публикации.
+8. Включить `AUTO_PUBLISH_FIRST_VALID_PRICE=true` (Coolify env → Redeploy web и worker).
+
+## Проверка после включения
+
+1. Тестовый запрос из группы → первый ответ поставщика → в группе ровно одно сообщение с клиентской ценой; вторая цена сообщение не дублирует.
+2. SQL-контроль застрявших публикаций:
+
+```sql
+SELECT id, request_id, chat_id, status, attempts, last_error, created_at
+FROM telegram_outbox
+WHERE kind = 'client_price' AND status IN ('pending','processing','dead')
+ORDER BY created_at;
+```
+
+Пустая выборка — норма. Строки в `pending` дольше пары минут — воркер не работает.
+3. `GET /ready` → 200; при мёртвом воркере → 503 `reasons:["worker"]`.
+4. `GET /health/details` → `pending_client_prices`, `oldest_client_price_age_seconds`; метрика `zakupki_outbox_pending` (пороги — `docs/OBSERVABILITY.md`).
 
 ## Откат
 
