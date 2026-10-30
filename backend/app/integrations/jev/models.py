@@ -28,6 +28,7 @@ class JevCandidate(BaseModel):
 
     candidate_id: str
     description: str
+    order_text: str | None = None
     model: str | None = None
     storage: str | None = None
     color: str | None = None

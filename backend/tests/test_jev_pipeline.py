@@ -43,6 +43,8 @@ class _Timeout:
 
 
 class _AcceptFirst:
+    seen: list[JevCandidate] = []
+
     async def classify_supplier_message(
         self,
         *,
@@ -51,6 +53,7 @@ class _AcceptFirst:
         correlation_id: str,
     ) -> JevProviderResponse:
         del message_text, correlation_id
+        _AcceptFirst.seen = list(candidates)
         choice = candidates[0].candidate_id
         return JevProviderResponse(
             model="jev-1.14.0",
@@ -148,6 +151,12 @@ async def test_shadow_mode_does_not_create_quote(
     assert quotes == 0
     stored = (await db_session.execute(select(func.count()).select_from(SupplierAiDecision))).scalar_one()
     assert stored == 1
+    assert _AcceptFirst.seen
+    sent = _AcceptFirst.seen[0]
+    assert sent.order_text == "iPhone 17 Pro 256 Blue"
+    assert "iPhone 17 Pro 256 Blue" in sent.description
+    assert sent.outgoing_at
+    assert sent.rfq_kind == "ask"
 
 
 @pytest.mark.asyncio

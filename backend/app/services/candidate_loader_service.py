@@ -172,6 +172,85 @@ async def load_eligible_candidates(
     return result
 
 
+@dataclass(frozen=True)
+class JevOutboundFact:
+    """Latest sent ask, bargain, or recheck for one request on this route."""
+
+    sent_at: datetime
+    kind: str
+
+
+def _keep_latest_outbound(
+    facts: dict[int, JevOutboundFact],
+    *,
+    request_id: int,
+    sent_at: datetime,
+    kind: MessageKind | str,
+) -> None:
+    kind_value = kind.value if isinstance(kind, MessageKind) else str(kind)
+    current = facts.get(request_id)
+    if current is None or sent_at >= current.sent_at:
+        facts[request_id] = JevOutboundFact(sent_at=sent_at, kind=kind_value)
+
+
+async def load_jev_outbound_facts(
+    session: AsyncSession,
+    *,
+    supplier_id: int,
+    chat_id: int,
+    business_connection_id: str | None,
+    request_ids: list[int],
+) -> dict[int, JevOutboundFact]:
+    """Sent time and message kind for the orders Jev is about to see."""
+    if not request_ids:
+        return {}
+    facts: dict[int, JevOutboundFact] = {}
+    direct = await session.execute(
+        select(MessageOut).where(
+            MessageOut.supplier_id == supplier_id,
+            MessageOut.chat_id == chat_id,
+            MessageOut.send_status == MessageSendStatus.sent.value,
+            MessageOut.request_id.in_(request_ids),
+        )
+    )
+    for outbound in direct.scalars():
+        if outbound.request_id is None:
+            continue
+        if not routes_match(outbound.business_connection_id, business_connection_id):
+            continue
+        _keep_latest_outbound(
+            facts,
+            request_id=outbound.request_id,
+            sent_at=outbound.sent_at,
+            kind=outbound.kind,
+        )
+
+    batch = await session.execute(
+        select(MessageOut, SupplierRfqBatchItem.request_id)
+        .join(
+            SupplierRfqBatchItem,
+            SupplierRfqBatchItem.message_out_id == MessageOut.id,
+        )
+        .where(
+            MessageOut.supplier_id == supplier_id,
+            MessageOut.chat_id == chat_id,
+            MessageOut.send_status == MessageSendStatus.sent.value,
+            SupplierRfqBatchItem.request_id.in_(request_ids),
+            SupplierRfqBatchItem.delivery_status == RfqItemDeliveryStatus.sent.value,
+        )
+    )
+    for outbound, request_id in batch.all():
+        if not routes_match(outbound.business_connection_id, business_connection_id):
+            continue
+        _keep_latest_outbound(
+            facts,
+            request_id=int(request_id),
+            sent_at=outbound.sent_at,
+            kind=outbound.kind,
+        )
+    return facts
+
+
 async def load_open_requests_for_supplier(
     session: AsyncSession,
     *,

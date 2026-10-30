@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 
 from loguru import logger
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.binding import can_auto_bind_request
 from app.config import Settings, get_settings
 from app.db.models import Request, Supplier
+from app.services.candidate_loader_service import JevOutboundFact, load_jev_outbound_facts
 from app.integrations.jev.client import get_jev_client
 from app.integrations.jev.exceptions import (
     JevAuthError,
@@ -59,54 +60,81 @@ def hash_message_input(message_text: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def hash_candidate_set(candidates: Sequence[Request]) -> str:
+def hash_candidate_set(
+    candidates: Sequence[Request],
+    outgoing: Mapping[int, JevOutboundFact] | None = None,
+) -> str:
     rows: list[dict[str, object]] = []
+    facts = outgoing or {}
     for request in sorted(candidates, key=lambda item: item.id):
         normalized = request.normalized_json or {}
         status = request.status.value if hasattr(request.status, "value") else str(request.status)
+        fact = facts.get(request.id)
         rows.append(
             {
                 "id": request.id,
                 "status": status,
+                "source_text": _order_text(request),
                 "model": normalized.get("model"),
                 "storage": normalized.get("storage"),
                 "color": normalized.get("color"),
                 "sim": normalized.get("sim"),
                 "region": normalized.get("region"),
                 "qty": normalized.get("qty"),
+                "outgoing_at": fact.sent_at.isoformat() if fact is not None else None,
+                "rfq_kind": fact.kind if fact is not None else None,
             }
         )
     raw = json.dumps(rows, sort_keys=True, default=str).encode()
     return hashlib.sha256(raw).hexdigest()
 
 
-def candidates_to_jev(candidates: Sequence[Request], *, limit: int) -> list[JevCandidate]:
+def _order_text(request: Request) -> str:
+    return " ".join((request.source_text or "").split())[:400]
+
+
+def candidates_to_jev(
+    candidates: Sequence[Request],
+    *,
+    limit: int,
+    outgoing: Mapping[int, JevOutboundFact] | None = None,
+) -> list[JevCandidate]:
     selected = sorted(candidates, key=lambda item: item.id, reverse=True)[:limit]
+    facts = outgoing or {}
     result: list[JevCandidate] = []
     for request in selected:
         normalized = request.normalized_json or {}
         model = normalized.get("model") or None
-        description_parts = [
-            str(model or request.source_text or "")[:180],
+        order_text = _order_text(request)
+        attr_parts = [
+            str(model or ""),
             str(normalized.get("storage") or ""),
             str(normalized.get("color") or ""),
             str(normalized.get("sim") or ""),
             str(normalized.get("region") or ""),
         ]
-        description = " ".join(part for part in description_parts if part).strip() or f"request {request.id}"
+        attrs = " ".join(part for part in attr_parts if part).strip()
+        description = f"#{request.id} {order_text}".strip()
+        if attrs and attrs not in description:
+            description = f"{description} | {attrs}"
+        description = description[:240] or f"request {request.id}"
+        fact = facts.get(request.id)
         qty = normalized.get("qty")
+        if not isinstance(qty, int):
+            qty = request.requested_qty if isinstance(request.requested_qty, int) else None
         result.append(
             JevCandidate(
                 candidate_id=f"request:{request.id}",
-                description=description[:240],
+                description=description,
+                order_text=order_text or None,
                 model=str(model) if model else None,
                 storage=_opt_str(normalized.get("storage")),
                 color=_opt_str(normalized.get("color")),
                 sim=_opt_str(normalized.get("sim")),
                 region=_opt_str(normalized.get("region")),
-                quantity=int(qty) if isinstance(qty, int) else None,
-                rfq_kind="ask",
-                outgoing_at=None,
+                quantity=qty,
+                rfq_kind=fact.kind if fact is not None else "ask",
+                outgoing_at=fact.sent_at.isoformat() if fact is not None else None,
             )
         )
     return result
@@ -253,7 +281,6 @@ async def classify_with_jev(
     message_in_id: int | None = None,
 ) -> JevSupplierDecision:
     """Classify one supplier message item. Never raises to the webhook."""
-    del business_connection_id, chat_id
     settings = get_settings()
     if not settings.jev_enabled:
         return _fallback(reason="jev_disabled")
@@ -267,7 +294,14 @@ async def classify_with_jev(
 
     started = time.perf_counter()
     input_hash = hash_message_input(text)
-    candidate_hash = hash_candidate_set(candidates)
+    outgoing = await load_jev_outbound_facts(
+        session,
+        supplier_id=supplier.id,
+        chat_id=chat_id,
+        business_connection_id=business_connection_id,
+        request_ids=[item.id for item in candidates],
+    )
+    candidate_hash = hash_candidate_set(candidates, outgoing)
     cached = await lookup_cached_decision(
         session,
         input_hash=input_hash,
@@ -281,7 +315,11 @@ async def classify_with_jev(
             update={"from_cache": True, "input_hash": input_hash, "candidate_set_hash": candidate_hash}
         )
 
-    jev_candidates = candidates_to_jev(candidates, limit=settings.jev_max_candidates)
+    jev_candidates = candidates_to_jev(
+        candidates,
+        limit=settings.jev_max_candidates,
+        outgoing=outgoing,
+    )
     correlation_id = f"jev:{message_in_id or 0}:{line_no}"
     try:
         response = await get_jev_client().classify_supplier_message(

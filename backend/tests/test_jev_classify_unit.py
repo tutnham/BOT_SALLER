@@ -137,6 +137,15 @@ async def test_timeout_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         "app.services.jev_supplier_classifier.lookup_cached_decision",
         _no_cache,
     )
+
+    async def _no_outbound(*args: object, **kwargs: object) -> dict[int, object]:
+        del args, kwargs
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.jev_supplier_classifier.load_jev_outbound_facts",
+        _no_outbound,
+    )
     decision = await classify_with_jev(
         AsyncMock(),
         supplier=_supplier(),
@@ -158,6 +167,45 @@ def test_cache_key_changes_with_text_and_status() -> None:
     closed = _request()
     closed.status = RequestStatus.closed
     assert hash_candidate_set([open_request]) != hash_candidate_set([closed])
+    same_attrs = _request()
+    same_attrs.source_text = "айфон 17 про 256 синий"
+    assert hash_candidate_set([open_request]) != hash_candidate_set([same_attrs])
+
+
+def test_candidate_state_keeps_order_text_and_sent_time() -> None:
+    from datetime import UTC, datetime
+
+    from app.services.jev_supplier_classifier import JevOutboundFact, candidates_to_jev
+
+    request = _request()
+    request.id = 42
+    request.source_text = "айфон 17 про 256 синий"
+    request.normalized_json = {
+        "model": "iPhone 17 Pro",
+        "storage": "256",
+        "color": "Blue",
+    }
+    sent = datetime(2026, 10, 30, 9, 15, tzinfo=UTC)
+    built = candidates_to_jev(
+        [request],
+        limit=20,
+        outgoing={42: JevOutboundFact(sent_at=sent, kind="ask")},
+    )
+    candidate = built[0]
+    assert candidate.order_text == "айфон 17 про 256 синий"
+    assert "айфон 17 про 256 синий" in candidate.description
+    assert "#42" in candidate.description
+    assert "iPhone 17 Pro" in candidate.description
+    assert candidate.outgoing_at == "2026-10-30T09:15:00+00:00"
+    assert candidate.rfq_kind == "ask"
+    assert candidate.model == "iPhone 17 Pro"
+    from app.integrations.jev.prompts import build_questions, build_state
+
+    state = build_state("117900 синий", built)
+    assert state["candidates"][0]["order_text"] == "айфон 17 про 256 синий"
+    assert state["candidates"][0]["outgoing_at"] == "2026-10-30T09:15:00+00:00"
+    criteria = build_questions(built)["binding"]["criteria"]
+    assert "айфон 17 про 256 синий" in criteria["request:42"]
 
 
 def test_price_parser_keeps_thousands_suffix() -> None:

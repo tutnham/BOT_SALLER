@@ -6,7 +6,7 @@ from typing import Any
 
 from app.integrations.jev.models import JevCandidate
 
-PROMPT_VERSION = "supplier-classify-v1"
+PROMPT_VERSION = "supplier-classify-v2"
 SCHEMA_VERSION = "jev-decision-v1"
 PROVIDER = "jev"
 
@@ -60,7 +60,9 @@ def build_questions(candidates: list[JevCandidate]) -> dict[str, Any]:
         "binding": {
             "type": "choice",
             "instructions": (
-                "Which listed candidate does this message refer to? "
+                "Which order in `candidates` is `supplier_message` answering? "
+                "Match the message to that order's order_text and attributes. "
+                "outgoing_at is when that order was sent to this supplier. "
                 "Choose only from the criteria keys. "
                 "A bare price with several candidates is ambiguous. "
                 "Do not invent an identifier."
