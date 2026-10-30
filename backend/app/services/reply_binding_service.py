@@ -462,7 +462,12 @@ async def resolve_binding(
                 price_parse=price_parse,
             )
         bind_method = "single_bare_price" if bare_price and not has_product else "single_candidate"
-        if safe_single and (settings.supplier_single_candidate_auto_bind_enabled or for_rebind):
+        # A lone open request plus a bare price is the supplier's answer to that RFQ.
+        # Product-text matches stay behind the flag so a mismatched model is not auto-bound.
+        bare_to_only_request = safe_single and bare_price and not has_product
+        if bare_to_only_request or (
+            safe_single and (settings.supplier_single_candidate_auto_bind_enabled or for_rebind)
+        ):
             _log_binding(
                 supplier=supplier,
                 method=bind_method,

@@ -29,6 +29,7 @@ from app.db.models import (
 )
 from app.db.session import get_session_factory
 from app.mtproto.channel_backfill import backfill_channel_on_activate
+from app.mtproto.channel_handle import mtproto_chat_ref
 from app.mtproto.flood_wait import with_flood_wait
 from app.storage.local_storage import LocalStorage, guess_ext, media_key
 from app.utils.hashing import sha256_file
@@ -149,8 +150,8 @@ async def process_resolve_channel(
         task.error_text = "channel_not_pending"
         return
 
-    handle = channel.username or channel.title or channel.channel_id
-    if handle is None:
+    target = mtproto_chat_ref(channel.channel_id, channel.username, channel.title)
+    if target is None:
         task.status = ParserStatus.failed
         task.error_text = "no_handle"
         channel.status = ParserChannelStatus.failed
@@ -158,7 +159,7 @@ async def process_resolve_channel(
         return
 
     try:
-        chat = await with_flood_wait(lambda: client.get_chat(handle))
+        chat = await with_flood_wait(lambda: client.get_chat(target))
     except Exception as exc:
         await _fail_or_retry(
             session,

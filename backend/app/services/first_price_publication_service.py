@@ -63,6 +63,12 @@ async def publish_first_valid_price(
 
     result = await select_best_quote_for_request(session, request_id, now=moment)
     if result.selected_quote_id is None or result.client_unit_price is None:
+        logger.info(
+            "client price skipped request_id={} reason={} rejected={}",
+            request_id,
+            result.selection_reason,
+            result.rejected_candidate_reasons,
+        )
         return False
 
     quote = await session.get(Quote, result.selected_quote_id)

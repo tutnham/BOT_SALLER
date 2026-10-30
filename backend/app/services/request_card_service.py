@@ -21,6 +21,19 @@ from app.telegram.keyboards import CallbackData, button, inline_keyboard
 
 PAGE_SIZE = 5
 
+_REJECT_LABELS = {
+    "low_confidence": "низкая уверенность",
+    "stale_quote": "цена не за сегодня",
+    "insufficient_qty": "не хватает количества",
+    "price_out_of_sanity": "цена вне допустимого диапазона",
+    "supplier_inactive": "поставщик выключен",
+    "not_available": "нет в наличии",
+    "no_price": "нет цены",
+    "request_closed": "заявка закрыта",
+    "supplier_missing": "поставщик не найден",
+    "sku_mismatch": "другой товар",
+}
+
 
 async def render_request_card(session: AsyncSession, request: Request) -> str:
     counters = await load_request_rfq_counters(session, request.id)
@@ -37,6 +50,16 @@ async def render_request_card(session: AsyncSession, request: Request) -> str:
         lines.append(f"Клиенту отправлено: {published.client_unit_price} ₽ в {when}")
     else:
         lines.append("Клиенту ещё не отправлено")
+        if best.rejected_candidate_reasons:
+            reasons = ", ".join(
+                sorted(
+                    {
+                        _REJECT_LABELS.get(reason, reason)
+                        for reason in best.rejected_candidate_reasons.values()
+                    }
+                )
+            )
+            lines.append(f"Не опубликовано: {reasons}")
     if best.purchase_unit_price is not None:
         lines.append(
             f"Лучшая закупочная: {best.purchase_unit_price} ₽ · "

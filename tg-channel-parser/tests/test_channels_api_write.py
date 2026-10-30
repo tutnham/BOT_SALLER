@@ -109,6 +109,57 @@ async def test_create_channel_pending_and_task(client: AsyncClient, fake_session
 
 
 @pytest.mark.asyncio
+async def test_create_channel_stores_numeric_id(client: AsyncClient, fake_session: Any) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.post(
+            "/channels",
+            json={"handle": "-1001234567890"},
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert response.status_code == 202
+        data = response.json()
+        assert data["channel_id"] == -1001234567890
+        assert data["username"] is None
+        assert data["status"] == "pending"
+        assert session.channels[0].channel_id == -1001234567890
+        assert session.tasks[0].task_type == ParserTaskType.resolve_channel
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_create_channel_rejects_garbage_handle(client: AsyncClient, fake_session: Any) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.post(
+            "/channels",
+            json={"handle": "!!!"},
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert response.status_code == 422
+        assert session.channels == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_delete_channel_deactivates(client: AsyncClient, fake_session: Any) -> None:
     from app.api.main import app
     from app.db.session import get_db

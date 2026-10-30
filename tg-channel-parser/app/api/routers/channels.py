@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
+from app.mtproto.channel_handle import InvalidChannelHandle, split_channel_handle
 from app.db.models import (
     ParserChannel,
     ParserChannelPurpose,
@@ -30,6 +31,7 @@ class ChannelOut(BaseModel):
     purpose: str
     status: str
     is_active: bool
+    error_text: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -67,13 +69,15 @@ async def create_channel(
     resolves the numeric ``channel_id`` via ``get_chat``.  The caller must poll
     ``GET /channels`` until ``status`` becomes ``active`` or ``failed``.
     """
-    handle = payload.handle.strip()
-    normalized_username = handle.lstrip("@")
+    try:
+        username, numeric_id = split_channel_handle(payload.handle)
+    except InvalidChannelHandle as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
     channel = ParserChannel(
-        channel_id=None,
-        username=normalized_username if not normalized_username.lstrip("-").isdigit() else None,
-        title=handle,
+        channel_id=numeric_id,
+        username=username,
+        title=payload.handle.strip(),
         purpose=payload.purpose,
         status=ParserChannelStatus.pending,
         is_active=True,

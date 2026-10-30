@@ -1680,7 +1680,11 @@ async def _send_price_channels(
             icon = "❌"
         else:
             icon = "⏳"
-        label = f"{icon} {name}"
+        reason = (getattr(ch, "error_text", None) or "").strip()
+        if ch.status == "failed" and reason:
+            label = f"{icon} {name} ({reason[:40]})"
+        else:
+            label = f"{icon} {name}"
         rows.append(
             [
                 button(label, cd=_cb("noop", arg=ch.id)),
@@ -1840,12 +1844,18 @@ async def _handle_dialog_text(
         if not handle:
             await telegram.send_message(chat_id, render_template("admin_need_channel"))
             return "ok"
+        created = None
         try:
-            await parser_client.add_channel(handle)
+            created = await parser_client.add_channel(handle)
         except parser_client.ParserClientError as exc:
             detail = str(exc)
             if "parser_http_409" in detail:
                 text_out = render_template("admin_channel_add_duplicate")
+            elif "parser_http_422" in detail:
+                text_out = render_template(
+                    "admin_channel_add_error",
+                    detail="нужен @username или числовой ID канала",
+                )
             elif "parser_transport_error" in detail or "parser_api_url_missing" in detail:
                 text_out = render_template("admin_channel_add_unavailable")
             else:
@@ -1858,6 +1868,20 @@ async def _handle_dialog_text(
             return "ok"
         finally:
             await admin_service.clear_dialog(session, owner_id)
+        label = created.title or created.username or created.channel_id or handle
+        status_label = {
+            "active": "подключён",
+            "failed": "ошибка подключения",
+            "pending": "подключается",
+        }.get(created.status, created.status)
+        await telegram.send_message(
+            chat_id,
+            render_template(
+                "admin_channel_added",
+                label=label,
+                status_label=status_label,
+            ),
+        )
         await _send_price_channels(session, telegram, chat_id)
         return "ok"
 

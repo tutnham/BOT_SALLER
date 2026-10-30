@@ -47,6 +47,27 @@ async def test_card_shows_counters_and_prices(
 
 
 @pytest.mark.asyncio
+async def test_card_explains_rejected_quote(
+    db_session: AsyncSession, seed_employee, seed_suppliers: list[Supplier]
+) -> None:
+    request = await _request(db_session, seed_employee.id)
+    db_session.add(
+        Quote(
+            request_id=request.id,
+            supplier_id=seed_suppliers[0].id,
+            price_initial=Decimal("91000"),
+            source=QuoteSource.regex,
+            confidence=0.2,
+            available=True,
+        )
+    )
+    await db_session.flush()
+    card = await render_request_card(db_session, request)
+    assert "Не опубликовано" in card
+    assert "низкая уверенность" in card
+
+
+@pytest.mark.asyncio
 async def test_all_prices_sorted_ascending(
     db_session: AsyncSession, seed_employee, seed_suppliers: list[Supplier]
 ) -> None:

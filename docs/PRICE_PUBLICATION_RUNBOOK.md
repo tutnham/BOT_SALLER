@@ -9,7 +9,7 @@
 
 ## Топология процессов (обязательно)
 
-Клиентская цена доставляется **только асинхронно**: `first_price_publication_service` ставит строку `telegram_outbox` (`kind='client_price'`, `status='pending'`), а отправляет её отдельный процесс воркера. Web-процесс и планировщик outbox **не** обрабатывают. Флаг `OUTBOX_DELIVERY_ENABLED` на клиентскую цену не влияет.
+Клиентская цена ставится в `telegram_outbox` (`kind='client_price'`, `status='pending'`). Отправляет её процесс с арендой строки: отдельный `backend-worker` и, при `CLIENT_PRICE_INLINE_DELIVERY=true` (по умолчанию), тот же цикл внутри web. Две доставки одной строки не будет: захват через `FOR UPDATE SKIP LOCKED`. Флаг `OUTBOX_DELIVERY_ENABLED` на клиентскую цену не влияет.
 
 | Процесс | Команда | Назначение |
 | --- | --- | --- |
@@ -17,13 +17,14 @@
 | **backend-worker** | `python -m app.workers.main` | доставка `telegram_outbox` (включая клиентские цены), обработка inbox |
 | scheduler | `python -m app.scheduler` | cron-задачи |
 
-При `AUTO_PUBLISH_FIRST_VALID_PRICE=true` без живого воркера цена помечается опубликованной в БД (`request_price_selections`, `price_state=published`), но **в Telegram не уходит**. С 2026-10-29 `/ready` возвращает 503 с причиной `worker` в этой ситуации; `/health/details` показывает `pending_client_prices` и `oldest_client_price_age_seconds`.
+При `AUTO_PUBLISH_FIRST_VALID_PRICE=true` и `CLIENT_PRICE_INLINE_DELIVERY=false` без живого воркера цена помечается опубликованной в БД (`request_price_selections`, `price_state=published`), но **в Telegram не уходит**. С включённой inline-доставкой web сам забирает очередь и пишет heartbeat `worker`, поэтому `/ready` не требует отдельного процесса. `/health/details` показывает `pending_client_prices` и `oldest_client_price_age_seconds`.
 
 ## Флаги
 
 | Переменная | По умолчанию | Эффект |
 | --- | --- | --- |
 | `AUTO_PUBLISH_FIRST_VALID_PRICE` | `false` | Kill switch автопубликации |
+| `CLIENT_PRICE_INLINE_DELIVERY` | `true` | Web сам забирает `telegram_outbox`, если отдельный worker остановлен |
 | `CLIENT_PRICE_PUBLICATION_POLICY` | `first_valid_today` | Политика выбора |
 | `CONTINUE_COLLECTING_AFTER_PUBLICATION` | `true` | Сбор цен после публикации |
 | `NOTIFY_EMPLOYEE_ON_BETTER_LATE_PRICE` | `true` | Уведомление о более низкой поздней цене |

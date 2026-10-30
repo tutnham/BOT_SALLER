@@ -48,6 +48,7 @@ class ParserChannel(BaseModel):
     purpose: str
     status: str = "active"
     is_active: bool = True
+    error_text: str | None = None
 
     model_config = {"from_attributes": True}
 

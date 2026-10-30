@@ -70,6 +70,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     get_engine()
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    outbox_task = None
+    if settings.client_price_inline_delivery:
+        outbox_task = asyncio.create_task(_outbox_inline_loop())
     scheduler = None
     if settings.scheduler_enabled:
         scheduler = setup_scheduler()
@@ -91,6 +94,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await heartbeat_task
     except asyncio.CancelledError:
         pass
+    if outbox_task is not None:
+        outbox_task.cancel()
+        try:
+            await outbox_task
+        except asyncio.CancelledError:
+            pass
     if scheduler is not None:
         # Wait so in-flight jobs can finish before engine disposal.
         scheduler.shutdown(wait=True)
@@ -179,6 +188,33 @@ async def _heartbeat_loop() -> None:
         except Exception as exc:
             logger.warning("Heartbeat write failed: {}", type(exc).__name__)
         await asyncio.sleep(15)
+
+
+async def _outbox_inline_loop() -> None:
+    """Deliver telegram_outbox from the web process when the dedicated worker is down."""
+    settings = get_settings()
+    instance_id = f"{os.environ.get('HOSTNAME', 'backend-web')}-outbox"
+    while True:
+        try:
+            factory = get_session_factory()
+            async with factory() as session:
+                from app.services.heartbeat_service import touch_heartbeat
+
+                await touch_heartbeat(
+                    session, process_type="worker", instance_id=instance_id
+                )
+                await session.commit()
+            async with factory() as session:
+                from app.services.outbox_service import process_outbox_batch
+
+                await process_outbox_batch(
+                    session,
+                    worker_id=instance_id,
+                    session_factory=factory,
+                )
+        except Exception as exc:
+            logger.warning("Inline outbox delivery failed: {}", type(exc).__name__)
+        await asyncio.sleep(settings.worker_poll_interval_seconds)
 
 
 @app.get("/live")

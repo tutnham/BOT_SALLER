@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     quote_min_valid_responses: int = 1
     auto_finalize_when_all_responded: bool = True
     auto_publish_first_valid_price: bool = False
+    # Web process drains telegram_outbox with the same lease as backend-worker.
+    # A stopped worker then cannot leave the client price stuck in pending.
+    client_price_inline_delivery: bool = True
     client_price_publication_policy: str = "first_valid_today"
     continue_collecting_after_publication: bool = True
     notify_employee_on_better_late_price: bool = True

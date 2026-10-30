@@ -757,6 +757,7 @@ async def test_price_channel_add_dialog(
     webhook_client: AsyncClient,
     webhook_headers: dict[str, str],
     seed_owner: Owner,
+    mock_telegram,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     added: list[str] = []
@@ -798,6 +799,9 @@ async def test_price_channel_add_dialog(
     )
     assert resp.json()["status"] == "ok"
     assert added == ["@supplier_prices"]
+    sent_text = "\n".join(item[1] for item in mock_telegram.sent)
+    assert "добавлен" in sent_text
+    assert "Канал прайса" in sent_text
 
 
 @pytest.mark.asyncio

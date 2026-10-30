@@ -92,6 +92,63 @@ async def test_first_quote_publishes_second_does_not(
 
 
 @pytest.mark.asyncio
+async def test_three_suppliers_one_client_message_all_prices_in_bot(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First price reaches the client group once; later quotes stay on the card."""
+    from app.services.outbox_service import process_outbox_batch
+    from app.services.request_card_service import render_all_prices
+
+    _enable(monkeypatch)
+    third = Supplier(name="Supplier Three", telegram_id=200200299, active=True, dm_ok=True)
+    db_session.add(third)
+    await db_session.flush()
+    request = await _request(db_session, seed_employee.id)
+    for supplier, price in (
+        (seed_suppliers[0], Decimal("95000")),
+        (seed_suppliers[1], Decimal("94000")),
+        (third, Decimal("96000")),
+    ):
+        await upsert_quote(
+            db_session, request.id, supplier.id,
+            price=price, source=QuoteSource.regex, confidence=0.9,
+        )
+
+    quotes = (
+        await db_session.scalars(select(Quote).where(Quote.request_id == request.id))
+    ).all()
+    assert len(quotes) == 3
+
+    group_rows = (
+        await db_session.scalars(
+            select(TelegramOutbox).where(
+                TelegramOutbox.chat_id == request.group_chat_id,
+                TelegramOutbox.kind == "client_price",
+            )
+        )
+    ).all()
+    assert len(group_rows) == 1
+
+    sent = await process_outbox_batch(
+        db_session, worker_id="t-three", telegram=mock_telegram
+    )
+    assert sent >= 1
+    group_sends = [item for item in mock_telegram.sent if item[0] == request.group_chat_id]
+    assert len(group_sends) == 1
+
+    card = await render_all_prices(db_session, request.id, page=0)
+    assert "Supplier One" in card
+    assert "Supplier Two" in card
+    assert "Supplier Three" in card
+    assert "отправлена клиенту" in card
+
+
+@pytest.mark.asyncio
 async def test_outbox_worker_delivers_price_to_origin_group(
     db_session: AsyncSession,
     seed_employee,

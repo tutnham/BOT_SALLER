@@ -27,7 +27,14 @@ def _install_pyrogram_stub() -> None:
 
 _install_pyrogram_stub()
 
-from app.db.models import ParserStatus, ParserTask, ParserTaskType  # noqa: E402
+from app.db.models import (  # noqa: E402
+    ParserChannel,
+    ParserChannelPurpose,
+    ParserChannelStatus,
+    ParserStatus,
+    ParserTask,
+    ParserTaskType,
+)
 from app.worker import task_worker  # noqa: E402
 
 
@@ -111,6 +118,56 @@ async def test_process_claimed_task_uses_fresh_session() -> None:
 
     resolve_mock.assert_awaited_once()
     assert fake_session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_numeric_channel_passes_int_to_get_chat() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username=None,
+        title="-1001234567890",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+    )
+    seen: list[object] = []
+
+    class _Chat:
+        id = -1001234567890
+        username = "price"
+        title = "Price"
+
+    class _Client:
+        async def get_chat(self, ref: object) -> _Chat:
+            seen.append(ref)
+            return _Chat()
+
+    class _Session:
+        async def get(self, model, ident):
+            assert model is ParserChannel
+            assert ident == 1
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    with patch.object(task_worker, "backfill_channel_on_activate", AsyncMock()):
+        await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert seen == [-1001234567890]
+    assert isinstance(seen[0], int)
+    assert channel.status == ParserChannelStatus.active
+    assert channel.title == "Price"
+    assert channel.username == "price"
+    assert task.status == ParserStatus.processed
 
 
 @pytest.mark.asyncio

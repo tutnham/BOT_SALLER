@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import MessageIn, Owner, Quote, RequestStatus
 from app.handlers.supplier_messages import (
     handle_reply,
@@ -79,6 +80,41 @@ async def test_single_open_request_binds_without_reply(
     )
     assert quote is not None
     assert quote.price_initial == 85000
+
+
+@pytest.mark.asyncio
+async def test_bare_price_binds_to_only_open_request_without_flag(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers,
+    seed_client_group,
+    mock_telegram: MockTelegramClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPPLIER_SINGLE_CANDIDATE_AUTO_BIND_ENABLED", "false")
+    get_settings.cache_clear()
+    request, _ = await create_request(
+        db_session,
+        group_chat_id=seed_client_group.chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro 256 silver",
+        telegram=mock_telegram,
+    )
+    supplier = seed_suppliers[0]
+    assert supplier.telegram_id is not None
+    await handle_reply(
+        db_session,
+        _supplier_message(supplier.telegram_id, 511, "131500"),
+        telegram=mock_telegram,
+    )
+    quote = await db_session.scalar(
+        select(Quote).where(
+            Quote.request_id == request.id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    assert quote is not None
+    assert quote.price_initial == 131500
 
 
 @pytest.mark.asyncio
