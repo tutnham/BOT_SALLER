@@ -242,6 +242,44 @@ def test_bare_price_multiple_candidates() -> None:
     assert decision.action is JevDecisionAction.REVIEW
 
 
+def test_ambiguous_message_choice_clears_selected_candidate_id() -> None:
+    decision = apply_provider_decision(
+        response=_response(
+            message_choice="ambiguous",
+            price="0.50",
+            binding="request:1",
+            probabilities={"request:1": "0.55", "none": "0.45"},
+        ),
+        candidates=[_request(1)],
+        message_text="может 100",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.REVIEW
+    assert decision.reason_code == "jev_ambiguous"
+    assert decision.selected_candidate_id is None
+
+
+def test_not_price_message_choice_clears_selected_candidate_id() -> None:
+    decision = apply_provider_decision(
+        response=_response(
+            message_choice="not_price",
+            price="0.01",
+            binding="request:1",
+            probabilities={"request:1": "0.99", "none": "0.01"},
+        ),
+        candidates=[_request(1)],
+        message_text="привет",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.IGNORE
+    assert decision.reason_code == "jev_not_price"
+    assert decision.selected_candidate_id is None
+
+
 def test_provider_state_has_no_prices() -> None:
     state = build_state(
         "117900",

@@ -60,6 +60,17 @@ def hash_message_input(message_text: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _resolve_qty(request: Request, normalized: Mapping[str, object]) -> int | None:
+    for raw in (normalized.get("qty"), request.requested_qty):
+        if isinstance(raw, bool) or raw is None:
+            continue
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.strip().isdigit():
+            return int(raw.strip())
+    return None
+
+
 def hash_candidate_set(
     candidates: Sequence[Request],
     outgoing: Mapping[int, JevOutboundFact] | None = None,
@@ -80,7 +91,7 @@ def hash_candidate_set(
                 "color": normalized.get("color"),
                 "sim": normalized.get("sim"),
                 "region": normalized.get("region"),
-                "qty": normalized.get("qty"),
+                "qty": _resolve_qty(request, normalized),
                 "outgoing_at": fact.sent_at.isoformat() if fact is not None else None,
                 "rfq_kind": fact.kind if fact is not None else None,
             }
@@ -119,9 +130,7 @@ def candidates_to_jev(
             description = f"{description} | {attrs}"
         description = description[:240] or f"request {request.id}"
         fact = facts.get(request.id)
-        qty = normalized.get("qty")
-        if not isinstance(qty, int):
-            qty = request.requested_qty if isinstance(request.requested_qty, int) else None
+        qty = _resolve_qty(request, normalized)
         result.append(
             JevCandidate(
                 candidate_id=f"request:{request.id}",
@@ -210,6 +219,7 @@ def apply_provider_decision(
         reason = "jev_unknown_candidate"
         selected_id = None
     elif message_class is JevMessageClass.NOT_PRICE:
+        selected_id = None
         low_price = price_probability <= (Decimal("1") - settings.jev_price_threshold)
         if low_price and confidence >= settings.jev_bind_threshold:
             action = JevDecisionAction.IGNORE
@@ -217,6 +227,7 @@ def apply_provider_decision(
         else:
             reason = "jev_not_price"
     elif message_class is JevMessageClass.AMBIGUOUS:
+        selected_id = None
         reason = "jev_ambiguous"
     elif price_probability < settings.jev_price_threshold:
         reason = "jev_low_price_probability"
@@ -279,8 +290,10 @@ async def classify_with_jev(
     line_no: int = 1,
     route_ok: bool = True,
     message_in_id: int | None = None,
+    outgoing: Mapping[int, JevOutboundFact] | None = None,
 ) -> JevSupplierDecision:
     """Classify one supplier message item. Never raises to the webhook."""
+    del message_id
     settings = get_settings()
     if not settings.jev_enabled:
         return _fallback(reason="jev_disabled")
@@ -293,15 +306,19 @@ async def classify_with_jev(
         return _fallback(reason="supplier_inactive", action=JevDecisionAction.REVIEW)
 
     started = time.perf_counter()
+    active_candidates = sorted(candidates, key=lambda item: item.id, reverse=True)[
+        : settings.jev_max_candidates
+    ]
     input_hash = hash_message_input(text)
-    outgoing = await load_jev_outbound_facts(
-        session,
-        supplier_id=supplier.id,
-        chat_id=chat_id,
-        business_connection_id=business_connection_id,
-        request_ids=[item.id for item in candidates],
-    )
-    candidate_hash = hash_candidate_set(candidates, outgoing)
+    if outgoing is None:
+        outgoing = await load_jev_outbound_facts(
+            session,
+            supplier_id=supplier.id,
+            chat_id=chat_id,
+            business_connection_id=business_connection_id,
+            request_ids=[item.id for item in active_candidates],
+        )
+    candidate_hash = hash_candidate_set(active_candidates, outgoing)
     cached = await lookup_cached_decision(
         session,
         input_hash=input_hash,
@@ -316,7 +333,7 @@ async def classify_with_jev(
         )
 
     jev_candidates = candidates_to_jev(
-        candidates,
+        active_candidates,
         limit=settings.jev_max_candidates,
         outgoing=outgoing,
     )
@@ -348,7 +365,7 @@ async def classify_with_jev(
     record_jev_request("ok")
     decision = apply_provider_decision(
         response=response,
-        candidates=candidates,
+        candidates=active_candidates,
         message_text=text,
         supplier_active=supplier.active,
         route_ok=route_ok,
