@@ -160,6 +160,155 @@ async def test_timeout_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert decision.action.value == "fallback"
 
 
+@pytest.mark.asyncio
+async def test_provider_timeout_persists_error_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JEV_ENABLED", "true")
+    monkeypatch.setenv("JEV_API_KEY", "k")
+    monkeypatch.setenv("JEV_SHADOW_MODE", "true")
+    get_settings.cache_clear()
+    set_jev_client(_Timeout())
+
+    async def _no_cache(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        return None
+
+    async def _no_outbound(*args: object, **kwargs: object) -> dict[int, object]:
+        del args, kwargs
+        return {}
+
+    persisted: dict[str, object] = {}
+
+    async def _persist(*args: object, **kwargs: object) -> None:
+        del args
+        persisted.update(kwargs)
+
+    monkeypatch.setattr(
+        "app.services.jev_supplier_classifier.lookup_cached_decision",
+        _no_cache,
+    )
+    monkeypatch.setattr(
+        "app.services.jev_supplier_classifier.load_jev_outbound_facts",
+        _no_outbound,
+    )
+    monkeypatch.setattr(
+        "app.services.jev_supplier_classifier.persist_jev_decision",
+        _persist,
+    )
+    decision = await classify_with_jev(
+        AsyncMock(),
+        supplier=_supplier(),
+        business_connection_id=None,
+        chat_id=1,
+        message_id=1,
+        message_text="117900",
+        candidates=[_request()],
+        message_in_id=44,
+        line_no=2,
+    )
+    assert decision.error_code == "jev_timeout"
+    assert persisted["message_in_id"] == 44
+    assert persisted["line_no"] == 2
+    assert persisted["supplier_id"] == 1
+    stored = persisted["decision"]
+    assert stored.error_code == "jev_timeout"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_multiline_batch_skips_whole_message_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JEV_ENABLED", "true")
+    monkeypatch.setenv("JEV_API_KEY", "k")
+    monkeypatch.setenv("SUPPLIER_BATCH_REPLY_ENABLED", "true")
+    get_settings.cache_clear()
+    called = {"n": 0}
+
+    async def _classify(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        called["n"] += 1
+        return "classified"
+
+    monkeypatch.setattr(
+        "app.services.jev_supplier_classifier.classify_with_jev",
+        _classify,
+    )
+    from app.services.reply_binding_service import _maybe_classify_with_jev
+
+    skipped = await _maybe_classify_with_jev(
+        AsyncMock(),
+        supplier=_supplier(),
+        message={"message_id": 9},
+        raw_text="70000\n118000",
+        candidates=[_request()],
+        chat_id=1,
+        business_connection_id=None,
+    )
+    assert skipped is None
+    assert called["n"] == 0
+
+    single = await _maybe_classify_with_jev(
+        AsyncMock(),
+        supplier=_supplier(),
+        message={"message_id": 10},
+        raw_text="117900",
+        candidates=[_request()],
+        chat_id=1,
+        business_connection_id=None,
+    )
+    assert single == "classified"
+    assert called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_employee_review_updates_every_current_line() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.services.jev_decision_store import record_employee_review
+
+    rows = [
+        SimpleNamespace(
+            review_outcome=None,
+            reviewed_at=None,
+            reviewed_by=None,
+            actual_action=None,
+        ),
+        SimpleNamespace(
+            review_outcome=None,
+            reviewed_at=None,
+            reviewed_by=None,
+            actual_action=None,
+        ),
+    ]
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+
+    await record_employee_review(
+        session,
+        message_in_id=5,
+        outcome="ignored",
+        employee_id=7,
+    )
+    assert all(row.review_outcome == "ignored" for row in rows)
+    assert all(row.reviewed_by == 7 for row in rows)
+    assert all(row.actual_action == "ignored" for row in rows)
+    assert rows[0].reviewed_at == rows[1].reviewed_at
+    session.flush.assert_awaited()
+
+
+def test_cache_key_changes_when_jev_thresholds_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JEV_PRICE_THRESHOLD", "0.95")
+    monkeypatch.setenv("JEV_BIND_THRESHOLD", "0.95")
+    monkeypatch.setenv("JEV_BIND_MARGIN", "0.20")
+    get_settings.cache_clear()
+    before = hash_message_input("117900")
+    monkeypatch.setenv("JEV_PRICE_THRESHOLD", "0.80")
+    get_settings.cache_clear()
+    after = hash_message_input("117900")
+    assert before != after
+
+
 def test_cache_key_changes_with_text_and_status() -> None:
     first = hash_message_input("117900")
     edited = hash_message_input("118000")
@@ -223,6 +372,7 @@ async def test_classify_slices_candidates_before_hash_and_outbound_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from datetime import UTC, datetime
+
     from app.services.candidate_loader_service import JevOutboundFact
 
     monkeypatch.setenv("JEV_ENABLED", "true")
@@ -298,6 +448,7 @@ async def test_classify_accepts_preloaded_outgoing_without_db_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from datetime import UTC, datetime
+
     from app.services.candidate_loader_service import JevOutboundFact
 
     monkeypatch.setenv("JEV_ENABLED", "true")
@@ -349,6 +500,7 @@ async def test_batch_reply_preloads_outgoing_once_and_respects_bargaining(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from datetime import UTC, datetime
+
     from app.db.models import MessageIn, Quote, QuoteSource
     from app.services.candidate_loader_service import JevOutboundFact
     from app.services.supplier_batch_service import process_batch_supplier_reply

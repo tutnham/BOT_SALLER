@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
@@ -111,9 +112,12 @@ async def _request(
                 if attempt == 3:
                     record_parser_error()
                     raise ParserClientError(f"parser_transport_error:{exc}") from exc
+                await asyncio.sleep(0.2 * (2 ** (attempt - 1)))
                 continue
             if response.status_code < 500:
                 break
+            if attempt < 3:
+                await asyncio.sleep(0.2 * (2 ** (attempt - 1)))
 
     assert response is not None
     if response.status_code >= 400:

@@ -211,6 +211,30 @@ async def test_get_posts_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_posts_retries_server_error_with_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("PARSER_API_URL", "http://parser.test:8000")
+    get_settings.cache_clear()
+    delays: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("app.services.parser_client.asyncio.sleep", _sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(500, json={"detail": "boom"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ParserClientError, match="parser_http_500"):
+            await get_posts(channel_id=1, from_=None, http_client=client)
+    assert delays == [0.2, 0.4]
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_get_posts_unauthorized(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("PARSER_API_URL", "http://parser.test:8000")

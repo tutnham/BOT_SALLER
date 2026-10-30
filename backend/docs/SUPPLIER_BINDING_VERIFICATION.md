@@ -1,5 +1,7 @@
 # Supplier binding verification log
 
+Снимок ниже исторический (head тогда `0019_messages_in_pending_binding_status`, коммит `7af739b`). На 2026-10-30 код ждёт Alembic head `0028_price_publication` (`backend/app/db/revision.py`). Этот файл не описывает текущий прод.
+
 Recorded on local workspace (uncommitted changes on top of `7af739beb7d13de4c57448397bea7ae173d28edc`).
 
 | Command | Exit code | Notes |

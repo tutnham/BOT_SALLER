@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
-from app.mtproto.channel_handle import InvalidChannelHandle, split_channel_handle
 from app.db.models import (
     ParserChannel,
     ParserChannelPurpose,
@@ -19,6 +18,7 @@ from app.db.models import (
     ParserTaskType,
 )
 from app.db.session import get_db
+from app.mtproto.channel_handle import InvalidChannelHandle, split_channel_handle
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 

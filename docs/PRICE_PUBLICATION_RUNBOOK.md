@@ -40,7 +40,7 @@
 4. `python -m scripts.ensure_owners --telegram-id <id>`.
 5. Владелец пишет боту `/start`, проверка `/menu`.
 6. Проверка: вчерашняя цена не предлагается, повторная публикация не создаёт второе сообщение.
-7. **Поднять `backend-worker`** (отдельный Coolify-сервис, команда `python -m app.workers.main`, те же `DATABASE_URL` и `TELEGRAM_BOT_TOKEN`). Без него шаг 8 приведёт к «молчаливой» публикации.
+7. Доставка. При `CLIENT_PRICE_INLINE_DELIVERY=true` (по умолчанию) отдельный worker не обязателен: web забирает `telegram_outbox` сам. Поднимать `backend-worker` (`python -m app.workers.main`, те же `DATABASE_URL` и `TELEGRAM_BOT_TOKEN`) нужно, если inline-доставка выключена или включён `WEBHOOK_ASYNC_ENABLED`. Без живого дренажа шаг 8 даёт публикацию в БД без сообщения в Telegram.
 8. Включить `AUTO_PUBLISH_FIRST_VALID_PRICE=true` (Coolify env → Redeploy web и worker).
 
 ## Проверка после включения
@@ -61,4 +61,4 @@ ORDER BY created_at;
 
 ## Откат
 
-`AUTO_PUBLISH_FIRST_VALID_PRICE=false` останавливает автопубликацию. Сбор цен и карточки продолжают работать. `alembic downgrade 0027` убирает новые колонки, строки `request_price_selections` сохраняются.
+`AUTO_PUBLISH_FIRST_VALID_PRICE=false` останавливает автопубликацию. Сбор цен и карточки продолжают работать. Откат схемы публикации (ревизия `0028_price_publication`, база остаётся на `0027_supplier_ai_decisions`): из `backend/` выполнить `alembic downgrade 0027_supplier_ai_decisions`. Строки `request_price_selections`, созданные раньше, эта команда не удаляет целиком: она снимает колонки, добавленные `0028`.

@@ -71,8 +71,11 @@ async def readiness(session: AsyncSession) -> tuple[bool, dict[str, object]]:
     if not schema_ok:
         reasons.append("schema")
     worker_ok = True
-    # AUTO_PUBLISH also needs the worker: client prices only reach Telegram
-    # through telegram_outbox, which the web process never drains.
+    # Client prices leave through telegram_outbox. With CLIENT_PRICE_INLINE_DELIVERY
+    # the web process drains that outbox and writes the worker heartbeat itself.
+    # A separate backend-worker is required when inline delivery is off, or when
+    # WEBHOOK_ASYNC_ENABLED is on. /ready still expects a fresh worker heartbeat
+    # whenever autopublish or async webhooks are enabled.
     worker_required = settings.webhook_async_enabled or settings.auto_publish_first_valid_price
     if worker_required:
         worker_at = await latest_heartbeat_at(session, "worker") if db_ok else None

@@ -1868,7 +1868,7 @@ async def _handle_dialog_text(
             return "ok"
         finally:
             await admin_service.clear_dialog(session, owner_id)
-        label = created.title or created.username or created.channel_id or handle
+        label = str(created.title or created.username or created.channel_id or handle)
         status_label = {
             "active": "подключён",
             "failed": "ошибка подключения",

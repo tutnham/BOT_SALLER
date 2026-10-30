@@ -106,3 +106,42 @@ async def test_upsert_new_text_supplier_no_ai_task() -> None:
     result = await upsert_post(session, msg)
     assert result is new_post
     assert "parser_tasks" not in tables
+
+
+@pytest.mark.asyncio
+async def test_upsert_monitoring_does_not_queue_ai_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("AI_PROCESS_ENABLED", "true")
+    get_settings.cache_clear()
+    channel = SimpleNamespace(
+        channel_id=-100123,
+        purpose=ParserChannelPurpose.monitoring,
+    )
+    new_post = SimpleNamespace(
+        id=100,
+        channel_id=-100123,
+        message_id=2,
+        content_type=ParserContentType.text,
+        error_text=None,
+    )
+    tables: list[str] = []
+
+    async def execute(stmt: Any) -> Any:
+        table = getattr(getattr(stmt, "table", None), "name", None)
+        if table:
+            tables.append(table)
+        if table == "parser_posts":
+            return _ReturningResult(new_post)
+        if table in ("parser_tasks", "parser_media_files"):
+            return _ReturningResult(None)
+        return _ReturningResult(channel)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute)
+    session.flush = AsyncMock()
+
+    result = await upsert_post(session, make_message(text="watch", media=None))
+    assert result is new_post
+    assert "parser_tasks" not in tables
+    get_settings.cache_clear()

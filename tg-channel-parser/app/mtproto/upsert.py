@@ -145,18 +145,13 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
         )
 
     settings = get_settings()
-    if (
-        channel.purpose == ParserChannelPurpose.monitoring
-        and settings.ai_process_enabled
-    ):
-        await session.execute(
-            insert(ParserTask).values(
-                post_id=post.id,
-                task_type=ParserTaskType.ai_process,
-                status=ParserStatus.new,
-            )
+    if settings.ai_process_enabled:
+        logger.warning(
+            "AI_PROCESS_ENABLED is set but ai_process is not implemented; "
+            "price parsing stays in zakupki-bot. post_id={}",
+            post.id,
         )
-    # supplier_price_source: no ai_process (zakupki LLM parses prices)
+    # supplier_price_source and monitoring: no ai_process task (backend parses prices)
 
     if content_type == ParserContentType.other:
         post.error_text = "unsupported_media_type"

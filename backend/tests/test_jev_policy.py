@@ -80,6 +80,45 @@ def test_price_offer_and_clear_candidate() -> None:
     assert decision.selected_candidate_id == 1
 
 
+def test_not_price_ignores_on_low_price_probability_despite_flat_binding() -> None:
+    decision = apply_provider_decision(
+        response=_response(
+            message_choice="not_price",
+            price="0.01",
+            binding="none",
+            probabilities={"none": "0.40", "ambiguous": "0.60"},
+            confidence="0.10",
+        ),
+        candidates=[_request(1)],
+        message_text="добрый день",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.IGNORE
+    assert decision.reason_code == "jev_not_price"
+    assert decision.selected_candidate_id is None
+
+
+def test_not_price_stays_review_when_price_probability_is_not_low() -> None:
+    decision = apply_provider_decision(
+        response=_response(
+            message_choice="not_price",
+            price="0.50",
+            binding="none",
+            probabilities={"none": "0.99", "ambiguous": "0.01"},
+            confidence="0.99",
+        ),
+        candidates=[_request(1)],
+        message_text="добрый день",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.REVIEW
+    assert decision.reason_code == "jev_not_price"
+
+
 def test_not_price_high_confidence_is_ignore() -> None:
     decision = apply_provider_decision(
         response=_response(

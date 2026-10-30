@@ -162,7 +162,6 @@ class Settings(BaseSettings):
     jev_price_threshold: Decimal = Decimal("0.95")
     jev_bind_threshold: Decimal = Decimal("0.95")
     jev_bind_margin: Decimal = Decimal("0.20")
-    jev_store_raw_payloads: bool = False
     jev_fallback_to_existing_llm: bool = True
 
     @staticmethod

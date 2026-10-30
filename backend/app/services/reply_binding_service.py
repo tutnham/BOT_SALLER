@@ -640,6 +640,10 @@ async def _maybe_classify_with_jev(
     settings = get_settings()
     if not settings.jev_enabled or not candidates:
         return None
+    from app.services.supplier_batch_service import is_multiline_rfq_candidate
+
+    if settings.supplier_batch_reply_enabled and is_multiline_rfq_candidate(raw_text):
+        return None
     from app.services.jev_supplier_classifier import classify_with_jev
 
     try:

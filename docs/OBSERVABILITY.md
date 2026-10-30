@@ -20,7 +20,7 @@
 
 В лейблах нет supplier id, chat id и текста сообщения.
 
-`/ready` требует heartbeat worker, когда `WEBHOOK_ASYNC_ENABLED=true`. Heartbeat scheduler требуется, когда `SCHEDULER_ENABLED=true` или `SCHEDULER_EXPECTED=true`. Свежесть — `HEARTBEAT_STALE_SECONDS` (по умолчанию 90).
+`/ready` требует свежий heartbeat `worker`, когда `WEBHOOK_ASYNC_ENABLED=true` или `AUTO_PUBLISH_FIRST_VALID_PRICE=true`. При `CLIENT_PRICE_INLINE_DELIVERY=true` этот heartbeat пишет сам web. Heartbeat scheduler требуется, когда `SCHEDULER_ENABLED=true` или `SCHEDULER_EXPECTED=true`. Свежесть — `HEARTBEAT_STALE_SECONDS` (по умолчанию 90).
 
 ## Метрики
 

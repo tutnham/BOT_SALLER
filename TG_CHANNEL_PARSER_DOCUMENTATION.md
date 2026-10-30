@@ -1,7 +1,9 @@
 # Техническая документация: сервис парсинга Telegram-канала (MTProto, userbot)
 
 Версия: 1.0
-Статус относительно основного проекта («бот закупок»): **отдельный сервис**, не связан по бизнес-логике с ботом закупок (`TECHNICAL_DOCUMENTATION.md`). Использует другой протокол доступа к Telegram (MTProto от имени личного аккаунта, а не Bot API), другую БД/схему и другой контур авторизации. Причина разделения: Bot API и MTProto-клиент личного аккаунта — принципиально разные механизмы аутентификации и разные ограничения (см. раздел 2), их смешивание в одном процессе увеличивает риск потери сессии аккаунта.
+Статус относительно основного проекта («бот закупок»): **отдельный сервис**. Своя БД `tg_parser`, свой Alembic (head `0005_runtime_heartbeat`). Backend ходит только по HTTP (`PARSER_API_URL`, Bearer `PARSER_API_TOKEN`).
+
+**Фактический runtime (2026-10-30):** один процесс `tg-runtime` (`app.mtproto.runtime`: listener, poll задач, heartbeat) и `tg-parser-api`. Отдельных постоянных сервисов `tg-listener` и `tg-worker` в `docker-compose.tg-parser.yml` нет. Разбор прайсов делает backend (`morning-price`). Задачи `ai_process` не ставятся: каталога `app/ai/` нет, флаг `AI_PROCESS_ENABLED` только пишет предупреждение в лог. Схемы ниже, где нарисованы `tg-listener`, `tg-worker` и Ollama, описывают ранний набросок, не текущий compose.
 
 ---
 
@@ -538,23 +540,20 @@ Host ports **не** публикуются. Ollama в текущем MVP **не*
 Подробный prod runbook: **`СЕРВИСЫ.md`**.
 
 ```yaml
-# Упрощённая схема (см. актуальный файл в репо)
+# Упрощённая схема текущего compose (см. docker-compose.tg-parser.yml)
 services:
   tg-parser-postgres:
     image: postgres:15
-    # без ports:
   tg-parser-migrate:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
-  tg-listener:
-    command: ["python", "-m", "app.mtproto.realtime"]
-  tg-worker:
-    command: ["python", "-m", "app.worker.task_worker"]
+  tg-runtime:
+    # listener + task worker + heartbeat, один процесс
   tg-parser-api:
-    # internal :8000, healthcheck /health
+    # internal :8000, без published ports
 ```
 
-`tg-listener` для режима backfill запускается разово отдельной командой (не как постоянный сервис): `docker compose run --rm tg-listener python -m app.mtproto.backfill --channel @my_channel --from-date 2026-01-01`.
+Backfill — разовая команда через `tg-runtime`, не отдельный вечный сервис: `docker compose run --rm tg-runtime python -m app.mtproto.backfill --channel @my_channel --from-date 2026-01-01`.
 
 Redis/Celery — не включены; при необходимости добавляется сервис `redis:7` и `tg-worker` переключается с polling на очередь без изменения таблицы `parser_tasks` (она может использоваться как журнал состояния параллельно с очередью).
 

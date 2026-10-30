@@ -193,19 +193,20 @@ async def record_employee_review(
     outcome: str,
     employee_id: int | None,
 ) -> None:
-    row = await session.scalar(
-        select(SupplierAiDecision)
-        .where(
-            SupplierAiDecision.message_in_id == message_in_id,
-            SupplierAiDecision.is_current.is_(True),
+    rows = (
+        await session.execute(
+            select(SupplierAiDecision).where(
+                SupplierAiDecision.message_in_id == message_in_id,
+                SupplierAiDecision.is_current.is_(True),
+            )
         )
-        .order_by(SupplierAiDecision.id.desc())
-        .limit(1)
-    )
-    if row is None:
+    ).scalars().all()
+    if not rows:
         return
-    row.review_outcome = outcome
-    row.reviewed_at = datetime.now(UTC)
-    row.reviewed_by = employee_id
-    row.actual_action = outcome
+    now = datetime.now(UTC)
+    for row in rows:
+        row.review_outcome = outcome
+        row.reviewed_at = now
+        row.reviewed_by = employee_id
+        row.actual_action = outcome
     await session.flush()

@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.binding import can_auto_bind_request
 from app.config import Settings, get_settings
 from app.db.models import Request, Supplier
-from app.services.candidate_loader_service import JevOutboundFact, load_jev_outbound_facts
 from app.integrations.jev.client import get_jev_client
 from app.integrations.jev.exceptions import (
     JevAuthError,
@@ -36,6 +35,10 @@ from app.parsers.product_normalizer import (
     detect_product_contradictions,
     extract_product_attrs,
 )
+from app.services.candidate_loader_service import (
+    JevOutboundFact,
+    load_jev_outbound_facts,
+)
 from app.services.jev_decision_store import (
     lookup_cached_decision,
     persist_jev_decision,
@@ -54,9 +57,14 @@ from app.services.telemetry import (
 _MAX_TEXT = 4000
 
 
-def hash_message_input(message_text: str) -> str:
+def hash_message_input(message_text: str, *, settings: Settings | None = None) -> str:
+    """Cache key includes live thresholds so an env change is visible immediately."""
+    active = settings or get_settings()
     normalized = " ".join((message_text or "").strip().split())
-    payload = f"{PROMPT_VERSION}:{SCHEMA_VERSION}:{normalized}".encode()
+    thresholds = (
+        f"{active.jev_price_threshold}:{active.jev_bind_threshold}:{active.jev_bind_margin}"
+    )
+    payload = f"{PROMPT_VERSION}:{SCHEMA_VERSION}:{thresholds}:{normalized}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -220,8 +228,10 @@ def apply_provider_decision(
         selected_id = None
     elif message_class is JevMessageClass.NOT_PRICE:
         selected_id = None
+        # binding_confidence is how peaked the candidate Choice is, not how sure
+        # the price Noul is. Ignore only when the price probability itself is low.
         low_price = price_probability <= (Decimal("1") - settings.jev_price_threshold)
-        if low_price and confidence >= settings.jev_bind_threshold:
+        if low_price:
             action = JevDecisionAction.IGNORE
             reason = "jev_not_price"
         else:
@@ -309,7 +319,7 @@ async def classify_with_jev(
     active_candidates = sorted(candidates, key=lambda item: item.id, reverse=True)[
         : settings.jev_max_candidates
     ]
-    input_hash = hash_message_input(text)
+    input_hash = hash_message_input(text, settings=settings)
     if outgoing is None:
         outgoing = await load_jev_outbound_facts(
             session,
@@ -338,6 +348,20 @@ async def classify_with_jev(
         outgoing=outgoing,
     )
     correlation_id = f"jev:{message_in_id or 0}:{line_no}"
+
+    async def fail(code: str) -> JevSupplierDecision:
+        return await _record_failure(
+            code,
+            started,
+            settings,
+            session=session,
+            message_in_id=message_in_id,
+            supplier_id=supplier.id,
+            line_no=line_no,
+            input_hash=input_hash,
+            candidate_set_hash=candidate_hash,
+        )
+
     try:
         response = await get_jev_client().classify_supplier_message(
             message_text=text,
@@ -345,19 +369,18 @@ async def classify_with_jev(
             correlation_id=correlation_id,
         )
     except JevTimeout:
-        decision = _record_failure("jev_timeout", started, settings)
-        return decision
+        return await fail("jev_timeout")
     except JevRateLimited:
-        return _record_failure("jev_rate_limited", started, settings)
+        return await fail("jev_rate_limited")
     except JevAuthError:
-        return _record_failure("jev_auth_error", started, settings)
+        return await fail("jev_auth_error")
     except JevInvalidResponse:
-        return _record_failure("jev_invalid_response", started, settings)
+        return await fail("jev_invalid_response")
     except JevError:
-        return _record_failure("jev_unavailable", started, settings)
+        return await fail("jev_unavailable")
     except Exception:
         logger.exception("jev classify failed without provider detail")
-        return _record_failure("jev_unavailable", started, settings)
+        return await fail("jev_unavailable")
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     record_jev_latency(latency_ms / 1000)
@@ -409,7 +432,18 @@ async def classify_with_jev(
     return decision
 
 
-def _record_failure(code: str, started: float, settings: Settings) -> JevSupplierDecision:
+async def _record_failure(
+    code: str,
+    started: float,
+    settings: Settings,
+    *,
+    session: AsyncSession | None = None,
+    message_in_id: int | None = None,
+    supplier_id: int | None = None,
+    line_no: int = 1,
+    input_hash: str | None = None,
+    candidate_set_hash: str | None = None,
+) -> JevSupplierDecision:
     latency_ms = int((time.perf_counter() - started) * 1000)
     record_jev_error(code)
     record_jev_latency(latency_ms / 1000)
@@ -420,12 +454,18 @@ def _record_failure(code: str, started: float, settings: Settings) -> JevSupplie
         model=settings.jev_model,
         latency_ms=latency_ms,
     )
+    decision = decision.model_copy(
+        update={
+            "input_hash": input_hash or "error",
+            "candidate_set_hash": candidate_set_hash or "error",
+        }
+    )
     record_jev_decision(action=decision.action.value, shadow_mode=settings.jev_shadow_mode)
     logger.info(
         "jev_decision correlation_id={} message_in_id={} provider={} model={} "
         "prompt_version={} schema_version={} action={} reason_code={} latency_ms={}",
         "jev-error",
-        None,
+        message_in_id,
         "jev",
         settings.jev_model,
         PROMPT_VERSION,
@@ -434,4 +474,14 @@ def _record_failure(code: str, started: float, settings: Settings) -> JevSupplie
         decision.reason_code,
         latency_ms,
     )
+    if session is not None and message_in_id is not None and supplier_id is not None:
+        await persist_jev_decision(
+            session,
+            decision=decision,
+            message_in_id=message_in_id,
+            supplier_id=supplier_id,
+            line_no=line_no,
+            shadow_mode=settings.jev_shadow_mode,
+            actual_action="shadow" if settings.jev_shadow_mode else decision.action.value,
+        )
     return decision
