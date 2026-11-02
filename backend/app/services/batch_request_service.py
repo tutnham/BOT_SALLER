@@ -268,7 +268,7 @@ async def confirm_batch(
     from app.services.daily_sku_price_service import apply_known_daily_prices_for_batch
     from app.services.supplier_rfq_batch_service import send_grouped_rfq_for_batch
 
-    await apply_known_daily_prices_for_batch(session, batch=batch)
+    await apply_known_daily_prices_for_batch(session, batch=batch, telegram=telegram)
     await send_grouped_rfq_for_batch(session, batch=batch, telegram=telegram)
     await commit_or_flush(session)
     return batch

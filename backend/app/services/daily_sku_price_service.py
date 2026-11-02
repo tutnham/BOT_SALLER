@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,28 +169,155 @@ async def _daily_source_quote_eligible(
     return eligible
 
 
+def _requested_units(request: Request) -> int:
+    if request.requested_qty:
+        return int(request.requested_qty)
+    raw = (request.normalized_json or {}).get("qty")
+    if raw:
+        return int(raw)
+    return 1
+
+
+async def attach_fresh_daily_quote_to_request(
+    session: AsyncSession,
+    request: Request,
+    *,
+    now: datetime | None = None,
+) -> Quote | None:
+    """Copy today's eligible source quote onto ``request`` and reprice markup for it.
+
+    Returns None when there is no reusable same-day price, or the remembered
+    quantity cannot cover this request. Does not publish or send anything.
+    """
+    if not request.canonical_sku_key:
+        return None
+    daily = await get_fresh_daily_price(
+        session, canonical_sku_key=request.canonical_sku_key, now=now
+    )
+    if daily is None or daily.source_quote_id is None:
+        return None
+    source = await session.get(Quote, daily.source_quote_id)
+    if source is None:
+        return None
+    if source.qty is not None and int(source.qty) < _requested_units(request):
+        return None
+    purchase = source.price_bargain or source.price_initial
+    if purchase is None:
+        return None
+
+    rules = await load_rules(session)
+    product = request.normalized_json or {"model": request.source_text}
+    final, markup, rule_id, _rule_key = apply_markup(Decimal(str(purchase)), product, rules)
+
+    existing = await session.scalar(
+        select(Quote).where(
+            Quote.request_id == request.id,
+            Quote.supplier_id == source.supplier_id,
+        )
+    )
+    target = existing or Quote(request_id=request.id, supplier_id=source.supplier_id)
+    target.price_initial = source.price_initial
+    target.price_bargain = source.price_bargain
+    target.qty = source.qty
+    target.available = source.available
+    target.condition = source.condition
+    target.source = source.source
+    target.confidence = source.confidence
+    target.observed_at = source.observed_at or datetime.now(UTC)
+    target.markup_rub = markup
+    target.price_final = final
+    target.markup_rule_id = rule_id
+    if existing is None:
+        session.add(target)
+    await session.flush()
+    return target
+
+
+async def reuse_today_price_for_request(
+    session: AsyncSession,
+    request: Request,
+    *,
+    telegram: Any | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Deliver today's price into this request's chat. False means the caller must RFQ.
+
+    Success is an outbox row (autopublish on) or a direct client message (flag off).
+    A publish error never sticks the request in ``known_today`` without a message.
+    """
+    if not request.canonical_sku_key:
+        return False
+    try:
+        quote = await attach_fresh_daily_quote_to_request(session, request, now=now)
+    except Exception:
+        logger.exception("daily quote attach failed request_id={}", request.id)
+        return False
+    if quote is None:
+        return False
+
+    settings = get_settings()
+    delivered = False
+    try:
+        from app.services.first_price_publication_service import (
+            publish_first_valid_price,
+        )
+
+        delivered = await publish_first_valid_price(
+            session, request_id=request.id, trigger="known_today", now=now
+        )
+    except Exception:
+        logger.exception("client price publication failed request_id={}", request.id)
+        delivered = False
+
+    if not delivered and not settings.auto_publish_first_valid_price and telegram is not None:
+        from app.services.quote_service import display_price_for_group
+        from app.templates.messages_ru import render_template
+
+        text = render_template(
+            "supplier_quote_parsed",
+            request_id=request.id,
+            price=display_price_for_group(quote),
+        )
+        try:
+            await telegram.send_message(request.group_chat_id, text)
+        except Exception:
+            logger.exception("known-today client send failed request_id={}", request.id)
+        else:
+            delivered = True
+
+    if not delivered:
+        if request.price_state in (
+            RequestPriceState.known_today.value,
+            RequestPriceState.known_today,
+        ):
+            request.price_state = RequestPriceState.collecting.value
+            await session.flush()
+        return False
+
+    if request.price_state != RequestPriceState.published.value:
+        request.price_state = RequestPriceState.known_today.value
+    from app.services.telemetry import record_same_day_price_reuse
+
+    record_same_day_price_reuse()
+    await session.flush()
+    return True
+
+
 async def apply_known_daily_prices_for_batch(
     session: AsyncSession,
     *,
     batch: RequestBatch,
+    telegram: Any | None = None,
 ) -> int:
     moment = datetime.now(UTC)
     applied = 0
     for request in batch.requests:
         if not request.canonical_sku_key:
             continue
-        daily = await get_fresh_daily_price(
-            session, canonical_sku_key=request.canonical_sku_key, now=moment
-        )
-        if daily is None:
-            continue
-        request.price_state = RequestPriceState.known_today
-        applied += 1
-        from app.services.first_price_publication_service import (
-            publish_first_valid_price,
-        )
-
-        await publish_first_valid_price(session, request_id=request.id, trigger="known_today")
+        if await reuse_today_price_for_request(
+            session, request, telegram=telegram, now=moment
+        ):
+            applied += 1
     batch.items_priced = applied
     await session.flush()
     return applied

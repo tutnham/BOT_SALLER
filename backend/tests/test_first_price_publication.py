@@ -292,3 +292,98 @@ async def test_flag_off_publishes_nothing(
         .where(RequestPriceSelection.status == "published")
     )
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_projection_error_still_publishes_client_price(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("daily projection down")
+
+    monkeypatch.setattr("app.services.daily_sku_price_service.on_quote_upserted", _boom)
+    request = await _request(db_session, seed_employee.id)
+    quote = await upsert_quote(
+        db_session,
+        request.id,
+        seed_suppliers[0].id,
+        price=Decimal("91000"),
+        source=QuoteSource.regex,
+        confidence=0.9,
+    )
+    assert quote is not None
+    row = await db_session.scalar(
+        select(TelegramOutbox).where(
+            TelegramOutbox.request_id == request.id,
+            TelegramOutbox.kind == "client_price",
+        )
+    )
+    assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_bare_supplier_price_reaches_client_once(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    seed_client_group,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+    from app.handlers.supplier_messages import handle_reply
+    from app.services.request_service import create_request
+    from tests.conftest import MockTelegramClient
+
+    telegram = MockTelegramClient()
+    request, _sent = await create_request(
+        db_session,
+        group_chat_id=seed_client_group.chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro Max 1TB Silver",
+        telegram=telegram,
+    )
+    first = seed_suppliers[0]
+    second = seed_suppliers[1]
+    assert first.telegram_id is not None and second.telegram_id is not None
+    for supplier, message_id, price_text in (
+        (first, 9101, "127500"),
+        (second, 9102, "120000"),
+    ):
+        await handle_reply(
+            db_session,
+            {
+                "message_id": message_id,
+                "chat": {"id": supplier.telegram_id, "type": "private"},
+                "from": {"id": supplier.telegram_id},
+                "text": price_text,
+            },
+            telegram=telegram,
+        )
+
+    quotes = (
+        await db_session.scalars(select(Quote).where(Quote.request_id == request.id))
+    ).all()
+    assert len(quotes) == 2
+    rows = (
+        await db_session.scalars(
+            select(TelegramOutbox).where(
+                TelegramOutbox.request_id == request.id,
+                TelegramOutbox.kind == "client_price",
+                TelegramOutbox.chat_id == seed_client_group.chat_id,
+            )
+        )
+    ).all()
+    assert len(rows) == 1
+    direct = [
+        text
+        for chat_id, text, _markup in telegram.sent
+        if chat_id == seed_client_group.chat_id and "Цена:" in text
+    ]
+    assert direct == []

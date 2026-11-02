@@ -150,28 +150,37 @@ async def upsert_quote(
     if quote is not None:
         request = await session.get(Request, request_id)
         if request is not None:
+            from loguru import logger
+
             try:
                 from app.services.daily_sku_price_service import on_quote_upserted
-                from app.services.first_price_publication_service import (
-                    publish_first_valid_price,
-                )
 
                 await on_quote_upserted(session, quote=quote, request=request)
-                published_now = await publish_first_valid_price(
-                    session, request_id=request.id, trigger="first_quote"
-                )
-                if not published_now and get_settings().auto_publish_first_valid_price:
-                    from app.services.reprice_service import notify_better_late_price
-
-                    await notify_better_late_price(session, request_id=request.id)
             except Exception:
-                from loguru import logger
-
                 logger.exception(
                     "daily/best-quote projection failed request_id={} quote_id={}",
                     request_id,
                     quote.id,
                 )
+            published_now = False
+            try:
+                from app.services.first_price_publication_service import (
+                    publish_first_valid_price,
+                )
+
+                published_now = await publish_first_valid_price(
+                    session, request_id=request.id, trigger="first_quote"
+                )
+            except Exception:
+                logger.exception(
+                    "client price publication failed request_id={} quote_id={}",
+                    request_id,
+                    quote.id,
+                )
+            if not published_now and get_settings().auto_publish_first_valid_price:
+                from app.services.reprice_service import notify_better_late_price
+
+                await notify_better_late_price(session, request_id=request.id)
     return quote
 
 

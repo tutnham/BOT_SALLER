@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageKind, Request, RequestPriceState, RequestStatus
+from app.db.models import MessageKind, Request, RequestStatus
 from app.db.unit_of_work import commit_or_flush
 from app.llm.client import (
     LLMProviderError,
@@ -145,24 +145,15 @@ async def build_normalized_json(
     return normalized
 
 
-async def _reuse_known_today_price(session: AsyncSession, request: Request) -> bool:
-    """Skip RFQ when an eligible same-day price already exists for the SKU."""
-    if not request.canonical_sku_key:
-        return False
-    from app.services.daily_sku_price_service import get_fresh_daily_price
+async def _reuse_known_today_price(
+    session: AsyncSession,
+    request: Request,
+    telegram: TelegramClientProtocol,
+) -> bool:
+    """Skip RFQ only after today's price is actually delivered to this chat."""
+    from app.services.daily_sku_price_service import reuse_today_price_for_request
 
-    daily = await get_fresh_daily_price(session, canonical_sku_key=request.canonical_sku_key)
-    if daily is None:
-        return False
-    request.price_state = RequestPriceState.known_today
-    await session.flush()
-    from app.services.telemetry import record_same_day_price_reuse
-
-    record_same_day_price_reuse()
-    from app.services.first_price_publication_service import publish_first_valid_price
-
-    await publish_first_valid_price(session, request_id=request.id, trigger="known_today")
-    return True
+    return await reuse_today_price_for_request(session, request, telegram=telegram)
 
 
 async def _broadcast_request(
@@ -311,7 +302,7 @@ async def create_request(
 
     for request in created:
         category = str((request.normalized_json or {}).get("category") or "unknown")
-        reused = await _reuse_known_today_price(session, request)
+        reused = await _reuse_known_today_price(session, request, telegram)
         if reused:
             continue
         sent_count, failed_lines = await _broadcast_request(
