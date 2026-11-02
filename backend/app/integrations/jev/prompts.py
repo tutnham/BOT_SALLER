@@ -6,7 +6,7 @@ from typing import Any
 
 from app.integrations.jev.models import JevCandidate
 
-PROMPT_VERSION = "supplier-classify-v2"
+PROMPT_VERSION = "supplier-classify-v4"
 SCHEMA_VERSION = "jev-decision-v1"
 PROVIDER = "jev"
 
@@ -15,8 +15,15 @@ BINDING_NONE = "none"
 BINDING_AMBIGUOUS = "ambiguous"
 
 _IS_PRICE_TRUE = (
-    "A commercial supplier price for a product the buyer asked about: "
-    "a full amount, a thousands suffix (к), or a short decimal on a product line."
+    "A commercial supplier price: a full amount, a thousands suffix (к), "
+    "or a short decimal on a product line."
+)
+_MATCHES_ORDER_TRUE = (
+    "The message names the same product line, generation, and variant as at least one listed order."
+)
+_MATCHES_ORDER_FALSE = (
+    "The message names a different product: another line, another generation, another variant, "
+    "or a product that is not in `candidates`."
 )
 _IS_PRICE_FALSE = (
     "Not a commercial price: model numbers, storage size, quantity, request numbers, "
@@ -33,7 +40,10 @@ def build_state(message_text: str, candidates: list[JevCandidate]) -> dict[str, 
 
 def build_questions(candidates: list[JevCandidate]) -> dict[str, Any]:
     binding_criteria: dict[str, str] = {
-        BINDING_NONE: "The message does not refer to any listed candidate.",
+        BINDING_NONE: (
+            "The message names a product that is not any listed order, "
+            "or it does not refer to a listed order."
+        ),
         BINDING_AMBIGUOUS: "More than one listed candidate fits, or the text is only a bare price.",
     }
     for candidate in candidates:
@@ -47,10 +57,17 @@ def build_questions(candidates: list[JevCandidate]) -> dict[str, Any]:
                 "ambiguous when it is unclear."
             ),
             "criteria": {
-                "price_offer": "Commercial price for a listed product.",
+                "price_offer": "A commercial price, whether or not it matches a listed order.",
                 "not_price": "No commercial price.",
                 "ambiguous": "Could be either.",
             },
+        },
+        "matches_listed_order": {
+            "type": "noul",
+            "instructions": (
+                "Does `supplier_message` name the same product model as any order in `candidates`?"
+            ),
+            "criteria": {"true": _MATCHES_ORDER_TRUE, "false": _MATCHES_ORDER_FALSE},
         },
         "is_price": {
             "type": "noul",

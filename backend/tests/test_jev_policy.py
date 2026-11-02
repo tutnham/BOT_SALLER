@@ -54,6 +54,7 @@ def _response(
     binding: str = "request:1",
     probabilities: dict[str, str] | None = None,
     confidence: str = "0.97",
+    matches: str | None = None,
 ) -> JevProviderResponse:
     probs = probabilities or {binding: "0.98", "none": "0.01", "ambiguous": "0.01"}
     return JevProviderResponse(
@@ -63,6 +64,7 @@ def _response(
         binding_choice=binding,
         binding_probabilities={key: Decimal(value) for key, value in probs.items()},
         binding_confidence=Decimal(confidence),
+        matches_listed_order=Decimal(matches) if matches is not None else None,
     )
 
 
@@ -202,7 +204,7 @@ def test_product_conflict_blocks_high_confidence() -> None:
         settings=_settings(),
     )
     assert decision.reason_code == "product_conflict"
-    assert decision.action is JevDecisionAction.REVIEW
+    assert decision.action is JevDecisionAction.IGNORE
 
 
 def test_unknown_candidate_in_policy() -> None:
@@ -317,6 +319,63 @@ def test_not_price_message_choice_clears_selected_candidate_id() -> None:
     assert decision.action is JevDecisionAction.IGNORE
     assert decision.reason_code == "jev_not_price"
     assert decision.selected_candidate_id is None
+
+
+def test_binding_none_high_probability_is_ignore() -> None:
+    decision = apply_provider_decision(
+        response=_response(
+            binding="none",
+            probabilities={"none": "0.98", "request:1": "0.01", "ambiguous": "0.01"},
+        ),
+        candidates=[_request(1)],
+        message_text="17 Pro 512GB Silver 107",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.IGNORE
+    assert decision.reason_code == "jev_no_matching_request"
+    assert decision.selected_candidate_id is None
+
+
+def test_low_matches_listed_order_is_ignore() -> None:
+    decision = apply_provider_decision(
+        response=_response(matches="0.05"),
+        candidates=[_request(1)],
+        message_text="17 Pro 512GB Silver 107",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.IGNORE
+    assert decision.reason_code == "jev_no_matching_request"
+    assert decision.selected_candidate_id is None
+
+
+def test_color_conflict_stays_review() -> None:
+    decision = apply_provider_decision(
+        response=_response(matches="0.90"),
+        candidates=[_request(1)],
+        message_text="iPhone 17 Pro 256 Black 117900",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.REVIEW
+    assert decision.reason_code == "product_conflict"
+
+
+def test_mid_match_does_not_auto_bind() -> None:
+    decision = apply_provider_decision(
+        response=_response(matches="0.50"),
+        candidates=[_request(1)],
+        message_text="iPhone 17 Pro 256 Blue 117900",
+        supplier_active=True,
+        route_ok=True,
+        settings=_settings(),
+    )
+    assert decision.action is JevDecisionAction.REVIEW
+    assert decision.reason_code == "jev_model_uncertain"
 
 
 def test_provider_state_has_no_prices() -> None:

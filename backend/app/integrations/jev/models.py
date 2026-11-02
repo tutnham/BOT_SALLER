@@ -50,6 +50,8 @@ class JevProviderResponse(BaseModel):
     binding_choice: str
     binding_probabilities: dict[str, Decimal]
     binding_confidence: Decimal = Field(ge=0, le=1)
+    # None when an older response omits the companion noul. Code then does not treat it as "no".
+    matches_listed_order: Decimal | None = Field(default=None, ge=0, le=1)
     input_tokens: int | None = None
     output_tokens: int | None = None
 

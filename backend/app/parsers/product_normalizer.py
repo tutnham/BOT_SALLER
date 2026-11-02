@@ -300,7 +300,8 @@ def _parse_variant(tail: str, brand: str) -> tuple[str | None, str | None, str |
             variant = "mini"
         elif suffix == "se":
             variant = "se"
-    elif number and family == "iphone":
+    elif number:
+        # Any numbered model without Pro/Max/Plus/… is the base model, not "unspecified".
         variant = "base"
 
     return family, number, variant
@@ -319,14 +320,27 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
         family = "samsung"
         brand = "Samsung"
     samsung_num = _SAMSUNG_MODEL_RE.search(text)
-    if samsung_num and re.search(r"\bultra\b", text, re.IGNORECASE):
+    if samsung_num:
         family = "samsung"
         brand = "Samsung"
         number = samsung_num.group(1)
-        return brand, family, number, "ultra"
+        if re.search(r"\bultra\b", text, re.IGNORECASE):
+            variant = "ultra"
+        elif re.search(r"\bplus\b", text, re.IGNORECASE):
+            variant = "plus"
+        else:
+            variant = "base"
+        return brand, family, number, variant
 
     if not re.search(r"\b(?:pro|max|plus|air|ultra|mini|se)\b", text, re.IGNORECASE):
-        return None, None, None, None
+        # "16 256GB 85" names a generation even without the word iPhone or Pro.
+        # A bare price has no storage and no color, so it stays model-less.
+        if _STORAGE_RE.search(text) is None and _extract_color(text) is None:
+            return None, None, None, None
+        number_match = _MODEL_NUMBER_RE.search(text)
+        if number_match is None:
+            return None, None, None, None
+        return None, family, number_match.group(1), "base"
 
     number_match = _MODEL_NUMBER_RE.search(text)
     if not number_match:
@@ -507,32 +521,62 @@ def attrs_match_score(
     return score
 
 
+def normalized_request_attrs(
+    request_normalized: dict[str, Any] | None,
+) -> ProductAttrs | None:
+    """Attrs parsed from a request's stored product fields."""
+    if not request_normalized:
+        return None
+    return extract_product_attrs(
+        " ".join(
+            filter(
+                None,
+                [
+                    str(request_normalized.get("model") or ""),
+                    str(request_normalized.get("storage") or ""),
+                    str(request_normalized.get("color") or ""),
+                    str(request_normalized.get("sim") or ""),
+                    str(request_normalized.get("region") or ""),
+                    str(request_normalized.get("sku") or ""),
+                ],
+            )
+        )
+    )
+
+
+def model_identity_conflicts(
+    message_attrs: ProductAttrs,
+    request_normalized: dict[str, Any] | None,
+) -> list[str]:
+    """Family, number, variant, or SKU clash.
+
+    Color, storage, SIM, and region are not model identity: a Silver vs Black
+    quote for the same 17 Pro still needs a person.
+    """
+    req_attrs = normalized_request_attrs(request_normalized)
+    if req_attrs is None:
+        return []
+    conflicts: list[str] = []
+    if message_attrs.family and req_attrs.family and message_attrs.family != req_attrs.family:
+        conflicts.append("family")
+    if message_attrs.number and req_attrs.number and message_attrs.number != req_attrs.number:
+        conflicts.append("model_number")
+    if message_attrs.variant and req_attrs.variant and message_attrs.variant != req_attrs.variant:
+        conflicts.append("variant")
+    if message_attrs.sku and req_attrs.sku and message_attrs.sku != req_attrs.sku:
+        conflicts.append("sku")
+    return conflicts
+
+
 def detect_product_contradictions(
     message_attrs: ProductAttrs,
     request_normalized: dict[str, Any] | None,
 ) -> list[str]:
     """Hard mismatches that block automatic single-candidate binding."""
-    if not request_normalized:
+    req_attrs = normalized_request_attrs(request_normalized)
+    if req_attrs is None:
         return []
-    req_attrs = extract_product_attrs(
-        " ".join(
-            filter(
-                None,
-                [
-                    request_normalized.get("model") or "",
-                    request_normalized.get("storage") or "",
-                    request_normalized.get("color") or "",
-                    request_normalized.get("sim") or "",
-                    request_normalized.get("region") or "",
-                ],
-            )
-        )
-    )
-    conflicts: list[str] = []
-    if message_attrs.number and req_attrs.number and message_attrs.number != req_attrs.number:
-        conflicts.append("model_number")
-    if message_attrs.variant and req_attrs.variant and message_attrs.variant != req_attrs.variant:
-        conflicts.append("variant")
+    conflicts = model_identity_conflicts(message_attrs, request_normalized)
     if message_attrs.storage and req_attrs.storage:
         if message_attrs.storage.lower() != req_attrs.storage.lower():
             conflicts.append("storage")
@@ -545,8 +589,6 @@ def detect_product_contradictions(
     if message_attrs.region and req_attrs.region:
         if message_attrs.region.upper() != req_attrs.region.upper():
             conflicts.append("region")
-    if message_attrs.sku and req_attrs.sku and message_attrs.sku != req_attrs.sku:
-        conflicts.append("sku")
     return conflicts
 
 

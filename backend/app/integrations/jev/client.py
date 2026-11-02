@@ -162,6 +162,18 @@ def _backoff(attempt: int) -> float:
     return float(base) + jitter
 
 
+def _optional_noul(raw: object) -> Decimal | None:
+    """Missing companion noul stays unset. A present but broken one is an invalid response."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or "noul" not in raw:
+        raise JevInvalidResponse()
+    try:
+        return Decimal(str(raw.get("noul")))
+    except (InvalidOperation, ValueError):
+        raise JevInvalidResponse() from None
+
+
 def _parse_success(data: object, allowed_binding: set[str]) -> JevProviderResponse:
     if not isinstance(data, dict):
         raise JevInvalidResponse()
@@ -176,6 +188,7 @@ def _parse_success(data: object, allowed_binding: set[str]) -> JevProviderRespon
         raise JevInvalidResponse()
     choice = message.get("choice")
     noul = price.get("noul")
+    matches_listed_order = _optional_noul(answers.get("matches_listed_order"))
     binding_choice = binding.get("choice")
     probabilities = binding.get("probabilities")
     confidence = binding.get("confidence")
@@ -201,6 +214,7 @@ def _parse_success(data: object, allowed_binding: set[str]) -> JevProviderRespon
             binding_choice=binding_choice,
             binding_probabilities=prob_map,
             binding_confidence=binding_confidence,
+            matches_listed_order=matches_listed_order,
             input_tokens=input_tokens if isinstance(input_tokens, int) else None,
             output_tokens=output_tokens if isinstance(output_tokens, int) else None,
         )

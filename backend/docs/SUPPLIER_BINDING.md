@@ -10,6 +10,7 @@
 6. **LLM classify** only when product identity is present and Jev did not already return review/ignore/bind; uses `SUPPLIER_BIND_LLM_THRESHOLD` (not quote threshold).
 7. **Multiple candidates + bare price** → `pending_binding` (Jev reason `multiple_candidates_bare_price` when Jev is active). A high price probability is not a binding.
 8. **No candidates** → `unbound`, no quote. Jev is not called.
+9. **Named model with no compatible request** → `ignored` / `no_matching_model`. The check is any product, not a fixed pair of phones: line, generation, variant, or SKU must not contradict every eligible request (16 vs 17, base vs Pro, iPhone vs iPad, iPhone vs Samsung). No operator card and no quote. Color, storage, SIM, and region clashes stay `pending_binding` and the card lists only requests that share the model. Jev `matches_listed_order` ≤ 0.3 or a confident `binding=none` is the same ignore when the parser did not extract a model.
 
 ## Route identity
 

@@ -25,6 +25,7 @@ from app.parsers.product_normalizer import (
     attrs_match_score,
     detect_product_contradictions,
     extract_product_attrs,
+    model_identity_conflicts,
     normalize_product_text,
 )
 from app.parsers.regex_parser import ParsedSupplierReply, parse_supplier_reply
@@ -88,6 +89,32 @@ def source_text_overlap_score(supplier_text: str, request_text: str) -> int:
 
 def _has_product_identity(attrs: ProductAttrs) -> bool:
     return bool(attrs.model or attrs.family or attrs.number or attrs.variant or attrs.sku)
+
+
+def _has_model_identity(attrs: ProductAttrs) -> bool:
+    """Number, variant, family, or SKU — enough to say this is not 'any open request'."""
+    return bool(attrs.family or attrs.number or attrs.variant or attrs.sku)
+
+
+def compatible_model_candidates(
+    message_attrs: ProductAttrs,
+    candidates: list[Request],
+) -> list[Request] | None:
+    """Drop requests whose model identity contradicts the message.
+
+    Returns None when the message names a model and none of the requests are that
+    model. A bare price (no model identity) keeps the full list.
+    """
+    if not _has_model_identity(message_attrs):
+        return list(candidates)
+    compatible = [
+        request
+        for request in candidates
+        if not model_identity_conflicts(message_attrs, request.normalized_json)
+    ]
+    if not compatible:
+        return None
+    return compatible
 
 
 def find_clear_text_match(
@@ -439,6 +466,19 @@ async def resolve_binding(
             candidates=candidates,
         )
 
+    narrowed = compatible_model_candidates(message_attrs, candidates)
+    if narrowed is None:
+        return BindingDecision(
+            request=None,
+            method="none",
+            status="ignored",
+            score=None,
+            parsed=parsed,
+            ignored_reason="no_matching_model",
+            price_parse=price_parse,
+        )
+    candidates = narrowed
+
     if len(candidates) == 1:
         settings = get_settings()
         only = candidates[0]
@@ -450,6 +490,16 @@ async def resolve_binding(
             or (has_product and attrs_compatible_for_single_candidate(message_attrs, only.normalized_json))
         )
         if conflicts:
+            if model_identity_conflicts(message_attrs, only.normalized_json):
+                return BindingDecision(
+                    request=None,
+                    method="none",
+                    status="ignored",
+                    score=None,
+                    parsed=parsed,
+                    ignored_reason="no_matching_model",
+                    price_parse=price_parse,
+                )
             return BindingDecision(
                 request=None,
                 method="none",
@@ -588,6 +638,10 @@ async def resolve_binding(
         )
 
     llm_request, llm_conf, llm_price = await _resolve_with_llm(session, raw_text, candidates)
+    if llm_request is not None and model_identity_conflicts(
+        message_attrs, llm_request.normalized_json
+    ):
+        llm_request = None
     if llm_request is not None:
         _log_binding(
             supplier=supplier,

@@ -32,6 +32,7 @@ from app.llm.client import (
 )
 from app.llm.schemas import ParsedSupplierReply as LlmParsedSupplierReply
 from app.parsers.cache import get_cached, set_cached
+from app.parsers.product_normalizer import extract_product_attrs
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.alert_service import notify_operators
 from app.services.binding_labels import candidate_label
@@ -40,6 +41,7 @@ from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
 from app.services.reply_binding_service import (
     BindingDecision,
+    compatible_model_candidates,
     merge_llm_price,
     resolve_binding,
 )
@@ -391,6 +393,10 @@ async def _notify_unbound(
     candidates: list[Request],
     telegram: TelegramClientProtocol,
 ) -> None:
+    shown = compatible_model_candidates(extract_product_attrs(raw_text), candidates)
+    if shown is None:
+        return
+    candidates = shown
     rows: list[list[dict[str, Any]]] = []
     if not candidates:
         block = "—"
@@ -598,6 +604,14 @@ async def handle_reply(
                 chat_id=int(chat_id),
                 business_connection_id=business_connection_id,
             )
+        narrowed = compatible_model_candidates(extract_product_attrs(raw_text), candidates)
+        if narrowed is None:
+            logger.info(
+                "supplier_message ignored supplier_id={} reason=no_matching_model",
+                supplier.id,
+            )
+            return "ok"
+        candidates = narrowed
         if not candidates:
             logger.info(
                 "supplier_message unbound silent supplier_id={} no open requests",

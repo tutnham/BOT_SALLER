@@ -87,6 +87,7 @@ async def test_successful_response() -> None:
     assert result.model == "jev-1.14.0"
     assert result.binding_choice == "request:7"
     assert result.price_probability == Decimal("0.99")
+    assert result.matches_listed_order is None
 
 
 @pytest.mark.asyncio
@@ -214,3 +215,41 @@ async def test_oversized_response() -> None:
         )
     await client.aclose()
     assert caught.value.code == "jev_response_too_large"
+
+
+@pytest.mark.asyncio
+async def test_matches_listed_order_is_parsed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _ok_body()
+        answers = body["answers"]
+        assert isinstance(answers, dict)
+        answers["matches_listed_order"] = {"type": "noul", "noul": 0.12}
+        return httpx.Response(200, json=body)
+
+    client = _client(handler)
+    result = await client.classify_supplier_message(
+        message_text="17 Pro 512 Silver 107",
+        candidates=[_candidate()],
+        correlation_id="c1",
+    )
+    await client.aclose()
+    assert result.matches_listed_order == Decimal("0.12")
+
+
+@pytest.mark.asyncio
+async def test_broken_matches_listed_order_is_invalid() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _ok_body()
+        answers = body["answers"]
+        assert isinstance(answers, dict)
+        answers["matches_listed_order"] = {"type": "noul"}
+        return httpx.Response(200, json=body)
+
+    client = _client(handler)
+    with pytest.raises(JevInvalidResponse):
+        await client.classify_supplier_message(
+            message_text="117900",
+            candidates=[_candidate()],
+            correlation_id="c1",
+        )
+    await client.aclose()

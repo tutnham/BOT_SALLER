@@ -29,11 +29,12 @@ from app.integrations.jev.models import (
     JevProviderResponse,
     JevSupplierDecision,
 )
-from app.integrations.jev.prompts import PROMPT_VERSION, SCHEMA_VERSION
+from app.integrations.jev.prompts import BINDING_NONE, PROMPT_VERSION, SCHEMA_VERSION
 from app.parsers.price_parse import is_bare_full_price_only, parse_price_from_text
 from app.parsers.product_normalizer import (
     detect_product_contradictions,
     extract_product_attrs,
+    model_identity_conflicts,
 )
 from app.services.candidate_loader_service import (
     JevOutboundFact,
@@ -55,6 +56,19 @@ from app.services.telemetry import (
 )
 
 _MAX_TEXT = 4000
+# TypeSafe starting band: <= no, >= yes, between is unsettled.
+_MATCH_NO = Decimal("0.3")
+_MATCH_YES = Decimal("0.7")
+
+
+def _listed_match_band(value: Decimal | None) -> str:
+    if value is None:
+        return "unset"
+    if value <= _MATCH_NO:
+        return "no"
+    if value >= _MATCH_YES:
+        return "yes"
+    return "mid"
 
 
 def hash_message_input(message_text: str, *, settings: Settings | None = None) -> str:
@@ -236,11 +250,30 @@ def apply_provider_decision(
             reason = "jev_not_price"
         else:
             reason = "jev_not_price"
+    elif _listed_match_band(response.matches_listed_order) == "no":
+        # Companion noul: nothing in the open orders is this model. Do not ask a person.
+        action = JevDecisionAction.IGNORE
+        reason = "jev_no_matching_request"
+        selected_id = None
     elif message_class is JevMessageClass.AMBIGUOUS:
         selected_id = None
         reason = "jev_ambiguous"
     elif price_probability < settings.jev_price_threshold:
         reason = "jev_low_price_probability"
+    elif (
+        selected_key == BINDING_NONE
+        and selected_probability is not None
+        and selected_probability >= settings.jev_bind_threshold
+    ):
+        selected_id = None
+        band = _listed_match_band(response.matches_listed_order)
+        if band == "mid":
+            reason = "jev_model_uncertain"
+        elif band == "yes":
+            reason = "jev_ambiguous"
+        else:
+            action = JevDecisionAction.IGNORE
+            reason = "jev_no_matching_request"
     elif selected_id is None or selected_probability is None:
         reason = "jev_ambiguous"
     elif selected_probability < settings.jev_bind_threshold:
@@ -256,8 +289,15 @@ def apply_provider_decision(
             reason = "request_not_bindable"
         else:
             attrs = extract_product_attrs(message_text)
-            if detect_product_contradictions(attrs, request.normalized_json):
+            identity = model_identity_conflicts(attrs, request.normalized_json)
+            conflicts = detect_product_contradictions(attrs, request.normalized_json)
+            if identity:
+                action = JevDecisionAction.IGNORE
                 reason = "product_conflict"
+            elif conflicts:
+                reason = "product_conflict"
+            elif _listed_match_band(response.matches_listed_order) == "mid":
+                reason = "jev_model_uncertain"
             else:
                 action = JevDecisionAction.AUTO_BIND
                 reason = "jev_price_and_binding_accepted"

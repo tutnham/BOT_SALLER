@@ -255,7 +255,7 @@ async def test_bare_prices_bind_in_send_order(
 
 
 @pytest.mark.asyncio
-async def test_named_model_unbound_alert_has_bind_buttons(
+async def test_named_model_with_no_open_request_is_ignored(
     db_session: AsyncSession,
     seed_employee,
     seed_suppliers,
@@ -295,23 +295,12 @@ async def test_named_model_unbound_alert_has_bind_buttons(
         telegram=mock_telegram,
     )
 
-    alert = next(
-        (item for item in mock_telegram.sent if item[0] == owner.telegram_id),
-        None,
-    )
-    assert alert is not None
-    markup = alert[2]
-    assert markup is not None
-    callbacks = [
-        button["callback_data"]
-        for row in markup["inline_keyboard"]
-        for button in row
-    ]
-    assert any("bind_pick" in data for data in callbacks)
-    assert any("bind_stop" in data for data in callbacks)
-    assert any("bind_ignore" in data for data in callbacks)
+    assert not any(item[0] == owner.telegram_id for item in mock_telegram.sent)
     quotes = (await db_session.execute(select(Quote))).scalars().all()
     assert quotes == []
+    message_in = await db_session.scalar(select(MessageIn).where(MessageIn.tg_message_id == 603))
+    assert message_in is not None
+    assert message_in.bind_status == "ignored"
 
 
 @pytest.mark.asyncio
