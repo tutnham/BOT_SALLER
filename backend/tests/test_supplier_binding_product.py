@@ -72,6 +72,30 @@ def test_other_product_lines_do_not_match_a_different_model() -> None:
         assert kept is None, message_text
 
 
+def test_short_color_price_is_not_a_generation() -> None:
+    from app.services.reply_binding_service import compatible_model_candidates
+
+    attrs = extract_product_attrs("silver 85")
+    assert attrs.number is None
+    assert attrs.variant is None
+    kept = compatible_model_candidates(attrs, [_open_request(1, "iPhone 17 Pro 256")])
+    assert kept is not None
+    assert [item.id for item in kept] == [1]
+
+
+def test_brandless_storage_line_is_iphone_not_galaxy() -> None:
+    from app.services.reply_binding_service import compatible_model_candidates
+
+    attrs = extract_product_attrs("16 256GB 85000")
+    assert attrs.number == "16"
+    assert attrs.family == "iphone"
+    assert attrs.variant == "base"
+    assert compatible_model_candidates(attrs, [_open_request(1, "Galaxy S16 256")]) is None
+    kept = compatible_model_candidates(attrs, [_open_request(2, "iPhone 16 256")])
+    assert kept is not None
+    assert [item.id for item in kept] == [2]
+
+
 def test_same_model_color_mismatch_stays_in_candidate_list() -> None:
     from app.db.models import Request, RequestStatus
     from app.services.reply_binding_service import compatible_model_candidates

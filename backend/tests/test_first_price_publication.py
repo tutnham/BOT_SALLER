@@ -328,6 +328,42 @@ async def test_daily_projection_error_still_publishes_client_price(
 
 
 @pytest.mark.asyncio
+async def test_better_late_notify_error_still_keeps_quote(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("employee notify down")
+
+    monkeypatch.setattr("app.services.reprice_service.notify_better_late_price", _boom)
+    request = await _request(db_session, seed_employee.id)
+    first = await upsert_quote(
+        db_session,
+        request.id,
+        seed_suppliers[0].id,
+        price=Decimal("95000"),
+        source=QuoteSource.regex,
+        confidence=0.9,
+    )
+    assert first is not None
+    second = await upsert_quote(
+        db_session,
+        request.id,
+        seed_suppliers[1].id,
+        price=Decimal("90000"),
+        source=QuoteSource.regex,
+        confidence=0.9,
+    )
+    assert second is not None
+    assert second.price_initial == Decimal("90000")
+
+
+@pytest.mark.asyncio
 async def test_bare_supplier_price_reaches_client_once(
     db_session: AsyncSession,
     seed_employee,

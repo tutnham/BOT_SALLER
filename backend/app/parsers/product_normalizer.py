@@ -333,14 +333,15 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
         return brand, family, number, variant
 
     if not re.search(r"\b(?:pro|max|plus|air|ultra|mini|se)\b", text, re.IGNORECASE):
-        # "16 256GB 85" names a generation even without the word iPhone or Pro.
-        # A bare price has no storage and no color, so it stays model-less.
-        if _STORAGE_RE.search(text) is None and _extract_color(text) is None:
+        # Generation is the 1–2 digit before storage: "16 256GB 85".
+        # "silver 85" / "85 black" is a thousands price, not iPhone 85.
+        storage_match = _STORAGE_RE.search(text)
+        if storage_match is None:
             return None, None, None, None
-        number_match = _MODEL_NUMBER_RE.search(text)
+        number_match = _MODEL_NUMBER_RE.search(text[: storage_match.start()])
         if number_match is None:
             return None, None, None, None
-        return None, family, number_match.group(1), "base"
+        return None, "iphone", number_match.group(1), "base"
 
     number_match = _MODEL_NUMBER_RE.search(text)
     if not number_match:

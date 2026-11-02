@@ -178,9 +178,16 @@ async def upsert_quote(
                     quote.id,
                 )
             if not published_now and get_settings().auto_publish_first_valid_price:
-                from app.services.reprice_service import notify_better_late_price
+                try:
+                    from app.services.reprice_service import notify_better_late_price
 
-                await notify_better_late_price(session, request_id=request.id)
+                    await notify_better_late_price(session, request_id=request.id)
+                except Exception:
+                    logger.exception(
+                        "better-late-price notify failed request_id={} quote_id={}",
+                        request_id,
+                        quote.id,
+                    )
     return quote
 
 
