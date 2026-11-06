@@ -4,10 +4,26 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Deal, MessageIn, MessageOut, Quote, Request, RequestStatus
+from app.db.models import (
+    DailySkuPrice,
+    Deal,
+    MarkupRule,
+    MessageIn,
+    MessageOut,
+    Quote,
+    Request,
+    RequestBatch,
+    RequestPriceSelection,
+    RequestStatus,
+    Supplier,
+    SupplierBindPrompt,
+    SupplierRfqBatch,
+    SupplierRfqBatchItem,
+    TelegramOutbox,
+)
 
 DEFAULT_PURGE_OLD_LIMIT = 50
 
@@ -93,3 +109,44 @@ async def purge_old_requests(
     await session.execute(delete(Request).where(Request.id.in_(request_ids)))
     await session.flush()
     return len(request_ids), request_ids
+
+
+async def count_request_ops(session: AsyncSession) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name, model in (
+        ("requests", Request),
+        ("request_batches", RequestBatch),
+        ("quotes", Quote),
+        ("deals", Deal),
+        ("daily_sku_prices", DailySkuPrice),
+        ("request_price_selections", RequestPriceSelection),
+        ("messages_out", MessageOut),
+        ("messages_in", MessageIn),
+        ("supplier_bind_prompts", SupplierBindPrompt),
+        ("supplier_rfq_batches", SupplierRfqBatch),
+        ("telegram_outbox", TelegramOutbox),
+        ("markup_rules", MarkupRule),
+        ("suppliers", Supplier),
+    ):
+        counts[name] = int(await session.scalar(select(func.count()).select_from(model)) or 0)
+    return counts
+
+
+async def purge_all_request_data(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Delete every request and its operational trail. Directories stay."""
+    before = await count_request_ops(session)
+    await session.execute(delete(SupplierBindPrompt))
+    await session.execute(delete(Deal))
+    await session.execute(delete(RequestPriceSelection))
+    await session.execute(delete(SupplierRfqBatchItem))
+    await session.execute(delete(SupplierRfqBatch))
+    await session.execute(delete(DailySkuPrice))
+    await session.execute(delete(Quote))
+    await session.execute(delete(TelegramOutbox))
+    await session.execute(delete(MessageOut))
+    await session.execute(delete(MessageIn))
+    await session.execute(delete(Request))
+    await session.execute(delete(RequestBatch))
+    await session.flush()
+    after = await count_request_ops(session)
+    return {"before": before, "after": after}

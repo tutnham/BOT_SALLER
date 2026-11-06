@@ -348,3 +348,28 @@ async def test_purge_old_skips_recent_open_requests(
     assert resp.json()["status"] == "ok"
     assert "0" in mock_telegram.sent[-1][1]
     assert await db_session.get(Request, open_request.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_purge_all_request_data_keeps_directories(
+    db_session: AsyncSession,
+    seed_employee: Employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+) -> None:
+    from app.services.purge_service import purge_all_request_data
+
+    await _seed_request_with_children(
+        db_session,
+        employee_id=seed_employee.id,
+        supplier_id=seed_suppliers[0].id,
+        status=RequestStatus.open,
+    )
+    result = await purge_all_request_data(db_session)
+    assert result["after"]["requests"] == 0
+    assert result["after"]["quotes"] == 0
+    assert result["after"]["deals"] == 0
+    assert result["after"]["suppliers"] == result["before"]["suppliers"]
+    assert result["after"]["markup_rules"] == result["before"]["markup_rules"]
+    assert result["after"]["markup_rules"] >= 1
+    assert await db_session.get(Supplier, seed_suppliers[0].id) is not None

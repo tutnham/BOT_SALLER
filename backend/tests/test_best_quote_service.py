@@ -51,6 +51,13 @@ async def test_lowest_price_wins(
     assert result.client_unit_price is not None
     deal_count = await db_session.scalar(select(func.count()).select_from(Deal))
     assert deal_count == 0
+    assert result.selection_reason == "lowest_eligible_purchase_price"
+
+    first_reply = await select_best_quote_for_request(
+        db_session, request.id, mode="first_eligible"
+    )
+    assert first_reply.purchase_unit_price == Decimal("95000")
+    assert first_reply.selection_reason == "first_eligible_reply"
 
 
 @pytest.mark.asyncio

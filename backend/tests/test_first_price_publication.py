@@ -75,6 +75,9 @@ async def test_first_quote_publishes_second_does_not(
         )
     ).all()
     assert len(published) == 1
+    assert published[0].selected_supplier_id == seed_suppliers[0].id
+    assert published[0].purchase_unit_price == Decimal("95000")
+    assert published[0].selection_reason == "first_eligible_reply"
     assert published[0].client_unit_price is not None
     assert published[0].idempotency_key == first_client_price_key(request.id)
 
@@ -89,6 +92,7 @@ async def test_first_quote_publishes_second_does_not(
     assert "Supplier" not in outbox[0].text
     assert "95000" not in outbox[0].text
     assert "90000" not in outbox[0].text
+    assert str(published[0].client_unit_price) in outbox[0].text
 
 
 @pytest.mark.asyncio
@@ -146,6 +150,57 @@ async def test_three_suppliers_one_client_message_all_prices_in_bot(
     assert "Supplier Two" in card
     assert "Supplier Three" in card
     assert "отправлена клиенту" in card
+
+
+@pytest.mark.asyncio
+async def test_client_price_uses_first_reply_and_rule_markup(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+    request = Request(
+        group_chat_id=-1001,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro Max 256GB Black",
+        status=RequestStatus.awaiting_answers,
+        canonical_sku_key="v1|apple|iphone|17-pro-max|256|black|*|*",
+        normalizer_version="v1",
+        requested_qty=1,
+        normalized_json={"model": "iPhone 17 Pro Max", "storage": "256GB", "qty": 1},
+    )
+    db_session.add(request)
+    await db_session.flush()
+    await upsert_quote(
+        db_session, request.id, seed_suppliers[0].id,
+        price=Decimal("95000"), source=QuoteSource.regex, confidence=0.9,
+    )
+    await upsert_quote(
+        db_session, request.id, seed_suppliers[1].id,
+        price=Decimal("90000"), source=QuoteSource.regex, confidence=0.9,
+    )
+    published = (
+        await db_session.scalars(
+            select(RequestPriceSelection).where(
+                RequestPriceSelection.request_id == request.id,
+                RequestPriceSelection.status == "published",
+            )
+        )
+    ).one()
+    assert published.purchase_unit_price == Decimal("95000")
+    assert published.client_unit_price == Decimal("95800")
+    assert published.selection_reason == "first_eligible_reply"
+    outbox = (
+        await db_session.scalars(
+            select(TelegramOutbox).where(
+                TelegramOutbox.dedupe_key == first_client_price_key(request.id)
+            )
+        )
+    ).one()
+    assert "95800" in outbox.text
+    assert "90800" not in outbox.text
 
 
 @pytest.mark.asyncio

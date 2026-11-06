@@ -47,7 +47,7 @@ async def publish_first_valid_price(
     trigger: str,
     now: datetime | None = None,
 ) -> bool:
-    """Publish the lowest eligible same-day price. Returns True when newly published.
+    """Publish the first eligible same-day reply. Returns True when newly published.
 
     ``trigger`` is ``first_quote`` or ``known_today``. A closed request, a missing
     route, or an already published price all result in a silent no-op.
@@ -61,7 +61,9 @@ async def publish_first_valid_price(
     if request is None or request.status in (RequestStatus.closed, RequestStatus.cancelled):
         return False
 
-    result = await select_best_quote_for_request(session, request_id, now=moment)
+    result = await select_best_quote_for_request(
+        session, request_id, now=moment, mode="first_eligible"
+    )
     if result.selected_quote_id is None or result.client_unit_price is None:
         logger.info(
             "client price skipped request_id={} reason={} rejected={}",
@@ -92,6 +94,7 @@ async def publish_first_valid_price(
         key=key,
         reason=REASON_KNOWN_TODAY if trigger == "known_today" else REASON_FIRST_QUOTE,
         moment=moment,
+        selection_reason=result.selection_reason,
     )
     if inserted_id is None:
         logger.info("client price already published request_id={}", request_id)
@@ -172,6 +175,7 @@ async def _insert_published_selection(
     key: str,
     reason: str,
     moment: datetime,
+    selection_reason: str,
 ) -> int | None:
     """Insert the published row; return its id, or None when the key already exists."""
     version = await _next_selection_version(session, request.id)
@@ -187,7 +191,7 @@ async def _insert_published_selection(
             purchase_unit_price=purchase,
             requested_qty=qty,
             client_unit_price=client_price,
-            selection_reason="lowest_eligible_purchase_price",
+            selection_reason=selection_reason,
             candidate_count=candidate_count,
             rejected_candidates=rejected,
             selection_version=version,

@@ -145,17 +145,6 @@ async def build_normalized_json(
     return normalized
 
 
-async def _reuse_known_today_price(
-    session: AsyncSession,
-    request: Request,
-    telegram: TelegramClientProtocol,
-) -> bool:
-    """Skip RFQ only after today's price is actually delivered to this chat."""
-    from app.services.daily_sku_price_service import reuse_today_price_for_request
-
-    return await reuse_today_price_for_request(session, request, telegram=telegram)
-
-
 async def _broadcast_request(
     session: AsyncSession,
     *,
@@ -302,9 +291,6 @@ async def create_request(
 
     for request in created:
         category = str((request.normalized_json or {}).get("category") or "unknown")
-        reused = await _reuse_known_today_price(session, request, telegram)
-        if reused:
-            continue
         sent_count, failed_lines = await _broadcast_request(
             session,
             request=request,

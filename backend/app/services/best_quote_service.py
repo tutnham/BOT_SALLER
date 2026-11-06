@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,8 @@ from app.db.models import (
 )
 from app.services.markup_service import apply_markup, load_rules
 from app.services.quote_eligibility import is_quote_eligible_for_selection
+
+SelectionMode = Literal["lowest_eligible", "first_eligible"]
 
 
 @dataclass
@@ -41,6 +44,7 @@ async def select_best_quote_for_request(
     request_id: int,
     *,
     now: datetime | None = None,
+    mode: SelectionMode = "lowest_eligible",
 ) -> BestQuoteSelectionResult:
     moment = now or datetime.now(UTC)
     request = await session.get(Request, request_id)
@@ -103,12 +107,17 @@ async def select_best_quote_for_request(
             rejected_candidate_reasons=rejected,
         )
 
-    eligible.sort(key=lambda row: (row[1], -row[2].timestamp(), row[0].id))
+    if mode == "first_eligible":
+        eligible.sort(key=lambda row: (row[2].timestamp(), row[0].id))
+        reason = "first_eligible_reply"
+    else:
+        eligible.sort(key=lambda row: (row[1], -row[2].timestamp(), row[0].id))
+        reason = "lowest_eligible_purchase_price"
     winner, purchase_price, observed_at = eligible[0]
 
     rules = await load_rules(session)
     product = request.normalized_json or {"model": request.source_text}
-    client_price, markup, _, _ = apply_markup(purchase_price, product, rules)
+    client_price, _markup, _, _ = apply_markup(purchase_price, product, rules)
 
     qty = request.requested_qty or int((request.normalized_json or {}).get("qty") or 1)
     return BestQuoteSelectionResult(
@@ -119,7 +128,7 @@ async def select_best_quote_for_request(
         purchase_unit_price=purchase_price,
         requested_qty=qty,
         client_unit_price=client_price,
-        selection_reason="lowest_eligible_purchase_price",
+        selection_reason=reason,
         candidate_count=len(quotes),
         rejected_candidate_reasons=rejected,
         selected_at=observed_at,

@@ -46,7 +46,9 @@ async def finalize_batch_selections(
     for request in batch.requests:
         if request.price_state == RequestPriceState.published:
             continue
-        result = await select_best_quote_for_request(session, request.id)
+        result = await select_best_quote_for_request(
+            session, request.id, mode="first_eligible"
+        )
         if result.selected_quote_id is None:
             request.price_state = RequestPriceState.unresolved
             continue
@@ -83,6 +85,14 @@ async def finalize_batch_selections(
         )
         if provisional is not None:
             provisional.status = PriceSelectionStatus.final.value
+            provisional.selected_quote_id = result.selected_quote_id
+            provisional.selected_supplier_id = result.selected_supplier_id
+            provisional.purchase_unit_price = result.purchase_unit_price
+            provisional.requested_qty = result.requested_qty
+            provisional.client_unit_price = result.client_unit_price
+            provisional.selection_reason = result.selection_reason
+            provisional.candidate_count = result.candidate_count
+            provisional.rejected_candidates = result.rejected_candidate_reasons
             request.price_state = RequestPriceState.finalized.value
             continue
         session.add(

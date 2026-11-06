@@ -127,7 +127,7 @@ def _client_price_messages(telegram: MockTelegramClient, chat_id: int) -> list[s
 
 
 @pytest.mark.asyncio
-async def test_single_ask_reuses_today_price_without_rfq(
+async def test_single_ask_sends_rfq_even_when_today_price_exists(
     db_session: AsyncSession,
     seed_employee,
     seed_suppliers: list[Supplier],
@@ -146,20 +146,17 @@ async def test_single_ask_reuses_today_price_without_rfq(
     )
     request = outcome.requests[0]
     assert request.canonical_sku_key == build_canonical_sku_key(parse_batch_line(LINE))
-    assert request.price_state == RequestPriceState.known_today
-    assert outcome.sent_count == 0
-    prices = _client_price_messages(telegram, NEW_GROUP)
-    assert len(prices) == 1
+    assert outcome.sent_count >= 1
+    assert request.price_state != RequestPriceState.known_today
+    assert _client_price_messages(telegram, NEW_GROUP) == []
     cloned = await db_session.scalar(
         select(Quote).where(Quote.request_id == request.id, Quote.supplier_id == seed_suppliers[0].id)
     )
-    assert cloned is not None
-    assert cloned.price_final is not None
-    assert cloned.price_final > cloned.price_initial
+    assert cloned is None
 
 
 @pytest.mark.asyncio
-async def test_single_ask_reuse_enqueues_client_price_when_autopublish_on(
+async def test_single_ask_does_not_enqueue_cached_client_price(
     db_session: AsyncSession,
     seed_employee,
     seed_suppliers: list[Supplier],
@@ -182,8 +179,8 @@ async def test_single_ask_reuse_enqueues_client_price_when_autopublish_on(
         telegram=telegram,
     )
     request = outcome.requests[0]
-    assert outcome.sent_count == 0
-    assert request.price_state == RequestPriceState.published
+    assert outcome.sent_count >= 1
+    assert request.price_state != RequestPriceState.published
     rows = (
         await db_session.scalars(
             select(TelegramOutbox).where(
@@ -192,9 +189,7 @@ async def test_single_ask_reuse_enqueues_client_price_when_autopublish_on(
             )
         )
     ).all()
-    assert len(rows) == 1
-    assert rows[0].chat_id == NEW_GROUP
-    assert "Цена:" in rows[0].text
+    assert rows == []
     assert _client_price_messages(telegram, NEW_GROUP) == []
 
 
