@@ -455,6 +455,7 @@ async def handle_owner_message(
         chat_id=int(chat_id),
         telegram_id=int(telegram_id),
         telegram=telegram,
+        attach_csv=True,
     ):
         return "ok"
 

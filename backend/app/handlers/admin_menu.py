@@ -6,7 +6,9 @@ Telegram UI and callback data.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -267,14 +269,41 @@ async def _dispatch_callback(
         return
 
     if action == "report_purchases":
-        from app.handlers.purchase_report_commands import handle_purchase_report_command
+        from app.handlers.purchase_report_commands import send_purchase_report
 
-        await handle_purchase_report_command(
+        await send_purchase_report(
             session,
-            text="/purchase_report today",
             chat_id=chat_id,
-            telegram_id=owner_id,
             telegram=telegram,
+            period="day",
+            message_id=message_id,
+        )
+        return
+
+    if action == "report_purchases_yest":
+        from app.handlers.purchase_report_commands import send_purchase_report
+
+        settings = get_settings()
+        yesterday = datetime.now(ZoneInfo(settings.tz)).date() - timedelta(days=1)
+        await send_purchase_report(
+            session,
+            chat_id=chat_id,
+            telegram=telegram,
+            period="day",
+            on_day=yesterday,
+            message_id=message_id,
+        )
+        return
+
+    if action == "report_purchases_week":
+        from app.handlers.purchase_report_commands import send_purchase_report
+
+        await send_purchase_report(
+            session,
+            chat_id=chat_id,
+            telegram=telegram,
+            period="week",
+            message_id=message_id,
         )
         return
 

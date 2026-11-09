@@ -41,12 +41,19 @@ TEMPLATES: dict[str, str] = {
     ),
     "batch_client_header": "Прайс по заявке-пакету #{batch_id}",
     "batch_client_line": "{product} — {qty} шт. × {price_text}",
-    "purchase_report_header": "Закупки за {day}",
-    "purchase_report_line": "{product} — {qty} шт. × {price} ₽",
-    "purchase_report_supplier_block": (
-        "{supplier_name}\n{lines_block}\nИтого: {subtotal} ₽"
+    "purchase_report_header": "<b>Закупки за {period_label}</b>",
+    "purchase_report_positions": "Позиций: {count}",
+    "purchase_report_empty": "<i>{empty_hint}</i>",
+    "purchase_report_line": (
+        "· {product} — {qty} шт. × {price}\n"
+        "  клиенту {client_price} · маржа {margin}"
     ),
-    "purchase_report_grand_total": "Общий итог: {total} ₽",
+    "purchase_report_supplier_block": (
+        "<b>{supplier_name}</b>\n{lines_block}\nИтого поставщику: {subtotal}"
+    ),
+    "purchase_report_grand_total": "<b>Общий итог: {total}</b>",
+    "purchase_report_margin_total": "Маржа: {margin}",
+    "purchase_report_truncated": "<i>ещё {count} позиций</i>",
     "supplier_review_card": (
         "Неразобранный ответ\n"
         "Поставщик: {supplier_name}\n"
