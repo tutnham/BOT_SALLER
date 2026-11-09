@@ -18,6 +18,7 @@ from app.db.models import (
 from app.services.best_quote_service import select_best_quote_for_request
 from app.services.request_status_service import load_request_rfq_counters
 from app.telegram.keyboards import CallbackData, button, inline_keyboard
+from app.templates.messages_ru import format_supplier_label, render_template
 
 PAGE_SIZE = 5
 
@@ -33,6 +34,56 @@ _REJECT_LABELS = {
     "supplier_missing": "поставщик не найден",
     "sku_mismatch": "другой товар",
 }
+
+
+def format_supplier_quote_lines(quotes: list[Quote]) -> str:
+    """Purchase price per supplier. Caller decides the empty-state text."""
+    lines: list[str] = []
+    for quote in quotes:
+        supplier_label = format_supplier_label(
+            quote.supplier.name if quote.supplier else None, quote.supplier_id
+        )
+        price = quote.price_initial
+        price_text = f"{price} ₽" if price is not None else "—"
+        qty_text = str(quote.qty) if quote.qty is not None else "—"
+        if quote.available is True:
+            avail_text = "есть"
+        elif quote.available is False:
+            avail_text = "нет"
+        else:
+            avail_text = "—"
+        lines.append(
+            f"- {supplier_label}: {price_text}, кол-во {qty_text}, наличие: {avail_text}"
+        )
+    return "\n".join(lines)
+
+
+async def request_quotes_block(session: AsyncSession, request_id: int) -> str:
+    result = await session.execute(
+        select(Quote)
+        .where(Quote.request_id == request_id)
+        .options(selectinload(Quote.supplier))
+        .order_by(Quote.price_initial.asc(), Quote.id.asc())
+    )
+    quotes = list(result.scalars().all())
+    if not quotes:
+        return "Цен от поставщиков ещё нет"
+    return format_supplier_quote_lines(quotes)
+
+
+async def render_admin_request_detail(
+    session: AsyncSession,
+    request: Request,
+    *,
+    status_label: str,
+) -> str:
+    return render_template(
+        "admin_request_detail",
+        request_id=request.id,
+        status_label=status_label,
+        source_text=request.source_text or "—",
+        quotes_block=await request_quotes_block(session, request.id),
+    )
 
 
 async def render_request_card(session: AsyncSession, request: Request) -> str:

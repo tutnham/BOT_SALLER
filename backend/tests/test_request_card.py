@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Quote, QuoteSource, Request, RequestStatus, Supplier
 from app.handlers.request_status_callbacks import handle_request_status_callback
-from app.services.request_card_service import render_all_prices, render_request_card
+from app.services.request_card_service import (
+    render_admin_request_detail,
+    render_all_prices,
+    render_request_card,
+)
 from app.telegram.keyboards import CallbackData
 from tests.conftest import MockTelegramClient
 
@@ -44,6 +48,41 @@ async def test_card_shows_counters_and_prices(
     card = await render_request_card(db_session, request)
     assert "с ценой: 1" in card
     assert "91000" in card
+
+
+@pytest.mark.asyncio
+async def test_admin_detail_lists_supplier_purchase_price(
+    db_session: AsyncSession, seed_employee, seed_suppliers: list[Supplier]
+) -> None:
+    request = await _request(db_session, seed_employee.id)
+    request.status = RequestStatus.priced
+    supplier = seed_suppliers[0]
+    db_session.add(
+        Quote(
+            request_id=request.id,
+            supplier_id=supplier.id,
+            price_initial=Decimal("105100"),
+            price_final=Decimal("110000"),
+            source=QuoteSource.regex,
+            confidence=0.9,
+            available=True,
+        )
+    )
+    await db_session.flush()
+
+    detail = await render_admin_request_detail(
+        db_session, request, status_label="есть цены"
+    )
+    assert "Статус: есть цены" in detail
+    assert "Supplier One" in detail
+    assert "105100" in detail
+    assert "110000" not in detail
+
+    empty = await _request(db_session, seed_employee.id)
+    empty_detail = await render_admin_request_detail(
+        db_session, empty, status_label="ждём ответы"
+    )
+    assert "Цен от поставщиков ещё нет" in empty_detail
 
 
 @pytest.mark.asyncio

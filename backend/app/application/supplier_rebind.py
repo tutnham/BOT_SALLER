@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageIn, Supplier
+from app.db.models import MessageIn, Request, Supplier
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.reply_binding_service import resolve_binding
 from app.telegram.client import TelegramClientProtocol
@@ -54,6 +54,13 @@ async def retry_unbound_supplier_prices(
         )
         if decision.status != "bound" or decision.request is None:
             continue
+        if await _message_predates_request(session, message_in, decision.request):
+            logger.info(
+                "supplier_rebind skipped message_in_id={} request_id={} reason=before_request",
+                message_in.id,
+                decision.request.id,
+            )
+            continue
         await process_bound_supplier_reply(
             session,
             request=decision.request,
@@ -77,3 +84,23 @@ async def retry_unbound_supplier_prices(
             decision.method,
         )
     return rebound
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def _message_predates_request(
+    session: AsyncSession,
+    message_in: MessageIn,
+    request: Request,
+) -> bool:
+    """A price that arrived before this request is not an answer to it."""
+    state = inspect(request)
+    if "created_at" in state.unloaded or request.created_at is None:
+        await session.refresh(request, attribute_names=["created_at"])
+    if request.created_at is None:
+        return True
+    return _as_utc(message_in.received_at) < _as_utc(request.created_at)

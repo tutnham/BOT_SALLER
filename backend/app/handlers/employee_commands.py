@@ -37,6 +37,7 @@ from app.services.recheck_service import (
     InvalidRecheckHoursError,
     schedule_recheck,
 )
+from app.services.request_card_service import format_supplier_quote_lines
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
 from app.templates.messages_ru import format_supplier_label, render_template
@@ -108,24 +109,7 @@ def _parse_decimal_token(raw: str) -> Decimal | None:
 def _format_quotes_block(quotes: list[Quote]) -> str:
     if not quotes:
         return "—"
-    lines: list[str] = []
-    for quote in quotes:
-        supplier_label = format_supplier_label(
-            quote.supplier.name if quote.supplier else None, quote.supplier_id
-        )
-        price = quote.price_initial
-        price_text = f"{price} ₽" if price is not None else "—"
-        qty_text = str(quote.qty) if quote.qty is not None else "—"
-        if quote.available is True:
-            avail_text = "есть"
-        elif quote.available is False:
-            avail_text = "нет"
-        else:
-            avail_text = "—"
-        lines.append(
-            f"- {supplier_label}: {price_text}, кол-во {qty_text}, наличие: {avail_text}"
-        )
-    return "\n".join(lines)
+    return format_supplier_quote_lines(quotes)
 
 
 def _format_deal_block(deal: Deal | None) -> str:
@@ -912,14 +896,12 @@ async def handle_employee_message(
         ack = render_template(
             "ask_sent",
             request_id=outcome.requests[0].id,
-            N=outcome.sent_count,
         )
     else:
         ids = ", ".join(f"#{item.id}" for item in outcome.requests)
         ack = render_template(
             "ask_sent_multi",
             request_ids=ids,
-            N=outcome.sent_count,
         )
     await telegram.send_message(int(chat_id), ack)
     return "ok"

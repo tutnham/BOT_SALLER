@@ -97,6 +97,9 @@ async def test_employee_ask_creates_request_and_messages_out(
     )
     assert all("Ответьте ценой" not in txt for _, txt in supplier_sends)
     assert all("Уточните, пожалуйста" not in txt for _, txt in supplier_sends)
+    group_sends = [txt for cid, txt, _ in mock_telegram.sent if cid == seed_group_chat_id]
+    assert f"Запрос #{request.id} отправлен" in group_sends
+    assert all("поставщик" not in txt for txt in group_sends)
 
 
 @pytest.mark.asyncio

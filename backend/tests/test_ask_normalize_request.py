@@ -23,6 +23,15 @@ def test_ask_template_is_request_and_text_only() -> None:
     assert "Ответьте ценой" not in text
 
 
+def test_ask_sent_omits_supplier_count() -> None:
+    single = render_template("ask_sent", request_id=14)
+    multi = render_template("ask_sent_multi", request_ids="#1, #2")
+    assert single == "Запрос #14 отправлен"
+    assert multi == "Запросы #1, #2 отправлены"
+    assert "поставщик" not in single
+    assert "поставщик" not in multi
+
+
 def _ask_update(
     *,
     update_id: int,

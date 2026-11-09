@@ -23,6 +23,7 @@ from app.db.models import (
     Supplier,
 )
 from app.services import admin_service, parser_client, purge_service
+from app.services.request_card_service import render_admin_request_detail
 from app.services.deal_service import (
     RequestNotFoundError,
     RequestNotOpenError,
@@ -1208,11 +1209,10 @@ async def _send_request_detail(
     await _send_or_edit(
         telegram,
         chat_id=chat_id,
-        text=render_template(
-            "admin_request_detail",
-            request_id=request.id,
+        text=await render_admin_request_detail(
+            session,
+            request,
             status_label=_request_status_label(request.status),
-            source_text=request.source_text or "—",
         ),
         message_id=message_id,
         markup=inline_keyboard(rows),

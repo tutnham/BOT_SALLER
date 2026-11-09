@@ -15,8 +15,8 @@ TEMPLATES: dict[str, str] = {
         "Ответьте на это сообщение (reply)."
     ),
     "ask_empty": "Нужен текст запроса или reply на сообщение клиента",
-    "ask_sent": "Запрос #{request_id} отправлен {N} поставщикам",
-    "ask_sent_multi": "Запросы {request_ids} отправлены ({N} доставок поставщикам)",
+    "ask_sent": "Запрос #{request_id} отправлен",
+    "ask_sent_multi": "Запросы {request_ids} отправлены",
     "batch_preview": (
         "Заявка-пакет #{batch_id}\n"
         "Распознано: {recognized}\n"
@@ -300,7 +300,8 @@ TEMPLATES: dict[str, str] = {
     "admin_request_detail": (
         "Заявка #{request_id}\n"
         "Статус: {status_label}\n"
-        "Текст: {source_text}"
+        "Текст: {source_text}\n"
+        "{quotes_block}"
     ),
     "admin_request_purge_confirm": (
         "Удалить заявку #{request_id} навсегда? Сообщения и котировки тоже удалятся."

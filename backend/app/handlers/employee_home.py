@@ -13,6 +13,7 @@ from app.services import admin_service
 from app.services.bargain_service import start_bargain
 from app.services.deal_service import SupplierNotFoundError, create_deal
 from app.services.recheck_service import RECHECK_HOURS_DEFAULT, schedule_recheck
+from app.services.request_card_service import render_admin_request_detail
 from app.services.request_service import create_request, load_request_for_employee
 from app.telegram.client import TelegramClientProtocol
 from app.telegram.home_buttons import (
@@ -333,11 +334,10 @@ async def _send_request_actions(
             chat_id, render_template("request_not_found", request_id=request_id)
         )
         return
-    text = render_template(
-        "admin_request_detail",
-        request_id=request.id,
+    text = await render_admin_request_detail(
+        session,
+        request,
         status_label=request.status.value,
-        source_text=request.source_text,
     )
     rows = [
         [_emp_button("Перепроверка", "req_recheck", request.id)],

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageIn, Owner, Quote, RequestStatus
+from app.db.models import MessageIn, Owner, Quote, RequestStatus, TelegramOutbox
 from app.handlers.supplier_messages import (
     handle_reply,
     manual_bind_message,
@@ -723,8 +725,11 @@ async def test_unbound_price_rebinds_on_new_request(
     seed_suppliers,
     seed_client_group,
     mock_telegram: MockTelegramClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Price arrived before any active request; new /ask picks it up."""
+    """A price that arrived before the request stays unbound and is not published."""
+    monkeypatch.setenv("AUTO_PUBLISH_FIRST_VALID_PRICE", "true")
+    get_settings.cache_clear()
     supplier = seed_suppliers[0]
     assert supplier.telegram_id is not None
 
@@ -756,9 +761,8 @@ async def test_unbound_price_rebinds_on_new_request(
     )
 
     await db_session.refresh(price_in)
-    assert price_in.request_id == request.id
-    assert price_in.bind_status == "bound"
-    assert price_in.bind_method in ("rebind_single_candidate", "rebind_single_bare_price")
+    assert price_in.request_id is None
+    assert price_in.bind_status == "unbound"
 
     await db_session.refresh(noise_in)
     assert noise_in.bind_status == "ignored"
@@ -770,15 +774,77 @@ async def test_unbound_price_rebinds_on_new_request(
             Quote.supplier_id == supplier.id,
         )
     )
-    assert quote is not None
-    assert quote.price_initial == 97200
+    assert quote is None
+    await db_session.refresh(request)
+    assert request.status is RequestStatus.awaiting_answers
 
+    outbox = await db_session.scalar(
+        select(TelegramOutbox).where(
+            TelegramOutbox.request_id == request.id,
+            TelegramOutbox.kind == "client_price",
+        )
+    )
+    assert outbox is None
     group_texts = [
         text
         for chat_id, text, _markup in mock_telegram.sent
         if chat_id == seed_client_group.chat_id
     ]
-    assert any(f"#{request.id}" in text for text in group_texts)
+    assert all("Цена:" not in text for text in group_texts)
+
+
+@pytest.mark.asyncio
+async def test_price_received_after_request_still_rebinds(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers,
+    seed_client_group,
+    mock_telegram: MockTelegramClient,
+) -> None:
+    """An unbound price that arrived after the request can still be attached."""
+    supplier = seed_suppliers[0]
+    assert supplier.telegram_id is not None
+    request, _ = await create_request(
+        db_session,
+        group_chat_id=seed_client_group.chat_id,
+        employee_id=seed_employee.id,
+        source_text="iPhone 17 Pro 256",
+        telegram=mock_telegram,
+    )
+    await db_session.refresh(request)
+    assert request.created_at is not None
+    db_session.add(
+        MessageIn(
+            supplier_id=supplier.id,
+            tg_message_id=9102,
+            chat_id=supplier.telegram_id,
+            raw_text="97200",
+            bind_status="unbound",
+            received_at=request.created_at + timedelta(seconds=1),
+        )
+    )
+    await db_session.flush()
+
+    from app.application.supplier_rebind import retry_unbound_supplier_prices
+
+    rebound = await retry_unbound_supplier_prices(
+        db_session, supplier=supplier, telegram=mock_telegram
+    )
+    assert rebound == 1
+    price_in = await db_session.scalar(
+        select(MessageIn).where(MessageIn.tg_message_id == 9102)
+    )
+    assert price_in is not None
+    assert price_in.request_id == request.id
+    assert price_in.bind_status == "bound"
+    quote = await db_session.scalar(
+        select(Quote).where(
+            Quote.request_id == request.id,
+            Quote.supplier_id == supplier.id,
+        )
+    )
+    assert quote is not None
+    assert quote.price_initial == 97200
 
 
 @pytest.mark.asyncio
