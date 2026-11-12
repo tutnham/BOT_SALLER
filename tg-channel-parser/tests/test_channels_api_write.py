@@ -30,6 +30,7 @@ def _make_fake_session():
         def __init__(self) -> None:
             self.channels: list[ParserChannel] = []
             self.tasks: list[ParserTask] = []
+            self.commit_calls = 0
             self._next_id = 1
 
         async def execute(self, stmt: Any) -> _Result:
@@ -49,7 +50,7 @@ def _make_fake_session():
                     self._next_id += 1
 
         async def commit(self) -> None:
-            return None
+            self.commit_calls += 1
 
         async def get(self, model, ident):
             for ch in self.channels:
@@ -104,6 +105,7 @@ async def test_create_channel_pending_and_task(client: AsyncClient, fake_session
         assert session.channels[0].status == ParserChannelStatus.pending
         assert len(session.tasks) == 1
         assert session.tasks[0].task_type == ParserTaskType.resolve_channel
+        assert session.commit_calls == 1
     finally:
         app.dependency_overrides.clear()
 

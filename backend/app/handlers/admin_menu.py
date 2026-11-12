@@ -1677,12 +1677,27 @@ async def _send_bind_supplier_list(
     )
 
 
+def _price_channel_label(ch: parser_client.ParserChannel) -> str:
+    name = ch.title or ch.username or ch.channel_id or ch.id
+    if ch.status == "active" and ch.channel_id is not None:
+        icon = "✅"
+    elif ch.status == "failed":
+        icon = "❌"
+    else:
+        icon = "⏳"
+    reason = (ch.error_text or "").strip()
+    if ch.status == "failed" and reason:
+        return f"{icon} {name} ({reason[:40]})"
+    return f"{icon} {name}"
+
+
 async def _send_price_channels(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
     chat_id: int,
     *,
     message_id: int | None = None,
+    extra_channel: parser_client.ParserChannel | None = None,
 ) -> None:
     try:
         channels = await parser_client.list_channels()
@@ -1697,23 +1712,16 @@ async def _send_price_channels(
         )
         return
 
+    if extra_channel is not None and all(ch.id != extra_channel.id for ch in channels):
+        channels = [*channels, extra_channel]
+
+    visible = [ch for ch in channels if ch.is_active]
+    lines = [_price_channel_label(ch) for ch in visible]
+    channels_block = "\n".join(lines) if lines else "Список пуст."
+
     rows: list[list[dict[str, Any]]] = []
-    for ch in channels:
-        if not ch.is_active:
-            # Soft-deleted channels stay in the parser DB; hide them from the owner list.
-            continue
-        name = ch.title or ch.username or ch.channel_id or ch.id
-        if ch.status == "active" and ch.channel_id is not None:
-            icon = "✅"
-        elif ch.status == "failed":
-            icon = "❌"
-        else:
-            icon = "⏳"
-        reason = (getattr(ch, "error_text", None) or "").strip()
-        if ch.status == "failed" and reason:
-            label = f"{icon} {name} ({reason[:40]})"
-        else:
-            label = f"{icon} {name}"
+    for ch in visible:
+        label = _price_channel_label(ch)
         rows.append(
             [
                 button(label, cd=_cb("noop", arg=ch.id)),
@@ -1726,7 +1734,7 @@ async def _send_price_channels(
     await _send_or_edit(
         telegram,
         chat_id=chat_id,
-        text=render_template("admin_price_channels"),
+        text=render_template("admin_price_channels", channels_block=channels_block),
         message_id=message_id,
         markup=inline_keyboard(rows),
     )
@@ -1911,7 +1919,9 @@ async def _handle_dialog_text(
                 status_label=status_label,
             ),
         )
-        await _send_price_channels(session, telegram, chat_id)
+        await _send_price_channels(
+            session, telegram, chat_id, extra_channel=created
+        )
         return "ok"
 
     if state == "await_rename":

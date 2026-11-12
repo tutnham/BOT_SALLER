@@ -411,7 +411,7 @@ TEMPLATES: dict[str, str] = {
     "admin_client_groups": "Клиентские беседы:",
     "admin_pending_chats": "Новые чаты, куда добавили бота:",
     "admin_bind_supplier": "Выберите поставщика для этой беседы:",
-    "admin_price_channels": "Каналы прайсов поставщиков:",
+    "admin_price_channels": "Каналы прайсов поставщиков:\n{channels_block}",
     "admin_price_channels_error": "Не удалось загрузить каналы: {detail}",
     "admin_await_supplier_name": "Введите название нового поставщика:",
     "admin_await_rename": "Введите новое название поставщика:",
@@ -575,6 +575,9 @@ def render_template(name: str, **kwargs: Any) -> str:
     if name == "admin_business_status":
         kwargs.setdefault("connections_block", kwargs.get("connections_block") or "нет")
         kwargs.setdefault("suppliers_block", kwargs.get("suppliers_block") or "нет")
+
+    if name == "admin_price_channels":
+        kwargs.setdefault("channels_block", "Список пуст.")
 
     if name == "admin_supplier_detail":
         kwargs.setdefault("telegram_id", "—")

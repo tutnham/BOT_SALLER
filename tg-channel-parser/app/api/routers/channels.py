@@ -101,6 +101,7 @@ async def create_channel(
     )
     db.add(task)
     await db.flush()
+    await db.commit()
 
     return channel
 

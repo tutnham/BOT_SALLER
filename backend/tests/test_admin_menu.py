@@ -599,6 +599,7 @@ class _FakeParserChannel:
         self.is_active = is_active
         self.purpose = purpose
         self.status = status or ("active" if is_active else "pending")
+        self.error_text = None
 
 
 def _button_labels(markup: dict | None) -> list[str]:
@@ -676,6 +677,11 @@ async def test_price_channels_list_shows_real_statuses(
     assert any(label.startswith("⏳") and "Pending" in label for label in labels)
     assert any(label.startswith("❌") and "Failed" in label for label in labels)
     assert not any("Deleted" in label for label in labels)
+    list_text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    assert "Active" in list_text
+    assert "Pending" in list_text
+    assert "Failed" in list_text
+    assert "Deleted" not in list_text
 
 
 @pytest.mark.asyncio
@@ -802,6 +808,9 @@ async def test_price_channel_add_dialog(
     sent_text = "\n".join(item[1] for item in mock_telegram.sent)
     assert "добавлен" in sent_text
     assert "Канал прайса" in sent_text
+    list_text = mock_telegram.sent[-1][1]
+    assert "New" in list_text
+    assert "Список пуст." not in list_text
 
 
 @pytest.mark.asyncio
