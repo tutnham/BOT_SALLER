@@ -22,6 +22,7 @@ def _public_row(kind: str, row: WebhookInbox | TelegramOutbox) -> dict[str, obje
     supplier_id = getattr(row, "supplier_id", None)
     request_id = getattr(row, "request_id", None)
     row_kind = getattr(row, "kind", kind)
+    chat_id = getattr(row, "chat_id", None)
     return {
         "queue": kind,
         "id": row.id,
@@ -30,6 +31,7 @@ def _public_row(kind: str, row: WebhookInbox | TelegramOutbox) -> dict[str, obje
         "attempts": row.attempts,
         "supplier_id": supplier_id,
         "request_id": request_id,
+        "chat_id": chat_id,
         "last_error": sanitize_error(row.last_error),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

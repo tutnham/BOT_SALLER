@@ -1,7 +1,7 @@
 # Техническая документация: сервис парсинга Telegram-канала (MTProto, userbot)
 
 Версия: 1.0
-Статус относительно основного проекта («бот закупок»): **отдельный сервис**. Своя БД `tg_parser`, свой Alembic (head `0005_runtime_heartbeat`). Backend ходит только по HTTP (`PARSER_API_URL`, Bearer `PARSER_API_TOKEN`).
+Статус относительно основного проекта («бот закупок»): **отдельный сервис**. Своя БД `tg_parser`, свой Alembic (head `0007_backfill_task_type`; цепочка `0005_runtime_heartbeat` → `0006_post_edited_at` → `0007_backfill_task_type`). Backend ходит только по HTTP (`PARSER_API_URL`, Bearer `PARSER_API_TOKEN`).
 
 **Фактический runtime (2026-10-30):** один процесс `tg-runtime` (`app.mtproto.runtime`: listener, poll задач, heartbeat) и `tg-parser-api`. Отдельных постоянных сервисов `tg-listener` и `tg-worker` в `docker-compose.tg-parser.yml` нет. Разбор прайсов делает backend (`morning-price`). Задачи `ai_process` не ставятся: каталога `app/ai/` нет, флаг `AI_PROCESS_ENABLED` только пишет предупреждение в лог. Схемы ниже, где нарисованы `tg-listener`, `tg-worker` и Ollama, описывают ранний набросок, не текущий compose.
 
@@ -43,7 +43,7 @@ Telethon — равноценная альтернатива (`StringSession`, `
 │ tg-listener (Python, Pyrogram)                                   │
 │  • auth.py — первичная интерактивная авторизация (разово)        │
 │  • backfill.py — режим 1: история за период / с message_id       │
-│  • realtime.py — режим 2: обработчик новых сообщений             │
+│  • realtime.py — режим 2: новые сообщения, редактирования, удаления │
 │  • пишет в БД: parser_posts (status=new) + parser_tasks           │
 └───────────────────────────────┬───────────────────────────────────┘
                                  │
@@ -237,6 +237,11 @@ python -m app.mtproto.realtime   # long-running процесс, автопере
 ```
 
 `filters.chat()` принимает лист идентификаторов чатов — один обработчик обслуживает все каналы независимо от их `purpose`; ветвление по назначению происходит внутри `upsert_post` (7.4). Список каналов фиксируется при старте процесса — добавление нового канала (6.0) требует перезагрузки `tg-listener`.
+
+**Редактирования и удаления (B1, миграция `0006_post_edited_at`):** вместе с `MessageHandler` регистрируются `EditedMessageHandler` и `DeletedMessagesHandler` с тем же `filters.chat`:
+
+- редактирование поста → `apply_post_edit`: обновляются `raw_text`/`raw_metadata`/`content_type`/`message_link`/`grouped_id`, заполняется `edited_at`; `post_date` не меняется (курсорная пагинация backend стабильна). Повторный edit с тем же или более старым `edit_date` идемпотентен. Backend перечитывает цену автоматически: его `parse_cache` ключуется по хешу контента;
+- удаление постов → `mark_posts_deleted`: `excluded=true`, `excluded_reason='deleted_in_channel'`, `excluded_at`; такие посты не попадают в `GET /posts` и в утренний прайс.
 
 Если канал прислал альбом (несколько сообщений с одним `media_group_id`), обработчик получает каждое сообщение отдельным событием; для получения всех элементов альбома сразу используется `await client.get_media_group(chat_id, message.id)` [Pyrogram Client.get_media_group](https://docs.pyrogram.org/api/methods/get_media_group). Дедупликация альбома — по `grouped_id` (см. раздел 7.2): все сообщения альбома сохраняются как отдельные строки `parser_posts` с одинаковым `grouped_id`, повторная агрегация делается на уровне чтения (API), не на уровне записи.
 
@@ -437,7 +442,7 @@ CREATE INDEX idx_parser_ai_results_post ON parser_ai_results (post_id, is_curren
 Ключевые гарантии схемы:
 
 - Уникальность поста — `UNIQUE (channel_id, message_id)` в `parser_posts`; повторная вставка при перезапуске/повторном backfill/дублирующемся realtime-событии обрабатывается через `INSERT ... ON CONFLICT DO NOTHING`.
-- Оригинал (`raw_text`, `raw_metadata`) физически отделён от результата ИИ (`parser_ai_results.cleaned_text`, `summary` и т.д.) — разные таблицы, `raw_text` в `parser_posts` никогда не перезаписывается модулем ИИ.
+- Оригинал (`raw_text`, `raw_metadata`) физически отделён от результата ИИ (`parser_ai_results.cleaned_text`, `summary` и т.д.) — разные таблицы, `raw_text` в `parser_posts` никогда не перезаписывается модулем ИИ. Единственный источник перезаписи оригинала — редактирование поста в канале (`apply_post_edit`, метка `edited_at`).
 - Статусная модель `new → downloaded → processing → processed / failed` реализована как в `parser_posts.status` (общий статус пайплайна поста), так и в `parser_tasks.status` (статус конкретной задачи: скачивание или ИИ-обработка) — с `error_text` и `last_attempt_at` на обоих уровнях.
 - Исключение поста из обработки — `parser_posts.excluded=true`; воркер обязан пропускать такие посты при выборке новых задач (`WHERE excluded=false`).
 

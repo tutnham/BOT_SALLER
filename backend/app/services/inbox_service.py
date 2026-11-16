@@ -48,6 +48,38 @@ async def enqueue_webhook_update(
     return "queued", int(inbox_id)
 
 
+async def enqueue_failed_sync_update(
+    session: AsyncSession,
+    *,
+    tg_update_id: int,
+    payload: dict[str, Any],
+    error_text: str,
+) -> int | None:
+    """A2: упавшее обновление sync-webhook попадает в inbox для повтора.
+
+    Отметка ``update_log`` должна быть снята вызывающей стороной. Повтор выполняет
+    backend-worker либо inline-цикл web-процесса; после исчерпания попыток строка
+    становится ``dead`` и доступна оператору через DLQ.
+    """
+    stmt = (
+        insert(WebhookInbox)
+        .values(
+            tg_update_id=tg_update_id,
+            payload=payload,
+            status=WebhookInboxStatus.pending.value,
+            attempts=1,
+            last_error=error_text[:2000],
+            next_attempt_at=datetime.now(UTC)
+            + timedelta(seconds=_backoff_seconds(1)),
+        )
+        .on_conflict_do_nothing(index_elements=["tg_update_id"])
+        .returning(WebhookInbox.id)
+    )
+    inbox_id = (await session.execute(stmt)).scalar_one_or_none()
+    await session.flush()
+    return int(inbox_id) if inbox_id is not None else None
+
+
 async def _expire_inbox_row(row: WebhookInbox) -> bool:
     """Count a crashed lease. Return False when the row must not run again."""
     settings = get_settings()

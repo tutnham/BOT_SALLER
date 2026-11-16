@@ -107,6 +107,14 @@ def validate_normalized_request_payload(payload: Any) -> NormalizedRequest:
         return NormalizedRequest(model="", confidence=0.0)
 
 
+def _response_json(response: httpx.Response) -> Any:
+    """Невалидный JSON с HTTP 200 — ошибка провайдера, а не JSONDecodeError (B2)."""
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise LLMProviderError("llm_invalid_json") from exc
+
+
 class DefaultLLMClient:
     """HTTP-based provider switch: openai-compatible or ollama."""
 
@@ -244,11 +252,16 @@ class DefaultLLMClient:
 
         if len(response.content) > 5_000_000:
             raise LLMProviderError("llm_response_too_large")
-        data = response.json()
-        choices = data.get("choices") or []
-        if not choices:
-            raise LLMProviderError("llm_empty_choices")
-        content = choices[0].get("message", {}).get("content")
+        data = _response_json(response)
+        # choices/message могут быть null или нестандартной формы (B2)
+        try:
+            choices = data.get("choices") or []
+            if not choices:
+                raise LLMProviderError("llm_empty_choices")
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+        except (AttributeError, KeyError, IndexError, TypeError) as exc:
+            raise LLMProviderError("llm_malformed_response") from exc
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("llm_empty_content")
 
@@ -296,8 +309,8 @@ class DefaultLLMClient:
 
         if len(response.content) > 5_000_000:
             raise LLMProviderError("llm_response_too_large")
-        data = response.json()
-        content = data.get("response")
+        data = _response_json(response)
+        content = data.get("response") if isinstance(data, dict) else None
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("llm_empty_content")
         if expect_json:
@@ -306,6 +319,18 @@ class DefaultLLMClient:
             except json.JSONDecodeError:
                 return {}
         return content
+
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        """Backoff с учётом Retry-After при 429 (B2)."""
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return min(10.0, max(0.0, float(retry_after)))
+                except ValueError:
+                    pass
+        return min(2.0, 0.2 * float(2 ** (attempt - 1)))
 
     async def _post_with_retry(
         self,
@@ -320,13 +345,25 @@ class DefaultLLMClient:
         response: httpx.Response | None = None
         async with observe_llm(operation):
             for attempt in range(1, 4):
-                response = await self._http.post(url, json=payload, headers=headers)
-                if response.status_code < 500:
+                try:
+                    response = await self._http.post(url, json=payload, headers=headers)
+                except httpx.TransportError:
+                    # Таймауты и сбросы соединения ретраим с backoff (B2)
+                    if attempt == 3:
+                        raise
+                    await asyncio.sleep(min(2.0, 0.2 * (2 ** (attempt - 1))))
+                    continue
+                if response.status_code < 500 and response.status_code != 429:
                     break
                 if attempt < 3:
-                    await asyncio.sleep(min(2.0, 0.2 * (2 ** (attempt - 1))))
-        assert response is not None
+                    await asyncio.sleep(self._retry_delay(response, attempt))
+        if response is None:
+            raise LLMProviderError("llm_no_response")
         return response
+
+    async def aclose(self) -> None:
+        """Освободить httpx-клиент при shutdown (B2)."""
+        await self._http.aclose()
 
 
 _client: LLMClientProtocol | None = None
@@ -342,3 +379,12 @@ def get_llm_client() -> LLMClientProtocol:
 def set_llm_client(client: LLMClientProtocol | None) -> None:
     global _client
     _client = client
+
+
+async def close_llm_client() -> None:
+    """Закрыть HTTP-клиент LLM при остановке приложения (B2)."""
+    global _client
+    client = _client
+    _client = None
+    if isinstance(client, DefaultLLMClient):
+        await client.aclose()

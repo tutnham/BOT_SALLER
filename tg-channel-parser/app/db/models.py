@@ -51,6 +51,8 @@ class ParserTaskType(str, enum.Enum):
     download_media = "download_media"
     ai_process = "ai_process"
     resolve_channel = "resolve_channel"
+    # B4: повторный backfill истории после сбоя при resolve канала
+    backfill_channel = "backfill_channel"
 
 
 class ParserChannelStatus(str, enum.Enum):
@@ -151,6 +153,8 @@ class ParserPost(Base):
     )
     excluded_reason: Mapped[str | None] = mapped_column(Text)
     excluded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Дата последнего редактирования поста в канале (B1): backend перечитывает прайс
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_text: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

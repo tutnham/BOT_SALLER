@@ -16,7 +16,7 @@ from app.services.outbox_service import process_outbox_batch
 async def _tick(
     session_factory: async_sessionmaker[AsyncSession],
     worker_id: str,
-) -> None:
+) -> bool:
     async with session_factory() as session:
         try:
             inbox_n = await process_inbox_batch(
@@ -35,9 +35,11 @@ async def _tick(
                     inbox_n,
                     outbox_n,
                 )
+            return True
         except Exception:
             await session.rollback()
             logger.exception("Worker tick failed")
+            return False
 
 
 async def _run_loop(
@@ -57,22 +59,13 @@ async def _run_loop(
         settings.worker_outbox_batch_size,
     )
     while not stop.is_set():
-        try:
-            async with session_factory() as session:
-                from app.services.heartbeat_service import touch_heartbeat
-
-                await touch_heartbeat(
-                    session, process_type="worker", instance_id=worker_id
-                )
-                await session.commit()
-        except Exception as exc:
-            logger.warning("Worker heartbeat failed: {}", type(exc).__name__)
         tick = asyncio.create_task(_tick(session_factory, worker_id))
         waiter = asyncio.create_task(stop.wait())
         await asyncio.wait({tick, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        tick_ok = False
         if tick.done():
             waiter.cancel()
-            await tick
+            tick_ok = await tick
         else:
             try:
                 await asyncio.wait_for(asyncio.shield(tick), timeout=grace)
@@ -86,6 +79,18 @@ async def _run_loop(
                         grace,
                     )
             break
+        # C1: heartbeat только после успешного tick — /ready замечает деградацию.
+        if tick_ok:
+            try:
+                async with session_factory() as session:
+                    from app.services.heartbeat_service import touch_heartbeat
+
+                    await touch_heartbeat(
+                        session, process_type="worker", instance_id=worker_id
+                    )
+                    await session.commit()
+            except Exception as exc:
+                logger.warning("Worker heartbeat failed: {}", type(exc).__name__)
         if stop.is_set():
             break
         try:
@@ -115,6 +120,10 @@ async def _main() -> None:
     try:
         await _run_loop(session_factory, stop)
     finally:
+        from app.llm.client import close_llm_client
+
+        # B2: worker тоже использует LLM-клиент при обработке inbox
+        await close_llm_client()
         await engine.dispose()
 
 

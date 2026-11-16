@@ -381,3 +381,70 @@ async def test_ingest_reads_photo_caption(
     assert degraded == 0
     count = await db_session.scalar(select(func.count()).select_from(RawPrice))
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_iter_posts_repeated_cursor_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # B3: зацикленный next_cursor не должен вешать morning-price job
+    get_settings.cache_clear()
+    monkeypatch.setenv("PARSER_API_URL", "http://parser.test:8000")
+    get_settings.cache_clear()
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": len(calls),
+                        "message_id": len(calls),
+                        "post_date": "2026-07-30T06:00:00+00:00",
+                        "raw_text": "looped page",
+                    }
+                ],
+                "next_cursor": "same-cursor",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ParserClientError, match="parser_pagination_cursor_loop"):
+            await get_posts(channel_id=-1001, from_=None, http_client=client)
+
+    # Первая страница + повтор cursor → останов на втором запросе
+    assert len(calls) == 2
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_iter_posts_page_cap_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # B3: даже уникальные cursor ограничены MAX_POSTS_PAGES
+    from app.services import parser_client as pc
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("PARSER_API_URL", "http://parser.test:8000")
+    monkeypatch.setattr(pc, "MAX_POSTS_PAGES", 3)
+    get_settings.cache_clear()
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "next_cursor": f"cursor-{len(calls)}",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ParserClientError, match="parser_pagination_limit_exceeded"):
+            await get_posts(channel_id=-1001, from_=None, http_client=client)
+
+    assert len(calls) == 3
+    get_settings.cache_clear()

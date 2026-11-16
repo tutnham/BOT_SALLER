@@ -411,6 +411,26 @@ async def telegram_webhook(
             update_id,
             type(exc).__name__,
         )
+        # A2: не теряем обновление в sync-режиме — снимаем отметку и кладём
+        # payload в webhook_inbox для повтора воркером/inline-циклом (далее DLQ).
+        try:
+            from app.services.inbox_service import enqueue_failed_sync_update
+            from app.utils.idempotency import unmark_update_processed
+
+            await unmark_update_processed(session, int(update_id))
+            await enqueue_failed_sync_update(
+                session,
+                tg_update_id=int(update_id),
+                payload=update_data,
+                error_text=f"{type(exc).__name__}: {exc}",
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Failed to enqueue sync webhook failure update_id={}",
+                update_id,
+            )
         telegram = get_telegram_client()
         await send_admin_alert(
             f"⚠️ Backend webhook error\n"

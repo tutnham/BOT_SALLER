@@ -40,6 +40,11 @@ from app.services.candidate_loader_service import (
     JevOutboundFact,
     load_jev_outbound_facts,
 )
+from app.services.jev_breaker_service import (
+    allow_jev_request,
+    note_jev_breaker_failure,
+    note_jev_breaker_success,
+)
 from app.services.jev_decision_store import (
     lookup_cached_decision,
     persist_jev_decision,
@@ -147,9 +152,9 @@ def candidates_to_jev(
             str(normalized.get("region") or ""),
         ]
         attrs = " ".join(part for part in attr_parts if part).strip()
-        description = f"#{request.id} {order_text}".strip()
-        if attrs and attrs not in description:
-            description = f"{description} | {attrs}"
+        base = f"#{request.id} {order_text}".strip()
+        # Model identity first: the 240-char cut must not drop model/variant.
+        description = f"{attrs} | {base}" if attrs and attrs not in base else base
         description = description[:240] or f"request {request.id}"
         fact = facts.get(request.id)
         qty = _resolve_qty(request, normalized)
@@ -315,6 +320,8 @@ def apply_provider_decision(
         schema_version=SCHEMA_VERSION,
         prompt_version=PROMPT_VERSION,
         provider_model=response.model,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
     )
 
 
@@ -355,7 +362,6 @@ async def classify_with_jev(
     if not supplier.active:
         return _fallback(reason="supplier_inactive", action=JevDecisionAction.REVIEW)
 
-    started = time.perf_counter()
     active_candidates = sorted(candidates, key=lambda item: item.id, reverse=True)[
         : settings.jev_max_candidates
     ]
@@ -377,7 +383,11 @@ async def classify_with_jev(
     )
     if cached is not None:
         record_jev_cache_hit()
-        record_jev_decision(action=cached.action.value, shadow_mode=settings.jev_shadow_mode)
+        record_jev_decision(
+            action=cached.action.value,
+            shadow_mode=settings.jev_shadow_mode,
+            reason_code=cached.reason_code,
+        )
         return cached.model_copy(
             update={"from_cache": True, "input_hash": input_hash, "candidate_set_hash": candidate_hash}
         )
@@ -388,11 +398,13 @@ async def classify_with_jev(
         outgoing=outgoing,
     )
     correlation_id = f"jev:{message_in_id or 0}:{line_no}"
+    # Provider-only latency: DB prep and cache lookup above are not vendor time.
+    provider_started = time.perf_counter()
 
     async def fail(code: str) -> JevSupplierDecision:
         return await _record_failure(
             code,
-            started,
+            provider_started,
             settings,
             session=session,
             message_in_id=message_in_id,
@@ -402,6 +414,9 @@ async def classify_with_jev(
             candidate_set_hash=candidate_hash,
         )
 
+    if not allow_jev_request(settings):
+        return await fail("jev_breaker_open")
+
     try:
         response = await get_jev_client().classify_supplier_message(
             message_text=text,
@@ -409,20 +424,27 @@ async def classify_with_jev(
             correlation_id=correlation_id,
         )
     except JevTimeout:
+        await note_jev_breaker_failure(settings)
         return await fail("jev_timeout")
     except JevRateLimited:
+        await note_jev_breaker_failure(settings)
         return await fail("jev_rate_limited")
     except JevAuthError:
+        await note_jev_breaker_failure(settings)
         return await fail("jev_auth_error")
     except JevInvalidResponse:
+        await note_jev_breaker_failure(settings)
         return await fail("jev_invalid_response")
     except JevError:
+        await note_jev_breaker_failure(settings)
         return await fail("jev_unavailable")
     except Exception:
         logger.exception("jev classify failed without provider detail")
+        await note_jev_breaker_failure(settings)
         return await fail("jev_unavailable")
 
-    latency_ms = int((time.perf_counter() - started) * 1000)
+    await note_jev_breaker_success(settings)
+    latency_ms = int((time.perf_counter() - provider_started) * 1000)
     record_jev_latency(latency_ms / 1000)
     note_jev_success()
     record_jev_request("ok")
@@ -441,7 +463,11 @@ async def classify_with_jev(
             "candidate_set_hash": candidate_hash,
         }
     )
-    record_jev_decision(action=decision.action.value, shadow_mode=settings.jev_shadow_mode)
+    record_jev_decision(
+        action=decision.action.value,
+        shadow_mode=settings.jev_shadow_mode,
+        reason_code=decision.reason_code,
+    )
     if decision.action is JevDecisionAction.REVIEW:
         record_jev_review()
     if decision.action is JevDecisionAction.AUTO_BIND:
@@ -472,6 +498,236 @@ async def classify_with_jev(
     return decision
 
 
+def _error_code(exc: JevError) -> str:
+    if isinstance(exc, JevTimeout):
+        return "jev_timeout"
+    if isinstance(exc, JevRateLimited):
+        return "jev_rate_limited"
+    if isinstance(exc, JevAuthError):
+        return "jev_auth_error"
+    if isinstance(exc, JevInvalidResponse):
+        return "jev_invalid_response"
+    return "jev_unavailable"
+
+
+async def classify_lines_with_jev(
+    session: AsyncSession,
+    *,
+    supplier: Supplier,
+    business_connection_id: str | None,
+    chat_id: int,
+    message_in_id: int,
+    lines: Sequence[tuple[int, str]],
+    candidates: Sequence[Request],
+    outgoing: Mapping[int, JevOutboundFact] | None = None,
+    route_ok: bool = True,
+) -> dict[int, JevSupplierDecision]:
+    """Classify several lines of one supplier reply. Never raises to the webhook.
+
+    Cache misses go to the provider as one fan-out request per chunk
+    (shared candidate state, per-line questions). Adapters without the
+    batch method fall back to sequential single-line calls: the shared
+    AsyncSession is not safe for concurrent use, so parallelism lives in
+    the provider, not in concurrent DB work.
+    """
+    settings = get_settings()
+    results: dict[int, JevSupplierDecision] = {}
+    valid: dict[int, str] = {}
+    for line_no, raw in lines:
+        text = (raw or "").strip()
+        if not settings.jev_enabled:
+            results[line_no] = _fallback(reason="jev_disabled")
+        elif not text or len(text) > _MAX_TEXT:
+            results[line_no] = _fallback(
+                reason="jev_invalid_response", error_code="jev_invalid_response"
+            )
+        else:
+            valid[line_no] = text
+    if not valid:
+        return results
+    if not candidates:
+        for line_no in valid:
+            results[line_no] = _fallback(reason="jev_ambiguous")
+        return results
+    if not supplier.active:
+        for line_no in valid:
+            results[line_no] = _fallback(
+                reason="supplier_inactive", action=JevDecisionAction.REVIEW
+            )
+        return results
+
+    active_candidates = sorted(candidates, key=lambda item: item.id, reverse=True)[
+        : settings.jev_max_candidates
+    ]
+    if outgoing is None:
+        outgoing = await load_jev_outbound_facts(
+            session,
+            supplier_id=supplier.id,
+            chat_id=chat_id,
+            business_connection_id=business_connection_id,
+            request_ids=[item.id for item in active_candidates],
+        )
+    candidate_hash = hash_candidate_set(active_candidates, outgoing)
+    jev_candidates = candidates_to_jev(
+        active_candidates,
+        limit=settings.jev_max_candidates,
+        outgoing=outgoing,
+    )
+
+    misses: dict[int, str] = {}
+    for line_no, text in valid.items():
+        input_hash = hash_message_input(text, settings=settings)
+        cached = await lookup_cached_decision(
+            session,
+            input_hash=input_hash,
+            candidate_set_hash=candidate_hash,
+            model=settings.jev_model,
+        )
+        if cached is not None:
+            record_jev_cache_hit()
+            record_jev_decision(
+                action=cached.action.value,
+                shadow_mode=settings.jev_shadow_mode,
+                reason_code=cached.reason_code,
+            )
+            results[line_no] = cached.model_copy(
+                update={
+                    "from_cache": True,
+                    "input_hash": input_hash,
+                    "candidate_set_hash": candidate_hash,
+                }
+            )
+        else:
+            misses[line_no] = text
+    if not misses:
+        return results
+
+    async def fail_line(line_no: int, code: str, started: float) -> JevSupplierDecision:
+        return await _record_failure(
+            code,
+            started,
+            settings,
+            session=session,
+            message_in_id=message_in_id,
+            supplier_id=supplier.id,
+            line_no=line_no,
+            input_hash=hash_message_input(misses[line_no], settings=settings),
+            candidate_set_hash=candidate_hash,
+        )
+
+    if not allow_jev_request(settings):
+        started = time.perf_counter()
+        for line_no in misses:
+            results[line_no] = await fail_line(line_no, "jev_breaker_open", started)
+        return results
+
+    client = get_jev_client()
+    batch_fn = getattr(client, "classify_supplier_lines", None)
+    if batch_fn is None:
+        for line_no, text in misses.items():
+            results[line_no] = await classify_with_jev(
+                session,
+                supplier=supplier,
+                business_connection_id=business_connection_id,
+                chat_id=chat_id,
+                message_id=0,
+                message_text=text,
+                candidates=candidates,
+                line_no=line_no,
+                route_ok=route_ok,
+                message_in_id=message_in_id,
+                outgoing=outgoing,
+            )
+        return results
+
+    chunk_size = max(1, settings.jev_batch_max_lines)
+    miss_items = list(misses.items())
+    for start in range(0, len(miss_items), chunk_size):
+        chunk = dict(miss_items[start : start + chunk_size])
+        provider_started = time.perf_counter()
+        try:
+            answers = await batch_fn(
+                lines=chunk,
+                candidates=jev_candidates,
+                correlation_id=f"jev:{message_in_id}:batch",
+            )
+        except JevError as exc:
+            await note_jev_breaker_failure(settings)
+            code = _error_code(exc)
+            for line_no in chunk:
+                results[line_no] = await fail_line(line_no, code, provider_started)
+            continue
+        except Exception:
+            logger.exception("jev batch classify failed without provider detail")
+            await note_jev_breaker_failure(settings)
+            for line_no in chunk:
+                results[line_no] = await fail_line(
+                    line_no, "jev_unavailable", provider_started
+                )
+            continue
+
+        await note_jev_breaker_success(settings)
+        latency_ms = int((time.perf_counter() - provider_started) * 1000)
+        record_jev_latency(latency_ms / 1000)
+        note_jev_success()
+        record_jev_request("ok")
+        for line_no, text in chunk.items():
+            answer = answers.get(line_no)
+            if answer is None or isinstance(answer, JevInvalidResponse):
+                results[line_no] = await fail_line(
+                    line_no, "jev_invalid_response", provider_started
+                )
+                continue
+            decision = apply_provider_decision(
+                response=answer,
+                candidates=active_candidates,
+                message_text=text,
+                supplier_active=supplier.active,
+                route_ok=route_ok,
+                settings=settings,
+            )
+            decision = decision.model_copy(
+                update={
+                    "latency_ms": latency_ms,
+                    "input_hash": hash_message_input(text, settings=settings),
+                    "candidate_set_hash": candidate_hash,
+                }
+            )
+            record_jev_decision(
+                action=decision.action.value,
+                shadow_mode=settings.jev_shadow_mode,
+                reason_code=decision.reason_code,
+            )
+            if decision.action is JevDecisionAction.REVIEW:
+                record_jev_review()
+            if decision.action is JevDecisionAction.AUTO_BIND:
+                record_jev_auto_bind_candidate()
+            logger.info(
+                "jev_decision correlation_id={} message_in_id={} provider={} model={} "
+                "prompt_version={} schema_version={} action={} reason_code={} latency_ms={}",
+                f"jev:{message_in_id}:{line_no}",
+                message_in_id,
+                "jev",
+                decision.model,
+                PROMPT_VERSION,
+                SCHEMA_VERSION,
+                decision.action.value,
+                decision.reason_code,
+                latency_ms,
+            )
+            await persist_jev_decision(
+                session,
+                decision=decision,
+                message_in_id=message_in_id,
+                supplier_id=supplier.id,
+                line_no=line_no,
+                shadow_mode=settings.jev_shadow_mode,
+                actual_action="shadow" if settings.jev_shadow_mode else decision.action.value,
+            )
+            results[line_no] = decision
+    return results
+
+
 async def _record_failure(
     code: str,
     started: float,
@@ -500,7 +756,11 @@ async def _record_failure(
             "candidate_set_hash": candidate_set_hash or "error",
         }
     )
-    record_jev_decision(action=decision.action.value, shadow_mode=settings.jev_shadow_mode)
+    record_jev_decision(
+        action=decision.action.value,
+        shadow_mode=settings.jev_shadow_mode,
+        reason_code=decision.reason_code,
+    )
     logger.info(
         "jev_decision correlation_id={} message_in_id={} provider={} model={} "
         "prompt_version={} schema_version={} action={} reason_code={} latency_ms={}",

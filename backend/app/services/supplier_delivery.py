@@ -78,6 +78,11 @@ def is_sent(outbound: MessageOut) -> bool:
     return outbound.send_status == MessageSendStatus.sent.value
 
 
+def is_queued(outbound: MessageOut) -> bool:
+    """Outbox-режим: доставка запланирована worker'ом, это не провал (A5)."""
+    return outbound.send_status == MessageSendStatus.pending.value
+
+
 def is_failed_business_peer(outbound: MessageOut) -> bool:
     """True when stored error looks like BUSINESS_PEER_USAGE_MISSING / 24h window."""
     if outbound.send_status != MessageSendStatus.failed.value:

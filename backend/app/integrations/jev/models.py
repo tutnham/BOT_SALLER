@@ -79,3 +79,7 @@ class JevSupplierDecision(BaseModel):
     from_cache: bool = False
     prompt_version: str = ""
     provider_model: str = ""
+    # Provider usage for cost accounting. None for cached/error decisions and
+    # for lines answered inside a batch request (usage is per request, not per line).
+    input_tokens: int | None = None
+    output_tokens: int | None = None

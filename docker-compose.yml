@@ -38,6 +38,8 @@ services:
       TZ: ${TZ:-Europe/Moscow}
       SCHEDULER_ENABLED: "false"
       SCHEDULER_EXPECTED: "true"
+      # A2: целевой prod-режим — async webhook (inbox + DLQ через backend-worker).
+      WEBHOOK_ASYNC_ENABLED: ${WEBHOOK_ASYNC_ENABLED:-true}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -65,8 +67,8 @@ services:
       TELEGRAM_WEBHOOK_SECRET_TOKEN: ${TELEGRAM_WEBHOOK_SECRET_TOKEN:?required}
       TZ: ${TZ:-Europe/Moscow}
       SCHEDULER_ENABLED: "false"
-      WEBHOOK_ASYNC_ENABLED: ${WEBHOOK_ASYNC_ENABLED:-false}
-      OUTBOX_DELIVERY_ENABLED: ${OUTBOX_DELIVERY_ENABLED:-false}
+      WEBHOOK_ASYNC_ENABLED: ${WEBHOOK_ASYNC_ENABLED:-true}
+      OUTBOX_DELIVERY_ENABLED: ${OUTBOX_DELIVERY_ENABLED:-true}
       WORKER_ID: ${WORKER_ID:-backend-worker}
     command: ["python", "-m", "app.workers.main"]
     stop_grace_period: 30s

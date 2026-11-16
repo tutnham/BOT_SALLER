@@ -607,10 +607,6 @@ async def test_batch_reply_preloads_outgoing_once_and_respects_bargaining(
         _mock_load_candidates,
     )
     monkeypatch.setattr(
-        "app.services.supplier_batch_service.load_jev_outbound_facts",
-        _mock_outbound,
-    )
-    monkeypatch.setattr(
         "app.services.jev_supplier_classifier.load_jev_outbound_facts",
         _mock_outbound,
     )

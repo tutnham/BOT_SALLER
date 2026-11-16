@@ -128,7 +128,9 @@ async def upsert_quote(
     )
     quote_id = (await session.execute(stmt)).scalar_one()
     quote = await session.get(Quote, quote_id)
-    assert quote is not None
+    if quote is None:
+        # C6: явное исключение вместо assert — проверка не должна исчезать при python -O
+        raise RuntimeError("quote_missing_after_upsert")
 
     if price is not None and not bargain:
         await _apply_markup_from_request(

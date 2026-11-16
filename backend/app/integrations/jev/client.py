@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 import httpx
+from loguru import logger
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
@@ -22,10 +23,17 @@ from app.integrations.jev.exceptions import (
     JevUnavailable,
 )
 from app.integrations.jev.models import JevCandidate, JevProviderResponse
-from app.integrations.jev.prompts import build_questions, build_state
+from app.integrations.jev.prompts import (
+    build_batch_questions,
+    build_batch_state,
+    build_questions,
+    build_state,
+)
 
 _MAX_RESPONSE_BYTES = 256_000
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+
+_T = TypeVar("_T")
 
 
 class JevClientProtocol(Protocol):
@@ -66,6 +74,7 @@ class HttpJevClient:
             connect=min(1.0, self._settings.jev_timeout_seconds),
         )
         self._http = httpx.AsyncClient(timeout=timeout, transport=transport)
+        self._semaphore = asyncio.Semaphore(max(1, self._settings.jev_max_concurrency))
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -93,6 +102,52 @@ class HttpJevClient:
         if not isinstance(criteria, dict):
             raise JevInvalidResponse()
         allowed_binding = {str(key) for key in criteria}
+        return await self._post_with_retries(
+            payload,
+            lambda data: _parse_success(data, allowed_binding),
+        )
+
+    async def classify_supplier_lines(
+        self,
+        *,
+        lines: Mapping[int, str],
+        candidates: Sequence[JevCandidate],
+        correlation_id: str,
+    ) -> dict[int, JevProviderResponse | JevInvalidResponse]:
+        """One request for many lines: shared candidate state, per-line questions.
+
+        A malformed answer for one line is returned as ``JevInvalidResponse``
+        for that line only; other lines keep their answers. Transport errors
+        raise for the whole chunk, like the single-message call.
+        """
+        del correlation_id  # local only; not sent to the provider
+        settings = self._settings
+        candidate_list = list(candidates)
+        line_nos = list(lines.keys())
+        questions = build_batch_questions(line_nos, candidate_list)
+        payload: dict[str, Any] = {
+            "state": build_batch_state(lines, candidate_list),
+            "model": settings.jev_model,
+            "questions": questions,
+        }
+        first_binding = questions[f"binding_line_{line_nos[0]}"]
+        criteria = first_binding.get("criteria")
+        if not isinstance(criteria, dict):
+            raise JevInvalidResponse()
+        allowed_binding = {str(key) for key in criteria}
+        return await self._post_with_retries(
+            payload,
+            lambda data: _parse_batch_success(
+                data, line_nos, allowed_binding, settings.jev_price_threshold
+            ),
+        )
+
+    async def _post_with_retries(
+        self,
+        payload: dict[str, Any],
+        parse: Callable[[object], _T],
+    ) -> _T:
+        settings = self._settings
         url = f"{settings.jev_api_base_url.rstrip('/')}/v1/systemone"
         headers = {
             "Authorization": f"Bearer {settings.jev_api_key or ''}",
@@ -101,31 +156,32 @@ class HttpJevClient:
         }
         attempts = settings.jev_max_retries + 1
         last_error: JevError = JevUnavailable()
-        for attempt in range(attempts):
-            try:
-                response = await self._http.post(url, json=payload, headers=headers)
-            except httpx.TimeoutException:
-                last_error = JevTimeout()
-            except httpx.HTTPError:
-                last_error = JevUnavailable()
-            else:
-                mapped = self._map_status(response, allowed_binding)
-                if isinstance(mapped, JevProviderResponse):
-                    return mapped
-                last_error = mapped
-                if not _should_retry(last_error):
-                    raise last_error from None
-            if attempt + 1 < attempts and _should_retry(last_error):
-                await asyncio.sleep(_backoff(attempt))
-                continue
-            raise last_error from None
+        async with self._semaphore:
+            for attempt in range(attempts):
+                try:
+                    response = await self._http.post(url, json=payload, headers=headers)
+                except httpx.TimeoutException:
+                    last_error = JevTimeout()
+                except httpx.HTTPError:
+                    last_error = JevUnavailable()
+                else:
+                    mapped = self._map_status(response, parse)
+                    if not isinstance(mapped, JevError):
+                        return mapped
+                    last_error = mapped
+                    if not _should_retry(last_error):
+                        raise last_error from None
+                if attempt + 1 < attempts and _should_retry(last_error):
+                    await asyncio.sleep(_backoff(attempt))
+                    continue
+                raise last_error from None
         raise last_error from None
 
     def _map_status(
         self,
         response: httpx.Response,
-        allowed_binding: set[str],
-    ) -> JevProviderResponse | JevError:
+        parse: Callable[[object], _T],
+    ) -> _T | JevError:
         status = response.status_code
         if status in {401, 403}:
             return JevAuthError()
@@ -147,7 +203,7 @@ class HttpJevClient:
         except json.JSONDecodeError:
             return JevInvalidResponse()
         try:
-            return _parse_success(data, allowed_binding)
+            return parse(data)
         except JevInvalidResponse as exc:
             return exc
 
@@ -220,6 +276,88 @@ def _parse_success(data: object, allowed_binding: set[str]) -> JevProviderRespon
         )
     except ValidationError:
         raise JevInvalidResponse() from None
+
+
+def _derive_message_choice(price_probability: Decimal, price_threshold: Decimal) -> str:
+    """Batch contract has no message_type choice; the noul is authoritative.
+
+    Mirrors the application gate: low noul reads not_price, high reads
+    price_offer, the unsettled band stays ambiguous (review in code).
+    """
+    if price_probability <= Decimal("1") - price_threshold:
+        return "not_price"
+    if price_probability >= price_threshold:
+        return "price_offer"
+    return "ambiguous"
+
+
+def _parse_batch_line(
+    answers: dict[str, Any],
+    line_no: int,
+    allowed_binding: set[str],
+    model: str,
+    price_threshold: Decimal,
+) -> JevProviderResponse:
+    price = answers.get(f"is_price_line_{line_no}")
+    binding = answers.get(f"binding_line_{line_no}")
+    if not isinstance(price, dict) or not isinstance(binding, dict):
+        raise JevInvalidResponse()
+    matches_listed_order = _optional_noul(answers.get(f"matches_listed_order_line_{line_no}"))
+    binding_choice = binding.get("choice")
+    probabilities = binding.get("probabilities")
+    confidence = binding.get("confidence")
+    if not isinstance(binding_choice, str) or binding_choice not in allowed_binding:
+        raise JevInvalidResponse()
+    try:
+        price_probability = Decimal(str(price.get("noul")))
+        binding_confidence = Decimal(str(confidence))
+    except (InvalidOperation, ValueError):
+        raise JevInvalidResponse() from None
+    prob_map = _decimal_map(probabilities)
+    try:
+        return JevProviderResponse(
+            model=model,
+            message_choice=_derive_message_choice(price_probability, price_threshold),
+            price_probability=price_probability,
+            binding_choice=binding_choice,
+            binding_probabilities=prob_map,
+            binding_confidence=binding_confidence,
+            matches_listed_order=matches_listed_order,
+        )
+    except ValidationError:
+        raise JevInvalidResponse() from None
+
+
+def _parse_batch_success(
+    data: object,
+    line_nos: Sequence[int],
+    allowed_binding: set[str],
+    price_threshold: Decimal,
+) -> dict[int, JevProviderResponse | JevInvalidResponse]:
+    if not isinstance(data, dict):
+        raise JevInvalidResponse()
+    model = data.get("model")
+    answers = data.get("answers")
+    if not isinstance(model, str) or not model or not isinstance(answers, dict):
+        raise JevInvalidResponse()
+    usage_obj = data.get("usage")
+    if isinstance(usage_obj, dict):
+        # Usage is per request; per-line token split would be invented data.
+        logger.info(
+            "jev_batch_usage lines={} input_tokens={} output_tokens={}",
+            len(line_nos),
+            usage_obj.get("input_tokens"),
+            usage_obj.get("output_tokens"),
+        )
+    result: dict[int, JevProviderResponse | JevInvalidResponse] = {}
+    for line_no in line_nos:
+        try:
+            result[line_no] = _parse_batch_line(
+                answers, line_no, allowed_binding, model, price_threshold
+            )
+        except JevInvalidResponse as exc:
+            result[line_no] = exc
+    return result
 
 
 _client: JevClientProtocol | None = None

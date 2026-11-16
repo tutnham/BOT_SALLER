@@ -12,14 +12,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
-from pyrogram.handlers import MessageHandler
 
 from app.config import get_settings
 from app.db.session import get_session_factory
 from app.logging_setup import setup_logging
 from app.mtproto.client_factory import create_client
 from app.mtproto.realtime import (
-    _build_handler,
+    _build_handlers,
     _load_active_channel_ids,
     _reload_loop,
 )
@@ -54,9 +53,10 @@ async def run_mtproto_runtime() -> None:
 
     channel_ids = await _load_active_channel_ids()
     client = create_client("runtime", settings=settings)
-    handler: MessageHandler | None = _build_handler(channel_ids)
-    if handler is not None:
+    handlers: list[Any] = _build_handlers(channel_ids)
+    for handler in handlers:
         client.add_handler(handler)
+    if handlers:
         logger.info("Runtime listening channels={}", channel_ids)
     else:
         logger.warning(
@@ -69,7 +69,7 @@ async def run_mtproto_runtime() -> None:
     poll_task = asyncio.create_task(run_task_poll_loop(client))
     heartbeat_task = asyncio.create_task(_runtime_heartbeat_loop(client, instance_id))
     try:
-        await _reload_loop(client, handler, settings)
+        await _reload_loop(client, handlers, settings)
     finally:
         heartbeat_task.cancel()
         poll_task.cancel()

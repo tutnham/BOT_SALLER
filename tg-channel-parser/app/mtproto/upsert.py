@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -159,3 +161,83 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
 
     await session.flush()
     return post
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Pyrogram может отдавать naive datetime в UTC — приводим к aware."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+async def apply_post_edit(session: AsyncSession, message: Any) -> ParserPost | None:
+    """Обновить сохранённый пост после редактирования в канале (B1).
+
+    post_date не меняется — курсорная пагинация GET /posts остаётся стабильной.
+    Повторная доставка того же edit_date — no-op (идемпотентность).
+    Если пост ещё не сохранён — обычная вставка через upsert_post.
+    """
+    fields = map_message_to_post_fields(message)
+    channel = await get_channel_by_tg_id(session, fields["channel_id"])
+    if channel is None:
+        logger.warning(
+            "Skipping edit: channel_id={} not registered",
+            fields["channel_id"],
+        )
+        return None
+
+    result = await session.execute(
+        select(ParserPost).where(
+            ParserPost.channel_id == fields["channel_id"],
+            ParserPost.message_id == fields["message_id"],
+        )
+    )
+    post = result.scalar_one_or_none()
+    if post is None:
+        # Пост не успели сохранить (листнер запущен позже публикации)
+        return await upsert_post(session, message)
+
+    edit_date = getattr(message, "edit_date", None) or datetime.now(UTC)
+    edit_date = _as_utc(edit_date)
+    if post.edited_at is not None and edit_date <= _as_utc(post.edited_at):
+        # Это же редактирование уже применено (или пришло устаревшее)
+        return post
+
+    post.raw_text = fields["raw_text"]
+    post.raw_metadata = fields["raw_metadata"]
+    post.content_type = fields["content_type"]
+    post.message_link = fields["message_link"]
+    post.grouped_id = fields["grouped_id"]
+    post.edited_at = edit_date
+    await session.flush()
+    return post
+
+
+async def mark_posts_deleted(
+    session: AsyncSession,
+    *,
+    channel_id: int,
+    message_ids: Sequence[int],
+) -> int:
+    """Пометить удалённые в канале посты excluded=true (B1).
+
+    Физически строки не удаляем — сохраняется аудит и идемпотентность upsert.
+    Возвращает число впервые исключённых постов.
+    """
+    if not message_ids:
+        return 0
+    result = await session.execute(
+        update(ParserPost)
+        .where(
+            ParserPost.channel_id == channel_id,
+            ParserPost.message_id.in_(list(message_ids)),
+            ParserPost.excluded.is_(False),
+        )
+        .values(
+            excluded=True,
+            excluded_reason="deleted_in_channel",
+            excluded_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    return int(result.rowcount or 0)

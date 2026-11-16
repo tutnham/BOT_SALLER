@@ -16,6 +16,8 @@ from app.config import get_settings
 _client: httpx.AsyncClient | None = None
 DEFAULT_POSTS_PAGE_SIZE = 100
 MAX_POSTS_PAGE_SIZE = 500
+# B3: предохранитель от бесконечной пагинации (зацикленный cursor / дефект парсера)
+MAX_POSTS_PAGES = 200
 
 
 def get_parser_http_client() -> httpx.AsyncClient:
@@ -119,7 +121,9 @@ async def _request(
             if attempt < 3:
                 await asyncio.sleep(0.2 * (2 ** (attempt - 1)))
 
-    assert response is not None
+    if response is None:
+        # C6: явное исключение вместо assert (python -O)
+        raise ParserClientError("parser_no_response")
     if response.status_code >= 400:
         record_parser_error()
         raise ParserClientError(f"parser_http_{response.status_code}")
@@ -184,8 +188,13 @@ async def iter_posts(
     """Stream parser posts page-by-page (bounded memory)."""
     cursor: str | None = None
     limit = min(max(page_size, 1), MAX_POSTS_PAGE_SIZE)
+    seen_cursors: set[str] = set()
+    pages = 0
 
     while True:
+        pages += 1
+        if pages > MAX_POSTS_PAGES:
+            raise ParserClientError("parser_pagination_limit_exceeded")
         params: dict[str, str] = {
             "channel_id": str(channel_id),
             "content_type": content_type,
@@ -208,6 +217,10 @@ async def iter_posts(
             yield page
         if not next_cursor:
             break
+        if next_cursor in seen_cursors:
+            # Парсер вернул уже виденный cursor — иначе цикл никогда не завершится
+            raise ParserClientError("parser_pagination_cursor_loop")
+        seen_cursors.add(next_cursor)
         cursor = next_cursor
 
 

@@ -17,8 +17,12 @@ from app.db.models import (
     WebhookInboxStatus,
 )
 from app.services.inbox_service import process_inbox_batch
-from app.services.outbox_service import process_outbox_batch
+from app.services.outbox_service import (
+    _is_permanent_delivery_error,
+    process_outbox_batch,
+)
 from app.services.queue_claim import claim_rows
+from app.telegram.client import TelegramSendError
 
 
 @pytest.mark.asyncio
@@ -537,3 +541,49 @@ async def test_lease_fields_cleared_after_success_and_failure(
     assert row is not None
     assert row.lease_owner is None
     assert row.leased_until is None
+
+
+def test_chat_not_found_is_permanent() -> None:
+    assert _is_permanent_delivery_error("Bad Request: chat not found") is True
+    assert _is_permanent_delivery_error("Forbidden: bot was kicked from the group chat") is True
+    assert _is_permanent_delivery_error("Internal Server Error") is False
+
+
+class _FailingTelegram:
+    def __init__(self, description: str) -> None:
+        self.description = description
+
+    async def send_message(self, _chat_id: int, _text: str, **_kwargs: object) -> int:
+        raise TelegramSendError(self.description, status_code=400)
+
+
+@pytest.mark.asyncio
+async def test_client_price_chat_not_found_marks_dead(
+    db_session: AsyncSession,
+) -> None:
+    db_session.add(
+        TelegramOutbox(
+            dedupe_key="client-price-chat-missing-940012",
+            chat_id=-1001,
+            request_id=16,
+            kind="client_price",
+            text="price",
+            status=TelegramOutboxStatus.pending.value,
+        )
+    )
+    await db_session.flush()
+    sent = await process_outbox_batch(
+        db_session,
+        worker_id="chat-missing",
+        telegram=_FailingTelegram("Bad Request: chat not found"),  # type: ignore[arg-type]
+    )
+    assert sent == 0
+    row = await db_session.scalar(
+        select(TelegramOutbox).where(
+            TelegramOutbox.dedupe_key == "client-price-chat-missing-940012"
+        )
+    )
+    assert row is not None
+    assert row.status == TelegramOutboxStatus.dead.value
+    assert row.attempts == 1
+    assert row.last_error == "Bad Request: chat not found"

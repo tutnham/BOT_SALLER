@@ -31,11 +31,30 @@ def _backoff_seconds(attempts: int) -> int:
     return int(min(300, 2 ** min(attempts, 8)))
 
 
+# C1: серия ошибок доставки подряд — алерт операторам каждые N ошибок.
+_consecutive_send_errors = 0
+_DELIVERY_ERROR_ALERT_EVERY = 5
+
+
+def consecutive_delivery_errors() -> int:
+    """Текущая серия ошибок доставки (для метрик/диагностики)."""
+    return _consecutive_send_errors
+
+
 _UNCERTAIN_MARKERS = (
     "business_peer_usage_missing",
     "recently",
     "timeout",
     "timed out",
+)
+_PERMANENT_CHAT_MARKERS = (
+    "chat not found",
+    "bot was kicked",
+    "bot is not a member",
+    "forbidden: bot was blocked",
+    "user is deactivated",
+    "peer_id_invalid",
+    "chat_id is empty",
 )
 
 
@@ -44,6 +63,11 @@ def _is_uncertain_delivery(kind: str, error_text: str | None) -> bool:
         return False
     description = (error_text or "").lower()
     return any(marker in description for marker in _UNCERTAIN_MARKERS)
+
+
+def _is_permanent_delivery_error(error_text: str | None) -> bool:
+    description = (error_text or "").lower()
+    return any(marker in description for marker in _PERMANENT_CHAT_MARKERS)
 
 
 async def enqueue_telegram_message(
@@ -93,7 +117,8 @@ async def enqueue_telegram_message(
         if existing is None or existing.message_out_id is None:
             raise RuntimeError("outbox_dedupe_without_message_out")
         outbound = await session.get(MessageOut, existing.message_out_id)
-        assert outbound is not None
+        if outbound is None:
+            raise RuntimeError("outbox_dedupe_message_out_missing")
         return outbound, False
 
     outbound = MessageOut(
@@ -112,7 +137,8 @@ async def enqueue_telegram_message(
 
     outbox_id = inserted[0]
     outbox = await session.get(TelegramOutbox, outbox_id)
-    assert outbox is not None
+    if outbox is None:
+        raise RuntimeError("outbox_row_missing_after_insert")
     outbox.message_out_id = outbound.id
     await session.flush()
     return outbound, True
@@ -194,6 +220,7 @@ async def _deliver_outbox_row(
     telegram: TelegramClientProtocol,
     on_after_send: Callable[[], Awaitable[None]] | None,
 ) -> int:
+    global _consecutive_send_errors
     settings = get_settings()
     row = await session.get(TelegramOutbox, outbox_id)
     if row is None:
@@ -213,6 +240,7 @@ async def _deliver_outbox_row(
         )
         if on_after_send is not None:
             await on_after_send()
+        _consecutive_send_errors = 0
         row.status = TelegramOutboxStatus.sent.value
         row.tg_message_id = message_id
         row.sent_at = datetime.now(UTC)
@@ -250,6 +278,15 @@ async def _record_outbox_send_error(
     telegram: TelegramClientProtocol,
     settings_max_attempts: int,
 ) -> None:
+    global _consecutive_send_errors
+    _consecutive_send_errors += 1
+    if _consecutive_send_errors % _DELIVERY_ERROR_ALERT_EVERY == 0:
+        await notify_operators(
+            session,
+            f"⚠️ Telegram outbox: {_consecutive_send_errors} ошибок доставки подряд\n"
+            f"Последняя: {error_text[:300]}",
+            telegram=telegram,
+        )
     if _is_uncertain_delivery(row.kind, error_text):
         row.status = TelegramOutboxStatus.uncertain.value
         row.last_error = error_text
@@ -274,7 +311,7 @@ async def _record_outbox_send_error(
     if outbound is not None:
         outbound.send_status = MessageSendStatus.failed.value
         outbound.error_text = error_text
-    if row.attempts >= settings_max_attempts:
+    if _is_permanent_delivery_error(error_text) or row.attempts >= settings_max_attempts:
         row.status = TelegramOutboxStatus.dead.value
     else:
         row.status = TelegramOutboxStatus.pending.value

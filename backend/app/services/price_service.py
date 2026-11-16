@@ -41,12 +41,12 @@ from app.services.markup_service import (
     load_rules,
 )
 from app.services.parser_client import ParserClientError, iter_posts
-
-CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
-RAW_PRICE_PARSE_BATCH = 200
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
+
+CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
+RAW_PRICE_PARSE_BATCH = 200
 
 
 def build_raw_price_content_hash(supplier_id: int, raw_text: str) -> str:
@@ -333,7 +333,9 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
 
         semaphore = asyncio.Semaphore(concurrency)
 
-        async def _parse_uncached(raw: RawPrice) -> tuple[RawPrice, ParsedPriceList | None]:
+        async def _parse_uncached(
+            raw: RawPrice, semaphore: asyncio.Semaphore = semaphore
+        ) -> tuple[RawPrice, ParsedPriceList | None]:
             async with semaphore:
                 llm = get_llm_client()
                 try:
@@ -344,17 +346,17 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
                 return raw, parsed
 
         llm_pairs = await asyncio.gather(*[_parse_uncached(raw) for raw in pending_llm])
-        for raw, parsed in llm_pairs:
-            if parsed is None:
+        for raw, llm_parsed in llm_pairs:
+            if llm_parsed is None:
                 continue
             await set_cached(
                 session,
                 kind="price_list",
                 raw_text=raw.text,
-                result_json=parsed.model_dump(mode="json"),
+                result_json=llm_parsed.model_dump(mode="json"),
                 model_used=settings.llm_model or settings.llm_provider,
             )
-            cached_pairs.append((raw, parsed))
+            cached_pairs.append((raw, llm_parsed))
 
         for raw, parsed in cached_pairs:
             inserted += await _materialize_parsed_items(

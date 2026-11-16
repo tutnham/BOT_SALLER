@@ -163,6 +163,13 @@ class Settings(BaseSettings):
     jev_bind_threshold: Decimal = Decimal("0.95")
     jev_bind_margin: Decimal = Decimal("0.20")
     jev_fallback_to_existing_llm: bool = True
+    # Circuit breaker: open after N consecutive provider errors, probe after cooldown.
+    jev_breaker_failure_streak: int = 5
+    jev_breaker_cooldown_seconds: float = 60.0
+    # Cap on concurrent provider HTTP calls (single-line and batch chunks).
+    jev_max_concurrency: int = 3
+    # Max lines per batch fan-out request; larger replies are chunked.
+    jev_batch_max_lines: int = 15
 
     @staticmethod
     def _parse_csv_chat_ids(raw: str | None) -> list[int]:
@@ -226,6 +233,20 @@ class Settings(BaseSettings):
     def _validate_jev_retries(cls, value: int) -> int:
         if value < 0:
             raise ValueError("JEV_MAX_RETRIES must be >= 0")
+        return value
+
+    @field_validator("jev_breaker_failure_streak", "jev_max_concurrency", "jev_batch_max_lines")
+    @classmethod
+    def _validate_jev_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("Jev breaker streak, concurrency and batch lines must be >= 1")
+        return value
+
+    @field_validator("jev_breaker_cooldown_seconds")
+    @classmethod
+    def _validate_jev_cooldown(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("JEV_BREAKER_COOLDOWN_SECONDS must be positive")
         return value
 
     @field_validator("jev_max_candidates", "jev_cache_ttl_seconds")

@@ -1085,6 +1085,11 @@ class SupplierAiDecision(Base):
     )
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    from_cache: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("false")
+    )
     is_current: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("true")
     )

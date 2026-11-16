@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -232,3 +233,292 @@ async def test_reclaim_stale_processing_updates_stuck_tasks() -> None:
     count = await task_worker.reclaim_stale_processing(session)  # type: ignore[arg-type]
     assert count == 3
     assert session.stmt is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_backfill_failure_enqueues_retry_task() -> None:
+    """B4: сбой backfill после resolve планирует задачу backfill_channel."""
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+    )
+
+    class _Chat:
+        id = -1001234567890
+        username = "price"
+        title = "Price"
+
+    class _Client:
+        async def get_chat(self, ref: object) -> _Chat:
+            return _Chat()
+
+    class _Session:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+        def add(self, obj) -> None:
+            self.added.append(obj)
+
+    session = _Session()
+    with patch.object(
+        task_worker,
+        "backfill_channel_on_activate",
+        AsyncMock(side_effect=RuntimeError("history unavailable")),
+    ):
+        await task_worker.process_resolve_channel(session, task, _Client())  # type: ignore[arg-type]
+
+    # resolve остаётся успешным, канал активен
+    assert task.status == ParserStatus.processed
+    assert channel.status == ParserChannelStatus.active
+    # создана задача повторного backfill с отложенным стартом
+    assert len(session.added) == 1
+    retry_task = session.added[0]
+    assert isinstance(retry_task, ParserTask)
+    assert retry_task.task_type == ParserTaskType.backfill_channel
+    assert retry_task.channel_id == channel.id
+    assert retry_task.status == ParserStatus.new
+    assert retry_task.attempts == 0
+    assert retry_task.scheduled_at > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_process_backfill_channel_success() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.active,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=10,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=3,
+    )
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+    backfill_mock = AsyncMock(return_value=5)
+    with patch.object(task_worker, "backfill_channel_on_activate", backfill_mock):
+        await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
+
+    backfill_mock.assert_awaited_once()
+    assert task.status == ParserStatus.processed
+    assert task.error_text is None
+
+
+@pytest.mark.asyncio
+async def test_process_backfill_channel_retries_with_backoff() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.active,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=10,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=3,
+    )
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+    with patch.object(
+        task_worker,
+        "backfill_channel_on_activate",
+        AsyncMock(side_effect=RuntimeError("flood")),
+    ):
+        await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
+
+    assert task.status == ParserStatus.new
+    assert task.scheduled_at > datetime.now(UTC)
+    assert task.error_text is not None
+    assert task.error_text.startswith("backfill_error:RuntimeError")
+
+
+@pytest.mark.asyncio
+async def test_process_backfill_channel_fails_after_max_attempts() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.active,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=10,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+        attempts=3,
+        max_attempts=3,
+    )
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+    with patch.object(
+        task_worker,
+        "backfill_channel_on_activate",
+        AsyncMock(side_effect=RuntimeError("flood")),
+    ):
+        await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
+
+    assert task.status == ParserStatus.failed
+
+
+@pytest.mark.asyncio
+async def test_process_backfill_channel_skips_inactive_channel() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=10,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=3,
+    )
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+    backfill_mock = AsyncMock()
+    with patch.object(task_worker, "backfill_channel_on_activate", backfill_mock):
+        await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
+
+    backfill_mock.assert_not_awaited()
+    assert task.status == ParserStatus.processed
+    assert task.error_text == "channel_not_active"
+
+
+@pytest.mark.asyncio
+async def test_claim_next_task_picks_backfill_before_download() -> None:
+    """Приоритет выборки: resolve → backfill → download."""
+    task = ParserTask(
+        id=11,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.new,
+        attempts=0,
+        max_attempts=3,
+    )
+
+    class _Result:
+        def __init__(self, value) -> None:
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _Session:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, stmt):
+            self.calls += 1
+            # первый запрос (resolve) пуст, второй (backfill) находит задачу
+            return _Result(None if self.calls == 1 else task)
+
+        async def flush(self) -> None:
+            return None
+
+    session = _Session()
+    claimed = await task_worker.claim_next_task(session)  # type: ignore[arg-type]
+
+    assert claimed is task
+    assert session.calls == 2  # до download дело не дошло
+    assert task.status == ParserStatus.processing
+    assert task.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_process_claimed_task_dispatches_backfill() -> None:
+    task = ParserTask(
+        id=12,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+    )
+
+    class FakeSession:
+        committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, model, ident):
+            return task
+
+        async def commit(self):
+            self.committed = True
+
+    fake_session = FakeSession()
+
+    class FakeFactory:
+        def __call__(self):
+            return fake_session
+
+    with patch.object(
+        task_worker,
+        "process_backfill_channel",
+        AsyncMock(),
+    ) as backfill_mock:
+        with patch.object(task_worker, "get_session_factory", return_value=FakeFactory()):
+            await task_worker._process_claimed_task(12, MagicMock())
+
+    backfill_mock.assert_awaited_once()
+    assert fake_session.committed is True

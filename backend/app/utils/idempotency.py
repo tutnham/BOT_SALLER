@@ -1,6 +1,6 @@
 """Idempotency via ``update_log.tg_update_id`` (TECH DOC §7.1, §13)."""
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,3 +36,10 @@ async def mark_update_processed(session: AsyncSession, tg_update_id: int) -> boo
     await session.flush()
     # None means conflict → duplicate
     return inserted_id is None
+
+
+async def unmark_update_processed(session: AsyncSession, tg_update_id: int) -> None:
+    """Снять отметку обработки, чтобы упавшее обновление можно было повторить."""
+    await session.execute(
+        delete(UpdateLog).where(UpdateLog.tg_update_id == tg_update_id)
+    )

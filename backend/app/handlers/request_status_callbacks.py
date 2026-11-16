@@ -72,6 +72,35 @@ async def handle_request_status_callback(
         await telegram.answer_callback_query(callback_id, text="Заявка закрыта")
         return "ok"
 
+    if cd.action == "resend":
+        # A5: повтор рассылки RFQ после нулевой доставки
+        if request.status in (RequestStatus.closed, RequestStatus.cancelled):
+            await telegram.answer_callback_query(callback_id, text="Заявка закрыта")
+            return "ok"
+        from app.services.request_service import _broadcast_request
+
+        category = str((request.normalized_json or {}).get("category") or "unknown")
+        sent_count, _failed_lines = await _broadcast_request(
+            session,
+            request=request,
+            source_text=request.source_text,
+            category=category,
+            telegram=telegram,
+        )
+        if sent_count >= 1:
+            request.status = RequestStatus.awaiting_answers
+        await session.flush()
+        await telegram.answer_callback_query(
+            callback_id,
+            text=f"Отправлено: {sent_count}" if sent_count else "Доставка снова не удалась",
+        )
+        await telegram.send_message(
+            chat_id,
+            await render_request_card(session, request),
+            reply_markup=request_card_keyboard(request),
+        )
+        return "ok"
+
     await telegram.answer_callback_query(
         callback_id, text="Используйте команду в чате"
     )

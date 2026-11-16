@@ -39,6 +39,8 @@ def _row_to_decision(row: SupplierAiDecision) -> JevSupplierDecision:
         from_cache=True,
         prompt_version=row.prompt_version,
         provider_model=row.model,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
     )
 
 
@@ -117,6 +119,9 @@ async def persist_jev_decision(
             shadow_mode=shadow_mode,
             latency_ms=decision.latency_ms,
             error_code=decision.error_code,
+            input_tokens=decision.input_tokens,
+            output_tokens=decision.output_tokens,
+            from_cache=decision.from_cache,
             is_current=True,
         )
         session.add(row)
@@ -163,6 +168,9 @@ async def persist_jev_decision(
         shadow_mode=shadow_mode,
         latency_ms=decision.latency_ms,
         error_code=None,
+        input_tokens=decision.input_tokens,
+        output_tokens=decision.output_tokens,
+        from_cache=decision.from_cache,
         is_current=True,
     )
     session.add(row)

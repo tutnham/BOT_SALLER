@@ -97,6 +97,31 @@ async def readiness(session: AsyncSession) -> tuple[bool, dict[str, object]]:
     }
 
 
+_SUPPORTED_LLM_PROVIDERS = frozenset({"openai", "openai_compatible", "openrouter", "ollama"})
+
+
+def llm_configuration_snapshot() -> dict[str, object]:
+    """C2: сконфигурирован ли LLM (без секретов в payload)."""
+    settings = get_settings()
+    provider = (settings.llm_provider or "").strip().lower()
+    supported = provider in _SUPPORTED_LLM_PROVIDERS
+    if provider == "ollama":
+        configured = bool(settings.llm_model) and bool(settings.ollama_base_url)
+    else:
+        configured = (
+            supported
+            and bool(settings.llm_api_key)
+            and bool(settings.llm_model)
+            and bool(settings.llm_base_url)
+        )
+    return {
+        "provider": provider or None,
+        "supported_provider": supported,
+        "configured": configured,
+        "model": settings.llm_model,
+    }
+
+
 def _jev_details() -> dict[str, object]:
     from app.services.telemetry import jev_health_snapshot
 
@@ -200,5 +225,6 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
             for row in runs
         ],
         "commit_sha": get_settings().commit_sha,
+        "llm": llm_configuration_snapshot(),
         "jev": _jev_details(),
     }

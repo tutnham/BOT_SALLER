@@ -68,13 +68,6 @@ async def list_posts(
     stmt = stmt.limit(limit + 1)
     result = await db.execute(stmt)
     rows = list(result.scalars().all())
-    # Stub sessions ignore SQL LIMIT/cursor; keep a Python slice for tests.
-    if cursor_key is not None:
-        rows = [
-            row
-            for row in rows
-            if (row.post_date, row.id) > cursor_key
-        ]
     has_more = len(rows) > limit
     page_rows = rows[:limit]
     next_cursor = (

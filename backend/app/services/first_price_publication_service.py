@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -210,6 +210,12 @@ async def _insert_published_selection(
 
 
 async def _next_selection_version(session: AsyncSession, request_id: int) -> int:
+    # C5: advisory lock на заявку — параллельные публикации в разных транзакциях
+    # получают строго возрастающие версии (lock снимается при commit/rollback).
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"price_selection_version:{request_id}"},
+    )
     current = await session.scalar(
         select(RequestPriceSelection.selection_version)
         .where(RequestPriceSelection.request_id == request_id)

@@ -30,6 +30,66 @@ get_settings.cache_clear()
 API_AUTH_TOKEN = "test-parser-api-token"
 
 
+def _emulate_posts_select(stmt: Any, rows: list[Any]) -> list[Any]:
+    """Эмуляция WHERE/ORDER BY/LIMIT select-запроса для стаб-сессии (B5).
+
+    Prod-код не содержит тестовых срезов: курсор и лимит исполняет SQL,
+    а стаб-сессия воспроизводит их поведение на Python-объектах.
+    """
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import BinaryExpression, BindParameter, Tuple
+
+    def _bind_value(node: Any) -> Any:
+        return node.value if isinstance(node, BindParameter) else node
+
+    result = list(rows)
+    whereclause = getattr(stmt, "whereclause", None)
+    criteria = (
+        getattr(whereclause, "clauses", [whereclause])
+        if whereclause is not None
+        else []
+    )
+    for crit in criteria:
+        if not isinstance(crit, BinaryExpression):
+            continue
+        left, right, op = crit.left, crit.right, crit.operator
+        if isinstance(left, Tuple) and isinstance(right, Tuple):
+            # курсор: (post_date, id) > (:date, :id)
+            keys = [getattr(col, "key", None) for col in left.clauses]
+            values = tuple(_bind_value(v) for v in right.clauses)
+            if op is operators.gt and all(keys):
+                result = [
+                    row
+                    for row in result
+                    if tuple(getattr(row, k, None) for k in keys) > values
+                ]
+            continue
+        key = getattr(left, "key", None)
+        if key is None:
+            continue
+        value = _bind_value(right)
+        if op is operators.eq:
+            result = [row for row in result if getattr(row, key, None) == value]
+        elif op is operators.ge:
+            result = [
+                row
+                for row in result
+                if getattr(row, key, None) is not None and getattr(row, key) >= value
+            ]
+    order_keys: list[str] = []
+    for clause in getattr(stmt, "_order_by_clauses", ()) or ():
+        element = getattr(clause, "element", clause)
+        key = getattr(element, "key", None)
+        if key:
+            order_keys.append(key)
+    if order_keys:
+        result.sort(key=lambda row: tuple(getattr(row, k, None) for k in order_keys))
+    limit_value = getattr(getattr(stmt, "_limit_clause", None), "value", None)
+    if isinstance(limit_value, int):
+        result = result[:limit_value]
+    return result
+
+
 def make_message(
     *,
     chat_id: int = -100123,
@@ -44,6 +104,7 @@ def make_message(
     media: Any = None,
     media_group_id: int | None = None,
     date: datetime | None = None,
+    edit_date: datetime | None = None,
     link: str | None = "https://t.me/c/123/1",
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -59,6 +120,7 @@ def make_message(
         media=media,
         media_group_id=media_group_id,
         date=date or datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        edit_date=edit_date,
         link=link,
     )
 
@@ -102,6 +164,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
                 return _Result(self.channels)
             if "parser_posts" in sql_lower or "ParserPost" in sql:
                 rows = list(self.posts)
+                # Эмуляция SQL-фильтра excluded IS false: стаб-сессия не исполняет WHERE
+                if "excluded is false" in sql_lower:
+                    rows = [row for row in rows if not getattr(row, "excluded", False)]
+                rows = _emulate_posts_select(stmt, rows)
                 return _Result(rows)
             if "count(" in sql_lower:
                 return _Result([0])

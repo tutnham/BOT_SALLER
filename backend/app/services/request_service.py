@@ -26,7 +26,7 @@ from app.parsers.request_normalizer import parse_request_text
 from app.services.alert_service import notify_operators
 from app.services.product_classifier import resolve_product_category, split_positions
 from app.services.routing_service import resolve_rfq_targets
-from app.services.supplier_delivery import deliver, is_sent
+from app.services.supplier_delivery import deliver, is_queued, is_sent
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
 
@@ -225,7 +225,8 @@ async def _broadcast_request(
             request_id=request.id,
             business_connection_id=target.business_connection_id,
         )
-        if is_sent(outbound):
+        if is_sent(outbound) or is_queued(outbound):
+            # A5: в outbox-режиме pending — запланированная доставка, не провал
             sent_count += 1
             from app.application.supplier_rebind import retry_unbound_supplier_prices
 
@@ -270,6 +271,17 @@ async def create_request(
     created: list[Request] = []
     total_sent = 0
 
+    # A3: мультипозиционная заявка сразу получает подтверждение приёма;
+    # нормализация и рассылка идут дальше (в async-режиме — в worker).
+    if len(segments) > 1:
+        try:
+            await telegram.send_message(
+                group_chat_id,
+                render_template("ask_accepted_multi", count=len(segments)),
+            )
+        except TelegramSendError as exc:
+            logger.warning("Failed to send ask acceptance ack to chat_id={}: {}", group_chat_id, exc)
+
     for segment in segments:
         normalized_json = await build_normalized_json(session, segment)
         category = str(normalized_json.get("category") or "unknown")
@@ -301,6 +313,28 @@ async def create_request(
         total_sent += sent_count
         if sent_count >= 1:
             request.status = RequestStatus.awaiting_answers
+        else:
+            # A5: ноль доставок RFQ — заявка требует внимания, а не зависает в open
+            request.status = RequestStatus.needs_recheck
+            try:
+                from app.services.request_card_service import (
+                    render_request_card,
+                    request_card_keyboard,
+                )
+
+                await telegram.send_message(
+                    request.group_chat_id,
+                    render_template("ask_delivery_zero", request_id=request.id)
+                    + "\n"
+                    + await render_request_card(session, request),
+                    reply_markup=request_card_keyboard(request),
+                )
+            except TelegramSendError as exc:
+                logger.warning(
+                    "Failed to send zero-delivery card request_id={}: {}",
+                    request.id,
+                    exc,
+                )
         if failed_lines:
             try:
                 await telegram.send_message(

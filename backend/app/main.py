@@ -68,6 +68,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
     # Fail-fast: required env must be present at startup
     settings = get_settings()
+    # C2: раннее предупреждение о неверной конфигурации LLM (OPS-007).
+    from app.services.ops_status_service import llm_configuration_snapshot
+
+    llm_snapshot = llm_configuration_snapshot()
+    if llm_snapshot["provider"] and not llm_snapshot["supported_provider"]:
+        logger.error(
+            "LLM_PROVIDER={} is not supported; use openai/openai_compatible/openrouter/ollama",
+            llm_snapshot["provider"],
+        )
+    elif not llm_snapshot["configured"]:
+        logger.warning("LLM is not fully configured; regex fallback will be used")
     get_engine()
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
     outbox_task = None
@@ -104,8 +115,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Wait so in-flight jobs can finish before engine disposal.
         scheduler.shutdown(wait=True)
     from app.integrations.jev.client import close_jev_client
+    from app.llm.client import close_llm_client
 
     await close_jev_client()
+    # B2: закрываем httpx-клиент LLM, чтобы не оставлять висящие соединения
+    await close_llm_client()
     await dispose_engine()
     logger.info("Zakupki-Bot backend stopped")
 
@@ -198,13 +212,6 @@ async def _outbox_inline_loop() -> None:
         try:
             factory = get_session_factory()
             async with factory() as session:
-                from app.services.heartbeat_service import touch_heartbeat
-
-                await touch_heartbeat(
-                    session, process_type="worker", instance_id=instance_id
-                )
-                await session.commit()
-            async with factory() as session:
                 from app.services.outbox_service import process_outbox_batch
 
                 await process_outbox_batch(
@@ -212,6 +219,24 @@ async def _outbox_inline_loop() -> None:
                     worker_id=instance_id,
                     session_factory=factory,
                 )
+            if not settings.webhook_async_enabled:
+                # A2: повтор упавших sync-webhook обновлений без выделенного воркера.
+                async with factory() as session:
+                    from app.services.inbox_service import process_inbox_batch
+
+                    await process_inbox_batch(
+                        session,
+                        worker_id=instance_id,
+                        session_factory=factory,
+                    )
+            # C1: heartbeat только после успешного батча — /ready замечает деградацию.
+            async with factory() as session:
+                from app.services.heartbeat_service import touch_heartbeat
+
+                await touch_heartbeat(
+                    session, process_type="worker", instance_id=instance_id
+                )
+                await session.commit()
         except Exception as exc:
             logger.warning("Inline outbox delivery failed: {}", type(exc).__name__)
         await asyncio.sleep(settings.worker_poll_interval_seconds)

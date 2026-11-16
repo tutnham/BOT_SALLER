@@ -142,6 +142,14 @@ def request_card_keyboard(request: Request) -> dict:
                        cd=CallbackData(namespace="reqstatus", action="deal", arg=request.id)),
             ]
         )
+        if request.status is RequestStatus.needs_recheck:
+            # A5: повтор рассылки RFQ после нулевой доставки
+            rows.append(
+                [
+                    button("Повторить рассылку",
+                           cd=CallbackData(namespace="reqstatus", action="resend", arg=request.id)),
+                ]
+            )
     rows.append(
         [button("Закрыть", cd=CallbackData(namespace="reqstatus", action="close", arg=request.id))]
     )

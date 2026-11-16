@@ -52,7 +52,7 @@ from app.services.supplier_bind_session_service import (
     try_handle_supplier_bind_session_reply,
 )
 from app.services.telemetry import record_supplier_binding_pending
-from app.telegram.client import TelegramClientProtocol
+from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
 from app.utils.whitelist import get_supplier_by_telegram_id
@@ -69,6 +69,30 @@ _ACTIVE_STATUSES = (
     RequestStatus.priced,
     RequestStatus.open,
 )
+
+
+async def _send_notice_best_effort(
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    text: str,
+    *,
+    request_id: int,
+    business_connection_id: str | None = None,
+) -> None:
+    """Уведомление — best-effort: сбой отправки не должен откатывать котировку."""
+    try:
+        await telegram.send_message(
+            chat_id,
+            text,
+            business_connection_id=business_connection_id,
+        )
+    except TelegramSendError as exc:
+        logger.warning(
+            "supplier_reply notify failed request_id={} chat_id={}: {}",
+            request_id,
+            chat_id,
+            exc,
+        )
 
 
 async def _parse_with_llm_cache(
@@ -209,9 +233,11 @@ async def process_bound_supplier_reply(
     await session.flush()
 
     if request.status in (RequestStatus.closed, RequestStatus.cancelled):
-        await telegram.send_message(
+        await _send_notice_best_effort(
+            telegram,
             int(chat_id),
             render_template("request_not_open", request_id=request.id),
+            request_id=request.id,
             business_connection_id=business_connection_id,
         )
         return None
@@ -327,7 +353,12 @@ async def process_bound_supplier_reply(
 
     if followup != "duplicate" and request.batch_id is None:
         if not get_settings().auto_publish_first_valid_price:
-            await telegram.send_message(request.group_chat_id, forward_text)
+            await _send_notice_best_effort(
+                telegram,
+                request.group_chat_id,
+                forward_text,
+                request_id=request.id,
+            )
 
     if (
         quote is not None
@@ -342,7 +373,8 @@ async def process_bound_supplier_reply(
             and new_final is not None
             and previous_price_final != new_final
         ):
-            await telegram.send_message(
+            await _send_notice_best_effort(
+                telegram,
                 request.group_chat_id,
                 render_template(
                     "price_changed",
@@ -350,6 +382,7 @@ async def process_bound_supplier_reply(
                     old_price=previous_price_final,
                     new_price=new_final,
                 ),
+                request_id=request.id,
             )
     return quote
 
@@ -527,6 +560,30 @@ async def handle_reply(
         process_batch_supplier_reply,
     )
 
+    # Claim the message before any binding/AI work: a duplicate or racing
+    # update exits here without paying for Jev/LLM calls. Bind fields are
+    # filled in after the decision; NULL bind_status is allowed by the check
+    # constraint and never committed in this intermediate state.
+    message_in = await insert_message_in_idempotent(
+        session,
+        supplier_id=supplier.id,
+        chat_id=int(chat_id),
+        message_id=int(message_id),
+        raw_text=raw_text,
+        business_connection_id=business_connection_id,
+        request_id=None,
+        bind_method="none",
+        bind_status=None,
+        bind_score=None,
+    )
+    if message_in is None:
+        logger.info(
+            "supplier_message duplicate chat_id={} message_id={}",
+            chat_id,
+            message_id,
+        )
+        return "ok"
+
     decision: BindingDecision = await resolve_binding(
         session,
         supplier=supplier,
@@ -546,25 +603,11 @@ async def handle_reply(
     else:
         bind_method = "none"
 
-    message_in = await insert_message_in_idempotent(
-        session,
-        supplier_id=supplier.id,
-        chat_id=int(chat_id),
-        message_id=int(message_id),
-        raw_text=raw_text,
-        business_connection_id=business_connection_id,
-        request_id=decision.request.id if decision.request else None,
-        bind_method=bind_method,
-        bind_status=bind_status,
-        bind_score=decision.score,
-    )
-    if message_in is None:
-        logger.info(
-            "supplier_message duplicate chat_id={} message_id={}",
-            chat_id,
-            message_id,
-        )
-        return "ok"
+    message_in.request_id = decision.request.id if decision.request else None
+    message_in.bind_method = bind_method
+    message_in.bind_status = bind_status
+    message_in.bind_score = decision.score
+    await session.flush()
 
     if decision.jev is not None:
         await _persist_supplier_jev_decision(
@@ -583,6 +626,7 @@ async def handle_reply(
             chat_id=int(chat_id),
             business_connection_id=business_connection_id,
             telegram=telegram,
+            candidates=decision.candidates or None,
         )
         if batch_result == "ok":
             return "ok"
@@ -721,9 +765,11 @@ async def _withdraw_quote(
     await session.flush()
     if old_request is None:
         return
-    await telegram.send_message(
+    await _send_notice_best_effort(
+        telegram,
         old_request.group_chat_id,
         render_template("client_quote_withdrawn", request_id=old_request_id),
+        request_id=old_request_id,
     )
     remaining = await session.scalar(
         select(func.count()).select_from(Quote).where(Quote.request_id == old_request_id)

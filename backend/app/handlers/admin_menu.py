@@ -23,12 +23,12 @@ from app.db.models import (
     Supplier,
 )
 from app.services import admin_service, parser_client, purge_service
-from app.services.request_card_service import render_admin_request_detail
 from app.services.deal_service import (
     RequestNotFoundError,
     RequestNotOpenError,
     cancel_request,
 )
+from app.services.request_card_service import render_admin_request_detail
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
 from app.telegram.home_buttons import EMP_PENDING_REPLIES, OWNER_MENU
 from app.telegram.keyboards import (

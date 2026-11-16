@@ -36,7 +36,7 @@ from app.utils.hashing import sha256_file
 
 
 async def claim_next_task(session: AsyncSession) -> ParserTask | None:
-    """Pick one due task: resolve_channel first, then download_media."""
+    """Pick one due task: resolve_channel first, then backfill_channel, then download_media."""
     now = datetime.now(UTC)
 
     resolve_stmt = (
@@ -53,6 +53,28 @@ async def claim_next_task(session: AsyncSession) -> ParserTask | None:
         .with_for_update(skip_locked=True)
     )
     result = await session.execute(resolve_stmt)
+    task = result.scalar_one_or_none()
+    if task is not None:
+        task.status = ParserStatus.processing
+        task.last_attempt_at = now
+        task.attempts = (task.attempts or 0) + 1
+        await session.flush()
+        return task
+
+    backfill_stmt = (
+        select(ParserTask)
+        .join(ParserChannel, ParserChannel.id == ParserTask.channel_id)
+        .where(
+            ParserTask.status == ParserStatus.new,
+            ParserTask.task_type == ParserTaskType.backfill_channel,
+            ParserTask.scheduled_at <= now,
+            ParserChannel.status == ParserChannelStatus.active,
+        )
+        .order_by(ParserTask.scheduled_at.asc())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    result = await session.execute(backfill_stmt)
     task = result.scalar_one_or_none()
     if task is not None:
         task.status = ParserStatus.processing
@@ -195,6 +217,52 @@ async def process_resolve_channel(
             channel.channel_id,
             exc,
         )
+        # B4: канал уже active, но без истории — планируем повторный backfill
+        settings = get_settings()
+        session.add(
+            ParserTask(
+                post_id=None,
+                channel_id=channel.id,
+                task_type=ParserTaskType.backfill_channel,
+                status=ParserStatus.new,
+                attempts=0,
+                max_attempts=settings.media_max_retries,
+                scheduled_at=datetime.now(UTC)
+                + timedelta(seconds=settings.media_retry_backoff_base_seconds),
+            )
+        )
+        await session.flush()
+
+
+async def process_backfill_channel(
+    session: AsyncSession,
+    task: ParserTask,
+    client: Any,
+) -> None:
+    """Повторный backfill истории канала после сбоя при resolve (B4)."""
+    if task.channel_id is None:
+        task.status = ParserStatus.failed
+        task.error_text = "missing_channel_id"
+        return
+
+    channel = await session.get(ParserChannel, task.channel_id)
+    if channel is None or channel.status != ParserChannelStatus.active:
+        task.status = ParserStatus.processed
+        task.error_text = "channel_not_active"
+        return
+
+    try:
+        await backfill_channel_on_activate(client, channel=channel)
+    except Exception as exc:
+        await _fail_or_retry(
+            session,
+            task,
+            None,
+            f"backfill_error:{type(exc).__name__}:{exc}",
+        )
+        return
+    task.status = ParserStatus.processed
+    task.error_text = None
 
 
 async def process_download_media(
@@ -307,6 +375,8 @@ async def _process_claimed_task(task_id: int, client: Any) -> None:
             return
         if task.task_type == ParserTaskType.resolve_channel:
             await process_resolve_channel(session, task, client)
+        elif task.task_type == ParserTaskType.backfill_channel:
+            await process_backfill_channel(session, task, client)
         elif task.task_type == ParserTaskType.download_media:
             await process_download_media(session, task, client)
         else:

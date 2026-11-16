@@ -168,6 +168,17 @@ class _MetricBundle:
             labelnames=("action", "shadow_mode"),
             registry=registry,
         )
+        self.jev_decision_reasons_total = Counter(
+            "jev_decision_reasons_total",
+            "Jev decisions by application reason code",
+            labelnames=("reason_code",),
+            registry=registry,
+        )
+        self.jev_breaker_trips_total = Counter(
+            "jev_breaker_trips_total",
+            "Jev circuit breaker open/re-open transitions",
+            registry=registry,
+        )
         self.jev_shadow_disagreements_total = Counter(
             "jev_shadow_disagreements_total",
             "Shadow decisions that differ from the production outcome",
@@ -358,11 +369,18 @@ def record_jev_latency(seconds: float) -> None:
     note_jev_latency(seconds)
 
 
-def record_jev_decision(*, action: str, shadow_mode: bool) -> None:
-    get_metrics().jev_decisions_total.labels(
+def record_jev_decision(*, action: str, shadow_mode: bool, reason_code: str | None = None) -> None:
+    metrics = get_metrics()
+    metrics.jev_decisions_total.labels(
         action=action,
         shadow_mode="true" if shadow_mode else "false",
     ).inc()
+    if reason_code:
+        metrics.jev_decision_reasons_total.labels(reason_code=reason_code[:64]).inc()
+
+
+def record_jev_breaker_trip() -> None:
+    get_metrics().jev_breaker_trips_total.inc()
 
 
 def record_jev_shadow_disagreement() -> None:
@@ -444,6 +462,8 @@ def note_jev_latency(seconds: float) -> None:
 
 
 def jev_health_snapshot() -> dict[str, object]:
+    from app.services.jev_breaker_service import jev_breaker_snapshot
+
     rolling = sum(_jev_latencies) / len(_jev_latencies) if _jev_latencies else None
     return {
         "last_success_unixtime": _jev_last_success,
@@ -451,6 +471,7 @@ def jev_health_snapshot() -> dict[str, object]:
         "last_error_code": _jev_last_error_code,
         "rolling_latency_seconds": rolling,
         "rolling_failure_count": _jev_failure_count,
+        "breaker": jev_breaker_snapshot(),
     }
 
 

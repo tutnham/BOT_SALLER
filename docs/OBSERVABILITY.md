@@ -16,11 +16,15 @@
 
 `/health/details` добавляет блок `jev`: enabled, shadow_mode, configured, last success/failure, error code, rolling latency, failure count. Платный запрос в Jev на health не выполняется.
 
+`/health/details` добавляет блок `llm` (C2): `provider`, `supported_provider`, `configured`, `model` — без секретов. `configured=false` при неверном `LLM_PROVIDER` (OPS-007: допустимы только `openai`, `openai_compatible`, `openrouter`, `ollama`) или пустых key/model/base_url; при старте процесс пишет предупреждение в лог. Живой LLM-запрос на health не выполняется.
+
 Метрики Jev (bounded labels result, error_code, shadow_mode, model, action): `jev_requests_total`, `jev_errors_total`, `jev_timeouts_total`, `jev_rate_limits_total`, `jev_invalid_responses_total`, `jev_latency_seconds`, `jev_decisions_total`, `jev_shadow_disagreements_total`, `jev_auto_bind_candidates_total`, `jev_review_total`, `jev_cache_hits_total`.
 
 В лейблах нет supplier id, chat id и текста сообщения.
 
 `/ready` требует свежий heartbeat `worker`, когда `WEBHOOK_ASYNC_ENABLED=true` или `AUTO_PUBLISH_FIRST_VALID_PRICE=true`. При `CLIENT_PRICE_INLINE_DELIVERY=true` этот heartbeat пишет сам web. Heartbeat scheduler требуется, когда `SCHEDULER_ENABLED=true` или `SCHEDULER_EXPECTED=true`. Свежесть — `HEARTBEAT_STALE_SECONDS` (по умолчанию 90).
+
+C1: inline-цикл доставки пишет heartbeat `worker` только после успешного батча — стабильно падающая доставка больше не маскируется под зелёный `/ready`. При серии ошибок доставки подряд операторам уходит алерт каждые 5 ошибок (`outbox_service`); успешная отправка обнуляет серию.
 
 ## Метрики
 

@@ -39,3 +39,6 @@ data/
 media/
 tmp/
 *.log
+
+# Local test PostgreSQL cluster (PGDATA)
+.pgtest/

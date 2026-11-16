@@ -24,6 +24,10 @@ os.environ["WEBHOOK_SECRET"] = "test-webhook-secret"
 os.environ["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = "test-telegram-webhook-secret"
 os.environ["METRICS_TOKEN"] = "test-metrics-token"
 os.environ["SCHEDULER_ENABLED"] = "false"
+# Async rollout flags live in production .env; keep the suite hermetic.
+# Tests that exercise the async path opt in via monkeypatch.setenv.
+os.environ["WEBHOOK_ASYNC_ENABLED"] = "false"
+os.environ["OUTBOX_DELIVERY_ENABLED"] = "false"
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://zakupki:changeme@127.0.0.1:5432/zakupki",
@@ -45,6 +49,16 @@ def supplier_single_candidate_auto_bind(monkeypatch: pytest.MonkeyPatch) -> None
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_jev_breaker() -> Generator[None, None, None]:
+    """Breaker state is per-process; keep tests independent of each other."""
+    from app.services.jev_breaker_service import reset_jev_breaker
+
+    reset_jev_breaker()
+    yield
+    reset_jev_breaker()
 
 from app.db.models import (  # noqa: E402
     ClientGroup,

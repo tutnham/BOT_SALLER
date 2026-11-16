@@ -347,8 +347,8 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
     if not number_match:
         return None, None, None, None
     number = number_match.group(1)
-    _, _, variant = _parse_variant(text, "iPhone")
-    return None, family, number, variant
+    _, _, parsed_variant = _parse_variant(text, "iPhone")
+    return None, family, number, parsed_variant
 
 
 def _build_display_model(brand: str | None, number: str | None, variant: str | None) -> str | None:
