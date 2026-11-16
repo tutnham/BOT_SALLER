@@ -131,6 +131,8 @@ Backend **не** читает каналы сам. Нужен развёрнут
 3. Каналы через `/menu` или `POST /channels` с `purpose='supplier_price_source'`
 4. MTProto-аккаунт состоит в каналах; `TELEGRAM_SESSION_STRING` в env parser
 
+В `/menu` → «Каналы прайсов»: ввод `@username` или полного ID `-100…`; статусы ✅/⏳/❌; удалённые — 🗑 и «Восстановить» (повторный `POST /channels` → `pending` до resolve). Привязка к поставщику — только `is_active` и `status=active`. Если канал «исчезает» или вечно ⏳ — чек-лист в **`СЕРВИСЫ.md`** («Диагностика: канал не добавляется»).
+
 Пока parser недоступен — manual DM (`прайс`) работает; channel_post → `degraded`, job HTTP 200.
 
 ---

@@ -186,19 +186,37 @@ Client(
 
 ### 6.0 Регистрация нового канала
 
+Два пути регистрации. CLI сразу знает Telegram `channel_id` после `get_chat`. Меню бота и `POST /channels` создают pending-строку без `channel_id`; числовой id ставит воркер `resolve_channel`.
+
 ```
 CLI: python -m app.mtproto.add_channel --channel @supplier_x_price \
        --purpose supplier_price_source
      (для личного канала: --purpose monitoring, значение по умолчанию)
 
 1. chat = await app.get_chat(channel)   # проверка, что аккаунт состоит в канале; ошибка, если нет
-2. INSERT parser_channels (channel_id=chat.id, username=chat.username, title=chat.title, purpose=purpose)
-   ON CONFLICT (channel_id) DO UPDATE SET purpose=EXCLUDED.purpose
+2. INSERT parser_channels (channel_id=chat.id, username=chat.username, title=chat.title,
+     purpose=purpose, status=status, is_active=true)
+   ON CONFLICT (channel_id) DO UPDATE SET username=..., title=..., purpose=..., status=..., error_text=..., is_active=true
+   (status по умолчанию active)
 3. (опционально) сразу запустить backfill для этого канала (6.1)
-4. перезагрузить tg-listener, чтобы реалтайм-обработчик (6.2) взял в работу новый канал
+4. перезагрузка tg-listener не требуется: фильтр обновляется автоматически (6.2)
+
+API / меню: POST /channels {"handle":"@x"|"-100…","purpose":"supplier_price_source"}
+1. split_channel_handle → username или numeric_id в title, channel_id=NULL, status=pending, is_active=true
+2. очередь parser_tasks.resolve_channel
+3. process_resolve_channel: get_chat → channel_id, status=active
+4. realtime-фильтр подхватывает строку после шага 3 (условие 6.2)
 ```
 
-Перезагрузка контейнера на шаге 4 — **не обязательна**: listener перечитывает `parser_channels` каждые ~30s (`listener_reload_interval_seconds`) и обновляет Pyrogram filter без restart.
+Перезагрузка контейнера на шаге 4 CLI — **не обязательна**: listener перечитывает `parser_channels` каждые ~30s (`listener_reload_interval_seconds`) и обновляет Pyrogram filter без restart.
+
+**Реактивация удалённого канала.** Удаление через бот (`DELETE /channels/{id}`) — мягкое: `is_active=false, status='failed', error_text='deleted_by_admin'`. CLI `add_channel` через `upsert_channel` восстанавливает `is_active=true` и (по умолчанию) `status=active` сразу, с известным `channel_id`. Повторный `POST /channels` / кнопка «Восстановить» восстанавливает `is_active=true`, но ставит `status=pending` и новую задачу `resolve_channel`. В меню канал виден сразу; в realtime-фильтр он попадает только после успешного resolve (`status=active` и `channel_id IS NOT NULL`). Ранее `upsert_channel` не обновлял `is_active`, из-за чего повторно добавленный канал «исчезал» из списка.
+
+`ChannelCreate.purpose` и `parser_client.add_channel` по умолчанию `supplier_price_source`. Реактивация через API и кнопка «Восстановить» перезаписывают `purpose` этим значением: канал `monitoring` меняет назначение (OPS-013).
+
+**Формат числового ID.** Каналы в MTProto имеют отрицательные ID с префиксом `-100` (например, `-1001234567890`). Положительный «голый» ID (формат Bot API без префикса) принимается API, но `get_chat` может вернуть `PeerIdInvalid`; resolve-воркер в этом случае пробует `-100<id>` и принимает результат без проверки `chat.type` (OPS-014). В меню бота вводить `@username` или полный ID `-100…`.
+
+**Дубликаты.** Один канал, добавленный и по `@username`, и по числовому ID, создаёт две pending-строки. При resolve второй строки воркер находит существующую строку с тем же `channel_id`, ставит ей `is_active=true` и `status=active`, а дубликат помечает `status='failed', error_text='duplicate_of_channel:<pk>'` — UNIQUE `channel_id` не нарушается. Merge не ставит `backfill_channel` и не отменяет соседние `resolve_channel` дубликата (OPS-016).
 
 ### 6.1 Backfill (первичная загрузка истории)
 
@@ -227,7 +245,8 @@ CLI: python -m app.mtproto.backfill --channel @my_channel \
 
 ```
 # список активных каналов читается из parser_channels при старте процесса
-_active_channel_ids = [c.channel_id for c in parser_channels WHERE is_active=true]
+_active_channel_ids = [c.channel_id for c in parser_channels
+                       WHERE is_active=true AND status='active' AND channel_id IS NOT NULL]
 
 @app.on_message(filters.chat(_active_channel_ids))
 async def on_new_post(client, message):
@@ -236,7 +255,7 @@ async def on_new_post(client, message):
 python -m app.mtproto.realtime   # long-running процесс, автопереподключение Pyrogram
 ```
 
-`filters.chat()` принимает лист идентификаторов чатов — один обработчик обслуживает все каналы независимо от их `purpose`; ветвление по назначению происходит внутри `upsert_post` (7.4). Список каналов фиксируется при старте процесса — добавление нового канала (6.0) требует перезагрузки `tg-listener`.
+`filters.chat()` принимает лист идентификаторов чатов — один обработчик обслуживает все каналы независимо от их `purpose`; ветвление по назначению происходит внутри `upsert_post` (7.4). Список каналов перечитывается каждые ~30s (`_reload_loop`, `listener_reload_interval_seconds`): добавление канала (6.0) подхватывается без перезагрузки `tg-listener`; в realtime-фильтр попадают только строки с `is_active=true AND status='active' AND channel_id IS NOT NULL`.
 
 **Редактирования и удаления (B1, миграция `0006_post_edited_at`):** вместе с `MessageHandler` регистрируются `EditedMessageHandler` и `DeletedMessagesHandler` с тем же `filters.chat`:
 
@@ -524,10 +543,10 @@ else:
 
 | Метод | Путь | Действие |
 |---|---|---|
-| `GET` | `/channels` | список отслеживаемых каналов (JSON-массив) |
+| `GET` | `/channels` | все строки, включая `is_active=false` (JSON-массив) |
 | `GET` | `/channels?purpose=` | фильтр `monitoring` / `supplier_price_source` |
-| `POST` | `/channels` | регистрация канала: `{"handle":"@x","purpose":"supplier_price_source"}` → 202, `status: pending` |
-| `DELETE` | `/channels/{id}` | деактивация (`id` = PK `parser_channels.id`) |
+| `POST` | `/channels` | `{"handle":"@x","purpose":"supplier_price_source"}` → 202, `status: pending` + задача `resolve_channel`. Повтор мягко удалённой строки — тоже 202 (реактивация). Уже `pending`/`active` и активная — 409. Коллизия `uq_parser_channels_pending_username` — 409, не 500 |
+| `DELETE` | `/channels/{id}` | мягкое удаление: `is_active=false`, `status=failed`, `error_text=deleted_by_admin`; открытые `resolve_channel` — `failed`/`cancelled` (`id` = PK `parser_channels.id`) |
 | `GET` | `/posts?channel_id=&content_type=&from=&limit=&cursor=` | paginated: `{"items":[...],"next_cursor":...}`; `from` по `post_date` |
 | `GET` | `/posts/{id}` | один пост |
 | `GET` | `/health` | без auth: `{"status":"ok","db":"ok\|error"}` |
