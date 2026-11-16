@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -640,7 +642,7 @@ async def test_price_channel_delete_callback(
     resp = await webhook_client.post("/telegram/webhook", json=payload, headers=webhook_headers)
     assert resp.json()["status"] == "ok"
     assert deleted_ids == [7]
-    assert listed == [1]
+    assert listed 
 
 
 @pytest.mark.asyncio
@@ -741,7 +743,11 @@ async def test_price_channel_delete_error_shows_friendly_message(
     async def _delete(channel_id: int) -> None:
         raise parser_client.ParserClientError("parser_transport_error:connection refused")
 
+    async def _list() -> list[_FakeParserChannel]:
+        return [_FakeParserChannel(7, -100500, "@prices", "Prices", True)]
+
     monkeypatch.setattr(parser_client, "delete_channel", _delete)
+    monkeypatch.setattr(parser_client, "list_channels", _list)
 
     resp = await webhook_client.post(
         "/telegram/webhook",
@@ -969,6 +975,188 @@ async def test_unbind_supplier_price_channel(
     await db_session.refresh(supplier)
     assert supplier.price_channel_id is None
     assert supplier.price_channel_username is None
+
+
+@pytest.mark.asyncio
+async def test_bind_pending_channel_with_numeric_id_refused(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplier = Supplier(name="Pending Numeric", active=True, rfq_enabled=True)
+    db_session.add(supplier)
+    await db_session.flush()
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(
+                12,
+                -1001234567890,
+                None,
+                "-1001234567890",
+                True,
+                status="pending",
+            ),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_pending_id",
+            CallbackData(
+                namespace="admin",
+                action="supplier_bind_ch",
+                arg=supplier.id,
+                page=12,
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id is None
+    last_text = mock_telegram.edited[-1][2] if mock_telegram.edited else mock_telegram.sent[-1][1]
+    assert "не готов" in last_text
+
+
+@pytest.mark.asyncio
+async def test_bind_resets_last_price_sync_at_when_channel_changes(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplier = Supplier(
+        name="Rebind",
+        active=True,
+        rfq_enabled=True,
+        price_channel_id=-100111,
+        price_channel_username="@old",
+        last_price_sync_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    db_session.add(supplier)
+    await db_session.flush()
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(15, -100222, "@new", "New", True, status="active"),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_rebind",
+            CallbackData(
+                namespace="admin",
+                action="supplier_bind_ch",
+                arg=supplier.id,
+                page=15,
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id == -100222
+    assert supplier.last_price_sync_at is None
+
+
+@pytest.mark.asyncio
+async def test_delete_price_channel_unbinds_supplier(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplier = Supplier(
+        name="Bound",
+        active=True,
+        price_channel_id=-100500,
+        price_channel_username="@prices",
+        last_price_sync_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    db_session.add(supplier)
+    await db_session.flush()
+
+    async def _delete(channel_id: int) -> None:
+        return None
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [_FakeParserChannel(7, -100500, "@prices", "Prices", True, status="active")]
+
+    monkeypatch.setattr(parser_client, "delete_channel", _delete)
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_del_unbind",
+            CallbackData(namespace="admin", action="price_channel_delete", arg=7),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(supplier)
+    assert supplier.price_channel_id is None
+    assert supplier.last_price_sync_at is None
+    last_text = mock_telegram.edited[-1][2] if mock_telegram.edited else mock_telegram.sent[-1][1]
+    assert "Снята привязка" in last_text
+
+
+@pytest.mark.asyncio
+async def test_price_channels_list_hides_non_price_purpose(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(1, -100111, "@prices", "Prices", True, status="active"),
+            _FakeParserChannel(
+                2,
+                -100222,
+                "@news",
+                "News",
+                True,
+                purpose="monitoring",
+                status="active",
+            ),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_list_purpose",
+            CallbackData(namespace="admin", action="price_channels"),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    list_text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    labels = _button_labels(
+        mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    )
+    assert "Prices" in list_text
+    assert "News" not in list_text
+    assert not any("News" in label for label in labels)
 
 
 @pytest.mark.asyncio

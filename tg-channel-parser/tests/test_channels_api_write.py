@@ -8,7 +8,13 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 
-from app.db.models import ParserChannel, ParserChannelStatus, ParserTask, ParserTaskType
+from app.db.models import (
+    ParserChannel,
+    ParserChannelStatus,
+    ParserStatus,
+    ParserTask,
+    ParserTaskType,
+)
 from tests.conftest import API_AUTH_TOKEN
 
 
@@ -34,6 +40,15 @@ def _make_fake_session():
             self._next_id = 1
 
         async def execute(self, stmt: Any) -> _Result:
+            if getattr(stmt, "is_update", False) or type(stmt).__name__ == "Update":
+                for task in self.tasks:
+                    if task.task_type == ParserTaskType.resolve_channel and task.status in (
+                        ParserStatus.new,
+                        ParserStatus.processing,
+                    ):
+                        task.status = ParserStatus.failed
+                        task.error_text = "cancelled"
+                return _Result([])
             sql = str(stmt).lower()
             if "parser_channels" in sql or "parserchannel" in sql:
                 return _Result(self.channels)
@@ -129,10 +144,11 @@ async def test_create_channel_stores_numeric_id(client: AsyncClient, fake_sessio
         )
         assert response.status_code == 202
         data = response.json()
-        assert data["channel_id"] == -1001234567890
+        assert data["channel_id"] is None
         assert data["username"] is None
         assert data["status"] == "pending"
-        assert session.channels[0].channel_id == -1001234567890
+        assert data["title"] == "-1001234567890"
+        assert session.channels[0].channel_id is None
         assert session.tasks[0].task_type == ParserTaskType.resolve_channel
     finally:
         app.dependency_overrides.clear()
@@ -258,3 +274,84 @@ async def test_create_duplicate_pending_channel_returns_409(
 async def test_create_channel_requires_auth(client: AsyncClient) -> None:
     response = await client.post("/channels", json={"handle": "@supplier_prices"})
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_active_channel_returns_409(
+    client: AsyncClient, fake_session: Any
+) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+    session.channels.append(
+        ParserChannel(
+            id=3,
+            channel_id=-100555,
+            username="supplier_prices",
+            title="Prices",
+            status=ParserChannelStatus.active,
+            is_active=True,
+        )
+    )
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.post(
+            "/channels",
+            json={"handle": "@supplier_prices"},
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "channel_already_active"
+        assert len(session.channels) == 1
+        assert len(session.tasks) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_channel_cancels_resolve_task(
+    client: AsyncClient, fake_session: Any
+) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+    session.channels.append(
+        ParserChannel(
+            id=1,
+            channel_id=None,
+            username="supplier_prices",
+            status=ParserChannelStatus.pending,
+            is_active=True,
+        )
+    )
+    session.tasks.append(
+        ParserTask(
+            id=11,
+            post_id=None,
+            channel_id=1,
+            task_type=ParserTaskType.resolve_channel,
+            status=ParserStatus.new,
+            max_attempts=5,
+        )
+    )
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = await client.delete(
+            "/channels/1",
+            headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+        )
+        assert response.status_code == 200
+        assert session.tasks[0].status == ParserStatus.failed
+        assert session.tasks[0].error_text == "cancelled"
+    finally:
+        app.dependency_overrides.clear()

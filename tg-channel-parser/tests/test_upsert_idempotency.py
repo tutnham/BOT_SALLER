@@ -11,6 +11,7 @@ import pytest
 from app.db.models import (
     ParserChannelPurpose,
     ParserContentType,
+    ParserStatus,
 )
 from app.mtproto.upsert import upsert_post
 from tests.conftest import make_message
@@ -145,3 +146,39 @@ async def test_upsert_monitoring_does_not_queue_ai_process(monkeypatch: pytest.M
     assert result is new_post
     assert "parser_tasks" not in tables
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_upsert_other_marks_post_failed() -> None:
+    channel = SimpleNamespace(
+        channel_id=-100123,
+        purpose=ParserChannelPurpose.supplier_price_source,
+    )
+    new_post = SimpleNamespace(
+        id=101,
+        channel_id=-100123,
+        message_id=3,
+        content_type=ParserContentType.other,
+        error_text=None,
+        status=ParserStatus.new,
+    )
+
+    async def execute(stmt: Any) -> Any:
+        table = getattr(getattr(stmt, "table", None), "name", None)
+        if table == "parser_posts":
+            return _ReturningResult(new_post)
+        if table in ("parser_tasks", "parser_media_files"):
+            return _ReturningResult(None)
+        return _ReturningResult(channel)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute)
+    session.flush = AsyncMock()
+
+    result = await upsert_post(
+        session,
+        make_message(text=None, caption=None, media=None),
+    )
+    assert result is new_post
+    assert new_post.error_text == "unsupported_media_type"
+    assert new_post.status == ParserStatus.failed

@@ -110,3 +110,37 @@ async def test_price_list_cache_miss_calls_llm_and_stores(
     cache_count = await db_session.scalar(select(func.count()).select_from(ParseCache))
     assert cache_count == 1
     set_llm_client(None)
+
+
+@pytest.mark.asyncio
+async def test_parse_pending_raw_prices_covers_more_than_one_batch(
+    db_session: AsyncSession,
+    seed_suppliers: list[Supplier],
+    mock_llm: MockLLMClient,
+) -> None:
+    set_llm_client(mock_llm)
+    mock_llm.price_result = {
+        "items": [
+            {
+                "model": "iPhone 15",
+                "storage": "256GB",
+                "color": "Black",
+                "price": 70000,
+                "currency": "RUB",
+                "confidence": 0.95,
+            }
+        ]
+    }
+    for index in range(201):
+        await insert_raw_price(
+            db_session,
+            supplier_id=seed_suppliers[0].id,
+            text=f"batch item {index} iPhone 15 256 Black 70000",
+            source="manual_message",
+        )
+    await db_session.flush()
+
+    inserted = await parse_pending_raw_prices(db_session)
+    assert inserted == 201
+    assert mock_llm.price_calls == 201
+    set_llm_client(None)

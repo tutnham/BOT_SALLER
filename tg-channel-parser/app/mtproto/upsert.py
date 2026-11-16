@@ -155,6 +155,7 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
 
     if content_type == ParserContentType.other:
         post.error_text = "unsupported_media_type"
+        post.status = ParserStatus.failed
 
     await session.flush()
     return post

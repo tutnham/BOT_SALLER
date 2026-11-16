@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,51 @@ class ChannelCreate(BaseModel):
     purpose: ParserChannelPurpose = ParserChannelPurpose.supplier_price_source
 
 
+def _channel_matches(
+    channel: ParserChannel,
+    *,
+    username: str | None,
+    numeric_id: int | None,
+) -> bool:
+    if username and channel.username and channel.username.lower() == username.lower():
+        return True
+    if numeric_id is None:
+        return False
+    if channel.channel_id == numeric_id:
+        return True
+    title = (channel.title or "").strip()
+    if title.lstrip("-").isdigit() and int(title) == numeric_id:
+        return True
+    return False
+
+
+def _duplicate_detail(channel: ParserChannel, *, username: str | None) -> str:
+    if channel.status == ParserChannelStatus.pending:
+        if username:
+            return "pending_channel_username_exists"
+        return "pending_channel_id_exists"
+    return "channel_already_active"
+
+
+def _integrity_conflict_detail(exc: IntegrityError) -> str:
+    message = str(getattr(exc, "orig", None) or exc).lower()
+    if "channel_id" in message:
+        return "channel_id_exists"
+    return "pending_channel_username_exists"
+
+
+def _enqueue_resolve_task(db: AsyncSession, channel: ParserChannel) -> None:
+    db.add(
+        ParserTask(
+            post_id=None,
+            channel_id=channel.id,
+            task_type=ParserTaskType.resolve_channel,
+            status=ParserStatus.new,
+            max_attempts=5,
+        )
+    )
+
+
 @router.get("", response_model=list[ChannelOut], dependencies=[Depends(require_api_token)])
 async def list_channels(
     purpose: ParserChannelPurpose | None = Query(default=None),
@@ -68,16 +113,46 @@ async def create_channel(
     The channel is created with ``status='pending'`` and a background worker
     resolves the numeric ``channel_id`` via ``get_chat``.  The caller must poll
     ``GET /channels`` until ``status`` becomes ``active`` or ``failed``.
+    Numeric handles stay in ``title`` until resolve succeeds; ``channel_id``
+    is not set while pending.
     """
     try:
         username, numeric_id = split_channel_handle(payload.handle)
     except InvalidChannelHandle as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
+    existing_result = await db.execute(select(ParserChannel))
+    existing = next(
+        (
+            channel
+            for channel in existing_result.scalars().all()
+            if _channel_matches(channel, username=username, numeric_id=numeric_id)
+        ),
+        None,
+    )
+    if existing is not None:
+        if existing.status in (ParserChannelStatus.pending, ParserChannelStatus.active) and (
+            existing.is_active or existing.status == ParserChannelStatus.pending
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=_duplicate_detail(existing, username=username),
+            )
+        existing.username = username or existing.username
+        existing.title = payload.handle.strip() if numeric_id is not None else existing.title
+        existing.purpose = payload.purpose
+        existing.status = ParserChannelStatus.pending
+        existing.is_active = True
+        existing.error_text = None
+        _enqueue_resolve_task(db, existing)
+        await db.flush()
+        await db.commit()
+        return existing
+
     channel = ParserChannel(
-        channel_id=numeric_id,
+        channel_id=None,
         username=username,
-        title=payload.handle.strip(),
+        title=payload.handle.strip() if numeric_id is not None else None,
         purpose=payload.purpose,
         status=ParserChannelStatus.pending,
         is_active=True,
@@ -85,21 +160,14 @@ async def create_channel(
     db.add(channel)
     try:
         await db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="pending_channel_username_exists",
+            detail=_integrity_conflict_detail(exc),
         ) from None
 
-    task = ParserTask(
-        post_id=None,
-        channel_id=channel.id,
-        task_type=ParserTaskType.resolve_channel,
-        status=ParserStatus.new,
-        max_attempts=5,
-    )
-    db.add(task)
+    _enqueue_resolve_task(db, channel)
     await db.flush()
     await db.commit()
 
@@ -120,5 +188,14 @@ async def delete_channel(
     channel.is_active = False
     channel.status = ParserChannelStatus.failed
     channel.error_text = "deleted_by_admin"
+    await db.execute(
+        update(ParserTask)
+        .where(
+            ParserTask.channel_id == channel.id,
+            ParserTask.task_type == ParserTaskType.resolve_channel,
+            ParserTask.status.in_((ParserStatus.new, ParserStatus.processing)),
+        )
+        .values(status=ParserStatus.failed, error_text="cancelled")
+    )
     await db.flush()
     return {"status": "ok"}

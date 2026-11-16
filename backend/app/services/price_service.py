@@ -36,6 +36,9 @@ from app.services.alert_service import send_admin_alert
 from app.services.audit_service import record_audit
 from app.services.markup_service import apply_markup, load_rules
 from app.services.parser_client import ParserClientError, iter_posts
+
+CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
+RAW_PRICE_PARSE_BATCH = 200
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard
 from app.templates.messages_ru import render_template
@@ -81,6 +84,13 @@ def _today_start_utc(tz_name: str) -> datetime:
     now_local = datetime.now(tz)
     start_local = datetime.combine(now_local.date(), time.min, tzinfo=tz)
     return start_local.astimezone(UTC)
+
+
+def channel_price_sync_from(supplier: Supplier, tz_name: str) -> datetime:
+    """Incremental cursor, or start of today so old history stays out of the draft."""
+    if supplier.last_price_sync_at is not None:
+        return supplier.last_price_sync_at
+    return _today_start_utc(tz_name)
 
 
 def _item_passes_confidence(item: ParsedPriceItem, threshold: float) -> bool:
@@ -158,32 +168,39 @@ async def ingest_channel_prices(
             return supplier, None
         async with semaphore:
             try:
+                settings = get_settings()
+                from_ = channel_price_sync_from(supplier, settings.tz)
                 max_post_date: datetime | None = None
-                async for page in iter_posts(
-                    channel_id=int(channel_id),
-                    from_=supplier.last_price_sync_at,
-                    content_type="text",
-                ):
-                    for post in page:
-                        text_body = (post.raw_text or "").strip()
-                        if not text_body:
-                            continue
-                        if max_post_date is None or post.post_date > max_post_date:
-                            max_post_date = post.post_date
-                        raw, is_new = await insert_raw_price(
-                            session,
-                            supplier_id=supplier.id,
-                            text=text_body,
-                            source="channel_post",
-                            source_post_id=post.post_id,
-                            source_message_link=post.message_link,
-                        )
-                        if is_new and raw is not None:
-                            raw_new += 1
+                fetch_error: Exception | None = None
+                for content_type in CHANNEL_PRICE_CONTENT_TYPES:
+                    try:
+                        async for page in iter_posts(
+                            channel_id=int(channel_id),
+                            from_=from_,
+                            content_type=content_type,
+                        ):
+                            for post in page:
+                                text_body = (post.raw_text or "").strip()
+                                if not text_body:
+                                    continue
+                                if max_post_date is None or post.post_date > max_post_date:
+                                    max_post_date = post.post_date
+                                raw, is_new = await insert_raw_price(
+                                    session,
+                                    supplier_id=supplier.id,
+                                    text=text_body,
+                                    source="channel_post",
+                                    source_post_id=post.post_id,
+                                    source_message_link=post.message_link,
+                                )
+                                if is_new and raw is not None:
+                                    raw_new += 1
+                    except ParserClientError as exc:
+                        fetch_error = exc
                 if max_post_date is not None:
                     supplier.last_price_sync_at = max_post_date
                     await session.flush()
-                return supplier, None
+                return supplier, fetch_error
             except ParserClientError as exc:
                 return supplier, exc
 
@@ -234,6 +251,39 @@ async def _resolve_price_list(
     return parsed
 
 
+async def _materialize_parsed_items(
+    session: AsyncSession,
+    raw: RawPrice,
+    parsed: ParsedPriceList,
+    *,
+    threshold: float,
+) -> int:
+    inserted = 0
+    for item in parsed.items:
+        condition = item.condition
+        if not _item_passes_confidence(item, threshold):
+            tag = f"low_confidence:{item.confidence}"
+            condition = f"{tag}|{condition}" if condition else tag
+        session.add(
+            ParsedItem(
+                raw_price_id=raw.id,
+                sku_key=build_sku_key(item),
+                model=item.model,
+                storage=item.storage,
+                color=item.color,
+                region=item.region,
+                sim=item.sim,
+                condition=condition,
+                price=Decimal(str(item.price)),
+                currency=item.currency or "RUB",
+            )
+        )
+        inserted += 1
+    if inserted:
+        await session.flush()
+    return inserted
+
+
 async def parse_pending_raw_prices(session: AsyncSession) -> int:
     """
     Parse today's raw_prices that still lack parsed_items.
@@ -244,45 +294,67 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
     settings = get_settings()
     day_start = _today_start_utc(settings.tz)
     threshold = settings.confidence_threshold
-
-    result = await session.execute(
-        select(RawPrice)
-        .where(RawPrice.received_at >= day_start)
-        .options(selectinload(RawPrice.parsed_items))
-        .order_by(RawPrice.id.asc())
-        .limit(200)
-    )
-    raw_prices = list(result.scalars().all())
+    concurrency = max(1, int(settings.morning_price_llm_concurrency))
     inserted = 0
+    last_id = 0
 
-    for raw in raw_prices:
-        if raw.parsed_items:
-            continue
-        parsed = await _resolve_price_list(session, raw.text)
-        if parsed is None:
-            continue
-
-        for item in parsed.items:
-            condition = item.condition
-            if not _item_passes_confidence(item, threshold):
-                tag = f"low_confidence:{item.confidence}"
-                condition = f"{tag}|{condition}" if condition else tag
-            session.add(
-                ParsedItem(
-                    raw_price_id=raw.id,
-                    sku_key=build_sku_key(item),
-                    model=item.model,
-                    storage=item.storage,
-                    color=item.color,
-                    region=item.region,
-                    sim=item.sim,
-                    condition=condition,
-                    price=Decimal(str(item.price)),
-                    currency=item.currency or "RUB",
-                )
+    while True:
+        result = await session.execute(
+            select(RawPrice)
+            .where(
+                RawPrice.received_at >= day_start,
+                RawPrice.id > last_id,
+                ~RawPrice.parsed_items.any(),
             )
-            inserted += 1
-        await session.flush()
+            .options(selectinload(RawPrice.parsed_items))
+            .order_by(RawPrice.id.asc())
+            .limit(RAW_PRICE_PARSE_BATCH)
+        )
+        batch = list(result.scalars().all())
+        if not batch:
+            break
+        last_id = int(batch[-1].id)
+
+        cached_pairs: list[tuple[RawPrice, ParsedPriceList]] = []
+        pending_llm: list[RawPrice] = []
+        for raw in batch:
+            cached = await get_cached(session, kind="price_list", raw_text=raw.text)
+            if cached is not None:
+                parsed = validate_price_list_payload(cached)
+                if parsed is not None:
+                    cached_pairs.append((raw, parsed))
+                continue
+            pending_llm.append(raw)
+
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _parse_uncached(raw: RawPrice) -> tuple[RawPrice, ParsedPriceList | None]:
+            async with semaphore:
+                llm = get_llm_client()
+                try:
+                    parsed = await llm.parse_price_list(raw.text)
+                except LLMProviderError as exc:
+                    logger.warning("LLM parse_price_list failed: {}", exc)
+                    return raw, None
+                return raw, parsed
+
+        llm_pairs = await asyncio.gather(*[_parse_uncached(raw) for raw in pending_llm])
+        for raw, parsed in llm_pairs:
+            if parsed is None:
+                continue
+            await set_cached(
+                session,
+                kind="price_list",
+                raw_text=raw.text,
+                result_json=parsed.model_dump(mode="json"),
+                model_used=settings.llm_model or settings.llm_provider,
+            )
+            cached_pairs.append((raw, parsed))
+
+        for raw, parsed in cached_pairs:
+            inserted += await _materialize_parsed_items(
+                session, raw, parsed, threshold=threshold
+            )
 
     return inserted
 

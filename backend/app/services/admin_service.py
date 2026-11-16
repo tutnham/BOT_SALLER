@@ -767,6 +767,8 @@ async def bind_supplier_price_channel(
     if result.scalar_one_or_none() is not None:
         raise PriceChannelBusyError(channel_id)
 
+    if supplier.price_channel_id != channel_id:
+        supplier.last_price_sync_at = None
     supplier.price_channel_id = channel_id
     supplier.price_channel_username = username
     await session.flush()
@@ -782,8 +784,26 @@ async def unbind_supplier_price_channel(
         raise SupplierNotFoundError(supplier_id)
     supplier.price_channel_id = None
     supplier.price_channel_username = None
+    supplier.last_price_sync_at = None
     await session.flush()
     return supplier
+
+
+async def unbind_suppliers_by_price_channel(
+    session: AsyncSession,
+    channel_id: int,
+) -> int:
+    result = await session.execute(
+        select(Supplier).where(Supplier.price_channel_id == channel_id)
+    )
+    suppliers = list(result.scalars().all())
+    for supplier in suppliers:
+        supplier.price_channel_id = None
+        supplier.price_channel_username = None
+        supplier.last_price_sync_at = None
+    if suppliers:
+        await session.flush()
+    return len(suppliers)
 
 
 async def list_requests(session: AsyncSession) -> list[Request]:

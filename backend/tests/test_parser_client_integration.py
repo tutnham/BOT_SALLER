@@ -317,3 +317,67 @@ async def test_ingest_degrades_on_parser_failure(
     assert degraded == 1
     await db_session.refresh(seed_channel_supplier)
     assert seed_channel_supplier.last_price_sync_at is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_uses_today_start_when_cursor_missing(
+    db_session: AsyncSession,
+    seed_channel_supplier: Supplier,
+) -> None:
+    from app.config import get_settings
+    from app.services.price_service import CHANNEL_PRICE_CONTENT_TYPES, _today_start_utc
+
+    captured: list[dict] = []
+
+    async def _fake_iter_posts(**kwargs):
+        captured.append(kwargs)
+        if False:  # pragma: no cover
+            yield []
+
+    with patch(
+        "app.services.price_service.iter_posts",
+        new=_fake_iter_posts,
+    ):
+        await ingest_channel_prices(db_session)
+
+    assert [item["content_type"] for item in captured] == list(CHANNEL_PRICE_CONTENT_TYPES)
+    expected_from = _today_start_utc(get_settings().tz)
+    assert all(item["from_"] == expected_from for item in captured)
+
+
+@pytest.mark.asyncio
+async def test_ingest_reads_photo_caption(
+    db_session: AsyncSession,
+    seed_channel_supplier: Supplier,
+) -> None:
+    from sqlalchemy import func, select
+
+    from app.db.models import RawPrice
+    from app.services.parser_client import ParserPost
+
+    post_date = datetime(2026, 11, 16, 8, 0, tzinfo=UTC)
+
+    async def _fake_iter_posts(**kwargs):
+        if kwargs.get("content_type") != "photo":
+            return
+            yield []  # pragma: no cover
+        yield [
+            ParserPost(
+                post_id=77,
+                message_id=77,
+                post_date=post_date,
+                raw_text="iPhone 16 256 80000",
+                message_link=None,
+            )
+        ]
+
+    with patch(
+        "app.services.price_service.iter_posts",
+        new=_fake_iter_posts,
+    ):
+        raw_new, degraded = await ingest_channel_prices(db_session)
+
+    assert raw_new == 1
+    assert degraded == 0
+    count = await db_session.scalar(select(func.count()).select_from(RawPrice))
+    assert count == 1

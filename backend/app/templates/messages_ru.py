@@ -427,8 +427,7 @@ TEMPLATES: dict[str, str] = {
     ),
     "admin_channel_add_error": "Не удалось добавить канал: {detail}",
     "admin_channel_add_duplicate": (
-        "Такой канал уже добавлен и ожидает подключения. "
-        "Дождитесь статуса ✅ или удалите старую запись."
+        "Такой канал уже добавлен. Дождитесь статуса ✅ или удалите старую запись."
     ),
     "admin_channel_add_unavailable": (
         "Сервис парсера каналов недоступен. "
@@ -436,6 +435,9 @@ TEMPLATES: dict[str, str] = {
     ),
     "admin_price_channel_delete_error": (
         "Не удалось удалить канал. Проверьте доступность сервиса парсера."
+    ),
+    "admin_price_channel_unbound": (
+        "Канал удалён. Снята привязка у поставщиков: {count}."
     ),
     "admin_employees_list": "Список сотрудников:",
     "admin_employee_detail": (
@@ -578,6 +580,9 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name == "admin_price_channels":
         kwargs.setdefault("channels_block", "Список пуст.")
+
+    if name == "admin_price_channel_unbound":
+        kwargs.setdefault("count", 0)
 
     if name == "admin_supplier_detail":
         kwargs.setdefault("telegram_id", "—")

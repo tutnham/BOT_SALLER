@@ -171,6 +171,51 @@ async def test_resolve_numeric_channel_passes_int_to_get_chat() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_numeric_handle_from_title_when_channel_id_pending() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="-1001234567890",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+    )
+    seen: list[object] = []
+
+    class _Chat:
+        id = -1001234567890
+        username = None
+        title = "Price"
+
+    class _Client:
+        async def get_chat(self, ref: object) -> _Chat:
+            seen.append(ref)
+            return _Chat()
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    with patch.object(task_worker, "backfill_channel_on_activate", AsyncMock()):
+        await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert seen == [-1001234567890]
+    assert channel.channel_id == -1001234567890
+    assert channel.status == ParserChannelStatus.active
+
+
+@pytest.mark.asyncio
 async def test_reclaim_stale_processing_updates_stuck_tasks() -> None:
     class FakeResult:
         rowcount = 3

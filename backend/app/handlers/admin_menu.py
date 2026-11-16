@@ -720,7 +720,12 @@ async def _dispatch_callback(
             )
             return
         channel = next((ch for ch in channels if ch.id == parser_pk), None)
-        if channel is None or channel.channel_id is None or not channel.is_active:
+        if (
+            channel is None
+            or channel.channel_id is None
+            or not channel.is_active
+            or channel.status != "active"
+        ):
             await _send_or_edit(
                 telegram,
                 chat_id=chat_id,
@@ -955,8 +960,14 @@ async def _dispatch_callback(
         return
 
     if action == "price_channel_delete":
+        parser_pk = int(cd.arg)
+        telegram_channel_id: int | None = None
         try:
-            await parser_client.delete_channel(int(cd.arg))
+            channels = await parser_client.list_channels()
+            matched = next((ch for ch in channels if ch.id == parser_pk), None)
+            if matched is not None and matched.channel_id is not None:
+                telegram_channel_id = int(matched.channel_id)
+            await parser_client.delete_channel(parser_pk)
         except parser_client.ParserClientError:
             await _send_or_edit(
                 telegram,
@@ -966,7 +977,24 @@ async def _dispatch_callback(
                 markup=inline_keyboard([[menu_button("К каналам", "price_channels")]]),
             )
             return
-        await _send_price_channels(session, telegram, chat_id, message_id=message_id)
+        unbound = 0
+        if telegram_channel_id is not None:
+            unbound = await admin_service.unbind_suppliers_by_price_channel(
+                session, telegram_channel_id
+            )
+        notice = None
+        if unbound:
+            notice = render_template(
+                "admin_price_channel_unbound",
+                count=unbound,
+            )
+        await _send_price_channels(
+            session,
+            telegram,
+            chat_id,
+            message_id=message_id,
+            notice=notice,
+        )
         return
 
     if action == "purge_confirm":
@@ -1054,6 +1082,9 @@ async def _send_dlq_item(
     if item is None:
         await _send_dlq_list(session, telegram, chat_id, message_id=message_id)
         return
+    chat_line = ""
+    if queue == "outbox":
+        chat_line = f"Чат: {item.get('chat_id') or '—'}\n"
     text = (
         f"{'Вход' if queue == 'inbox' else 'Исход'} #{item['id']}\n"
         f"Статус: {item['status']}\n"
@@ -1061,16 +1092,27 @@ async def _send_dlq_item(
         f"Попыток: {item['attempts']}\n"
         f"Заявка: {item['request_id'] or '—'}\n"
         f"Поставщик: {item['supplier_id'] or '—'}\n"
+        f"{chat_line}"
         f"Ошибка: {item['last_error'] or '—'}\n"
         f"Время: {item['created_at']}"
     )
     go = "dlqin_go" if queue == "inbox" else "dlqout_go"
     ok = "dlqin_ok" if queue == "inbox" else "dlqout_ok"
-    confirm = (
-        "Повтор отправит сообщение ещё раз. Нажмите только если прошлый вызов не дошёл."
-        if queue == "outbox"
-        else "Повтор снова обработает это обновление."
-    )
+    error_text = str(item.get("last_error") or "").lower()
+    if queue == "outbox" and any(
+        marker in error_text
+        for marker in ("chat not found", "bot was kicked", "not a member")
+    ):
+        confirm = (
+            "Бот не видит этот чат. Повтор туда же не дойдёт, пока бота "
+            "не вернут в клиентскую группу заявки. Иначе закройте без повтора."
+        )
+    elif queue == "outbox":
+        confirm = (
+            "Повтор отправит сообщение ещё раз. Нажмите только если прошлый вызов не дошёл."
+        )
+    else:
+        confirm = "Повтор снова обработает это обновление."
     await _send_or_edit(
         telegram,
         chat_id=chat_id,
@@ -1528,7 +1570,7 @@ async def _send_supplier_channel_list(
     ]
     for ch in price_channels:
         handle = ch.username or ch.title or f"#{ch.id}"
-        if ch.channel_id is not None and ch.is_active:
+        if ch.channel_id is not None and ch.is_active and ch.status == "active":
             label = f"✅ {handle}"
         else:
             label = f"⏳ {handle} (готовится)"
@@ -1698,6 +1740,7 @@ async def _send_price_channels(
     *,
     message_id: int | None = None,
     extra_channel: parser_client.ParserChannel | None = None,
+    notice: str | None = None,
 ) -> None:
     try:
         channels = await parser_client.list_channels()
@@ -1715,7 +1758,11 @@ async def _send_price_channels(
     if extra_channel is not None and all(ch.id != extra_channel.id for ch in channels):
         channels = [*channels, extra_channel]
 
-    visible = [ch for ch in channels if ch.is_active]
+    visible = [
+        ch
+        for ch in channels
+        if ch.is_active and ch.purpose == "supplier_price_source"
+    ]
     lines = [_price_channel_label(ch) for ch in visible]
     channels_block = "\n".join(lines) if lines else "Список пуст."
 
@@ -1731,10 +1778,13 @@ async def _send_price_channels(
     rows.append(
         [menu_button("➕ Добавить канал", "price_channel_add_start"), menu_button("В меню", "main_menu")]
     )
+    text = render_template("admin_price_channels", channels_block=channels_block)
+    if notice:
+        text = f"{notice}\n\n{text}"
     await _send_or_edit(
         telegram,
         chat_id=chat_id,
-        text=render_template("admin_price_channels", channels_block=channels_block),
+        text=text,
         message_id=message_id,
         markup=inline_keyboard(rows),
     )

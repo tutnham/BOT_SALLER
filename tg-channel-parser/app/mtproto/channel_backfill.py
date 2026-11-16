@@ -26,29 +26,32 @@ async def backfill_channel_on_activate(
         return 0
 
     chat_id = channel.channel_id
-    kwargs: dict[str, Any] = {"chat_id": chat_id}
-    if channel.last_synced_message_id is not None:
-        kwargs["offset_id"] = channel.last_synced_message_id
-
     inserted = 0
+    scanned = 0
     limit = cfg.backfill_on_activate_limit
     factory = get_session_factory()
-    history = client.get_chat_history(**kwargs)
+    history = client.get_chat_history(chat_id=chat_id)
     if history is None:
         logger.warning("Backfill skipped: empty history channel={}", chat_id)
         return 0
 
-    async for message in history:
-        if inserted >= limit:
-            break
-        msg_date = message.date
-        if msg_date and msg_date.tzinfo is None:
-            msg_date = msg_date.replace(tzinfo=UTC)
-        async with factory() as session:
-            post = await upsert_post(session, message)
-            if post is not None:
-                inserted += 1
-            await session.commit()
+    try:
+        async for message in history:
+            if scanned >= limit:
+                break
+            scanned += 1
+            msg_date = message.date
+            if msg_date and msg_date.tzinfo is None:
+                msg_date = msg_date.replace(tzinfo=UTC)
+            async with factory() as session:
+                post = await upsert_post(session, message)
+                if post is not None:
+                    inserted += 1
+                await session.commit()
+    finally:
+        aclose = getattr(history, "aclose", None)
+        if callable(aclose):
+            await aclose()
 
     async with factory() as session:
         max_id = await session.scalar(
@@ -65,9 +68,10 @@ async def backfill_channel_on_activate(
             await session.commit()
 
     logger.info(
-        "Backfill on activate channel={} inserted={} limit={}",
+        "Backfill on activate channel={} inserted={} scanned={} limit={}",
         chat_id,
         inserted,
+        scanned,
         limit,
     )
     return inserted
