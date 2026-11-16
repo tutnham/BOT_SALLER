@@ -367,6 +367,22 @@ def test_candidate_state_keeps_order_text_and_sent_time() -> None:
     assert "айфон 17 про 256 синий" in criteria["request:42"]
 
 
+def test_description_keeps_model_when_order_text_repeats_it_after_a_long_preamble() -> None:
+    request = _request()
+    request.id = 7
+    request.source_text = ("уточните наличие пожалуйста " * 40) + "iPhone 17 Pro 256 Blue"
+    request.normalized_json = {
+        "model": "iPhone 17 Pro",
+        "variant": "pro",
+        "storage": "256",
+        "color": "Blue",
+    }
+    candidate = candidates_to_jev([request], limit=5)[0]
+    assert candidate.description.startswith("iPhone 17 Pro 256 Blue |")
+    assert len(candidate.description) <= 240
+    assert " pro " not in candidate.description.split("|", 1)[0]
+
+
 @pytest.mark.asyncio
 async def test_classify_slices_candidates_before_hash_and_outbound_load(
     monkeypatch: pytest.MonkeyPatch,

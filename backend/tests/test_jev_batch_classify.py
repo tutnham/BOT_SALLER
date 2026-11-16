@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -184,6 +185,42 @@ async def test_breaker_open_skips_provider_for_all_lines(
         assert decision.reason_code == "jev_breaker_open"
         assert decision.error_code == "jev_breaker_open"
         assert decision.action is JevDecisionAction.FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_opened_breaker_stops_later_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JEV_BREAKER_FAILURE_STREAK", "1")
+    monkeypatch.setenv("JEV_BATCH_MAX_LINES", "2")
+    get_settings.cache_clear()
+    client = _BatchClient(fail=True)
+    set_jev_client(client)
+    lines = [(no, f"iPhone 17 Pro 256 Blue 11790{no}") for no in range(1, 5)]
+    results = await _classify(lines)
+    assert len(client.chunks) == 1
+    assert breaker.jev_breaker_snapshot()["state"] == "open"
+    for decision in results.values():
+        assert decision.error_code in {"jev_timeout", "jev_breaker_open"}
+    assert results[1].error_code == "jev_timeout"
+    assert results[3].error_code == "jev_breaker_open"
+    assert results[3].latency_ms is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_half_open_probe_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JEV_BREAKER_FAILURE_STREAK", "1")
+    monkeypatch.setenv("JEV_BREAKER_COOLDOWN_SECONDS", "0.01")
+    get_settings.cache_clear()
+    await breaker.note_jev_breaker_failure(get_settings())
+    assert breaker.jev_breaker_snapshot()["state"] == "open"
+    await asyncio.sleep(0.02)
+    client = _LegacyClient()
+    set_jev_client(client)
+    results = await _classify([(1, "iPhone 17 Pro 256 Blue 117900")])
+    assert client.calls == 1
+    assert results[1].action is JevDecisionAction.AUTO_BIND
+    assert breaker.jev_breaker_snapshot()["state"] == "closed"
 
 
 @pytest.mark.asyncio

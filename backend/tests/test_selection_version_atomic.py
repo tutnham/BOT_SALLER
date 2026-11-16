@@ -27,6 +27,7 @@ async def test_next_selection_version_takes_advisory_lock() -> None:
     assert executed, "ожидался запрос advisory lock"
     lock_sql, lock_params = executed[0]
     assert "pg_advisory_xact_lock" in lock_sql
+    assert "CAST(hashtext(:lock_key) AS bigint)" in lock_sql
     assert lock_params == {"lock_key": "price_selection_version:77"}
 
 

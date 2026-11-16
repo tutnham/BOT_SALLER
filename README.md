@@ -23,8 +23,8 @@
 - Backend: Coolify app `bot-saller`, Supabase Session pooler IPv4
 - Parser: отдельный Coolify Compose stack, **без публичного API**
 - Связь: `PARSER_API_URL` + `PARSER_API_TOKEN` (порт **8000**)
-- Схема backend: Alembic head `0028_price_publication`. Parser: head `0005_runtime_heartbeat`, процесс `tg-runtime` (listener + worker + heartbeat) и внутренний `tg-parser-api:8000`.
-- Webhook идемпотентен: `update_log` пишется до обработки. Повтор Telegram не дублирует действие.
+- Схема backend: Alembic head `0029_jev_decision_tokens` (`0028_price_publication` остаётся ревизией публикации цены, поверх неё `0029` добавляет токены решений Jev). Parser: head `0007_backfill_task_type` (`0006_post_edited_at` → `0007`), процесс `tg-runtime` (listener + worker + heartbeat) и внутренний `tg-parser-api:8000`.
+- Webhook идемпотентен: `update_log` пишется до обработки. Повтор Telegram не дублирует действие. В sync-режиме упавшее обновление снимает отметку и попадает в `webhook_inbox` на повтор, затем в DLQ. Целевой prod-режим — `WEBHOOK_ASYNC_ENABLED=true`.
 - Быстрые проверки без Postgres: из `backend/` — `uv run pytest tests/test_config.py tests/test_migration_head_contract.py tests/test_jev_policy.py tests/test_jev_classify_unit.py tests/test_jev_client.py tests/test_jev_shadow_eval.py -q`. Полный `pytest` требует `DATABASE_URL` и Postgres. Parser: `uv run pytest -q` из `tg-channel-parser/`.
 
 ## Owner `/menu` (ЛС бота)

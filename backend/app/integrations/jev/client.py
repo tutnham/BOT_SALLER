@@ -156,8 +156,9 @@ class HttpJevClient:
         }
         attempts = settings.jev_max_retries + 1
         last_error: JevError = JevUnavailable()
-        async with self._semaphore:
-            for attempt in range(attempts):
+        for attempt in range(attempts):
+            # Слот только на сам POST: пауза между повторами не занимает concurrency.
+            async with self._semaphore:
                 try:
                     response = await self._http.post(url, json=payload, headers=headers)
                 except httpx.TimeoutException:
@@ -171,10 +172,10 @@ class HttpJevClient:
                     last_error = mapped
                     if not _should_retry(last_error):
                         raise last_error from None
-                if attempt + 1 < attempts and _should_retry(last_error):
-                    await asyncio.sleep(_backoff(attempt))
-                    continue
-                raise last_error from None
+            if attempt + 1 < attempts and _should_retry(last_error):
+                await asyncio.sleep(_backoff(attempt))
+                continue
+            raise last_error from None
         raise last_error from None
 
     def _map_status(
@@ -271,11 +272,27 @@ def _parse_success(data: object, allowed_binding: set[str]) -> JevProviderRespon
             binding_probabilities=prob_map,
             binding_confidence=binding_confidence,
             matches_listed_order=matches_listed_order,
-            input_tokens=input_tokens if isinstance(input_tokens, int) else None,
-            output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+            input_tokens=_token_count(input_tokens),
+            output_tokens=_token_count(output_tokens),
         )
     except ValidationError:
         raise JevInvalidResponse() from None
+
+
+def _usage_token_pair(usage: object) -> tuple[int | None, int | None]:
+    """Целые токены провайдера. Дробные и прочие формы не записываем."""
+    if not isinstance(usage, dict):
+        return None, None
+    raw_input = usage.get("input_tokens")
+    raw_output = usage.get("output_tokens")
+    return _token_count(raw_input), _token_count(raw_output)
+
+
+def _token_count(raw: object) -> int | None:
+    # bool is an int subclass; a JSON true must not become 1 token.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
 
 
 def _derive_message_choice(price_probability: Decimal, price_threshold: Decimal) -> str:
@@ -340,14 +357,13 @@ def _parse_batch_success(
     answers = data.get("answers")
     if not isinstance(model, str) or not model or not isinstance(answers, dict):
         raise JevInvalidResponse()
-    usage_obj = data.get("usage")
-    if isinstance(usage_obj, dict):
-        # Usage is per request; per-line token split would be invented data.
+    input_tokens, output_tokens = _usage_token_pair(data.get("usage"))
+    if input_tokens is not None or output_tokens is not None:
         logger.info(
             "jev_batch_usage lines={} input_tokens={} output_tokens={}",
             len(line_nos),
-            usage_obj.get("input_tokens"),
-            usage_obj.get("output_tokens"),
+            input_tokens,
+            output_tokens,
         )
     result: dict[int, JevProviderResponse | JevInvalidResponse] = {}
     for line_no in line_nos:
@@ -357,6 +373,14 @@ def _parse_batch_success(
             )
         except JevInvalidResponse as exc:
             result[line_no] = exc
+    # Один раз на чанк, на первую разобранную строку: сумма по строкам не умножает usage.
+    for line_no in line_nos:
+        parsed = result[line_no]
+        if isinstance(parsed, JevProviderResponse):
+            result[line_no] = parsed.model_copy(
+                update={"input_tokens": input_tokens, "output_tokens": output_tokens}
+            )
+            break
     return result
 
 

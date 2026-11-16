@@ -212,8 +212,10 @@ async def _insert_published_selection(
 async def _next_selection_version(session: AsyncSession, request_id: int) -> int:
     # C5: advisory lock на заявку — параллельные публикации в разных транзакциях
     # получают строго возрастающие версии (lock снимается при commit/rollback).
+    # hashtext → int4, а pg_advisory_xact_lock(int) неоднозначен (bigint | int,int).
+    # CAST, не :: — SQLAlchemy читает «:» как начало bind-параметра.
     await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        text("SELECT pg_advisory_xact_lock(CAST(hashtext(:lock_key) AS bigint))"),
         {"lock_key": f"price_selection_version:{request_id}"},
     )
     current = await session.scalar(

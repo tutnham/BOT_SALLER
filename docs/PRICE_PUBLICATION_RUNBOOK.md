@@ -36,7 +36,7 @@
 
 1. Бэкап БД.
 2. Деплой с `AUTO_PUBLISH_FIRST_VALID_PRICE=false`.
-3. `alembic upgrade head` (ревизия `0028_price_publication`).
+3. `alembic upgrade head`. Текущий head backend — `0029_jev_decision_tokens`. Колонки публикации цены добавляет `0028_price_publication`; `0029` только учитывает токены Jev и на публикацию не влияет.
 4. `python -m scripts.ensure_owners --telegram-id <id>`.
 5. Владелец пишет боту `/start`, проверка `/menu`.
 6. Проверка: вчерашняя цена не предлагается, повторная публикация не создаёт второе сообщение.
@@ -61,4 +61,4 @@ ORDER BY created_at;
 
 ## Откат
 
-`AUTO_PUBLISH_FIRST_VALID_PRICE=false` останавливает автопубликацию. Сбор цен и карточки продолжают работать. Откат схемы публикации (ревизия `0028_price_publication`, база остаётся на `0027_supplier_ai_decisions`): из `backend/` выполнить `alembic downgrade 0027_supplier_ai_decisions`. Строки `request_price_selections`, созданные раньше, эта команда не удаляет целиком: она снимает колонки, добавленные `0028`.
+`AUTO_PUBLISH_FIRST_VALID_PRICE=false` останавливает автопубликацию. Сбор цен и карточки продолжают работать. Откат схемы публикации с текущего head: из `backend/` выполнить `alembic downgrade 0027_supplier_ai_decisions`. Команда снимает и колонки `0029`, и колонки `0028`. Строки `request_price_selections` она не удаляет целиком. Номер версии внутри одной заявки сериализуется `pg_advisory_xact_lock(CAST(hashtext(key) AS bigint))`.

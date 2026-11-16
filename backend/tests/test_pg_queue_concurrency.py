@@ -587,3 +587,11 @@ async def test_client_price_chat_not_found_marks_dead(
     assert row.status == TelegramOutboxStatus.dead.value
     assert row.attempts == 1
     assert row.last_error == "Bad Request: chat not found"
+
+
+@pytest.mark.asyncio
+async def test_selection_version_lock_runs_on_postgres(db_session: AsyncSession) -> None:
+    """C5: hashtext без CAST падает с 'function pg_advisory_xact_lock(integer) is not unique'."""
+    from app.services.first_price_publication_service import _next_selection_version
+
+    assert await _next_selection_version(db_session, request_id=77001) == 1

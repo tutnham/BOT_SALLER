@@ -69,7 +69,10 @@ async def note_jev_breaker_success(settings: Settings) -> None:
     _probe_in_flight = False
     if was_degraded:
         logger.info("jev_breaker closed: provider recovered")
-        await _alert("✅ Jev breaker closed: provider recovered, classification resumed.")
+        await _alert(
+            "✅ Jev breaker closed: provider recovered, classification resumed.",
+            trip=False,
+        )
 
 
 async def note_jev_breaker_failure(settings: Settings) -> None:
@@ -79,7 +82,10 @@ async def note_jev_breaker_failure(settings: Settings) -> None:
         _state = _STATE_OPEN
         _opened_at = time.monotonic()
         logger.warning("jev_breaker re-opened: half-open probe failed")
-        await _alert("⚠️ Jev breaker re-opened: probe failed. Deterministic binding only.")
+        await _alert(
+            "⚠️ Jev breaker re-opened: probe failed. Deterministic binding only.",
+            trip=True,
+        )
         return
     _failure_streak += 1
     if _state == _STATE_CLOSED and _failure_streak >= settings.jev_breaker_failure_streak:
@@ -90,18 +96,23 @@ async def note_jev_breaker_failure(settings: Settings) -> None:
         )
         await _alert(
             f"⚠️ Jev breaker opened after {_failure_streak} consecutive provider errors. "
-            "Supplier messages fall back to deterministic binding until recovery."
+            "Supplier messages fall back to deterministic binding until recovery.",
+            trip=True,
         )
 
 
-async def _alert(text: str) -> None:
-    """Best-effort operator alert; never raises into the classification path."""
+async def _alert(text: str, *, trip: bool) -> None:
+    """Best-effort operator alert; never raises into the classification path.
+
+    ``trip`` counts only open and re-open. Recovery is an alert, not a trip.
+    """
     try:
         from app.services.alert_service import send_admin_alert
         from app.services.telemetry import record_jev_breaker_trip
         from app.telegram.client import get_telegram_client
 
-        record_jev_breaker_trip()
+        if trip:
+            record_jev_breaker_trip()
         await send_admin_alert(text, telegram=get_telegram_client())
     except Exception:
         logger.exception("jev_breaker alert failed")

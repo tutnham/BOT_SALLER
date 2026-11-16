@@ -142,10 +142,17 @@ def candidates_to_jev(
     result: list[JevCandidate] = []
     for request in selected:
         normalized = request.normalized_json or {}
-        model = normalized.get("model") or None
+        model = _opt_str(normalized.get("model"))
+        variant = _opt_str(normalized.get("variant"))
+        # Variant is already inside display model ("17 Pro"); do not repeat it.
+        variant_lead = ""
+        if variant and variant.lower() not in {"base", "e"}:
+            if model is None or variant.lower() not in model.lower():
+                variant_lead = variant
         order_text = _order_text(request)
         attr_parts = [
-            str(model or ""),
+            model or "",
+            variant_lead,
             str(normalized.get("storage") or ""),
             str(normalized.get("color") or ""),
             str(normalized.get("sim") or ""),
@@ -153,8 +160,9 @@ def candidates_to_jev(
         ]
         attrs = " ".join(part for part in attr_parts if part).strip()
         base = f"#{request.id} {order_text}".strip()
-        # Model identity first: the 240-char cut must not drop model/variant.
-        description = f"{attrs} | {base}" if attrs and attrs not in base else base
+        # Always lead with identity. Skipping the prefix when attrs happen to
+        # occur inside a long order text lets the 240-char cut drop the model.
+        description = f"{attrs} | {base}" if attrs else base
         description = description[:240] or f"request {request.id}"
         fact = facts.get(request.id)
         qty = _resolve_qty(request, normalized)
@@ -181,6 +189,29 @@ def _opt_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_cache_hit(
+    cached: JevSupplierDecision,
+    *,
+    input_hash: str,
+    candidate_set_hash: str,
+) -> JevSupplierDecision:
+    """Reuse the decision. Tokens and latency belong to the original provider call."""
+    return cached.model_copy(
+        update={
+            "from_cache": True,
+            "input_hash": input_hash,
+            "candidate_set_hash": candidate_set_hash,
+            "input_tokens": None,
+            "output_tokens": None,
+            "latency_ms": None,
+        }
+    )
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
 
 
 def _fallback(
@@ -388,8 +419,8 @@ async def classify_with_jev(
             shadow_mode=settings.jev_shadow_mode,
             reason_code=cached.reason_code,
         )
-        return cached.model_copy(
-            update={"from_cache": True, "input_hash": input_hash, "candidate_set_hash": candidate_hash}
+        return _as_cache_hit(
+            cached, input_hash=input_hash, candidate_set_hash=candidate_hash
         )
 
     jev_candidates = candidates_to_jev(
@@ -401,7 +432,12 @@ async def classify_with_jev(
     # Provider-only latency: DB prep and cache lookup above are not vendor time.
     provider_started = time.perf_counter()
 
-    async def fail(code: str) -> JevSupplierDecision:
+    async def fail(
+        code: str,
+        *,
+        latency_ms: int | None = None,
+        provider_call: bool = True,
+    ) -> JevSupplierDecision:
         return await _record_failure(
             code,
             provider_started,
@@ -412,10 +448,12 @@ async def classify_with_jev(
             line_no=line_no,
             input_hash=input_hash,
             candidate_set_hash=candidate_hash,
+            latency_ms=latency_ms,
+            provider_call=provider_call,
         )
 
     if not allow_jev_request(settings):
-        return await fail("jev_breaker_open")
+        return await fail("jev_breaker_open", provider_call=False)
 
     try:
         response = await get_jev_client().classify_supplier_message(
@@ -423,28 +461,18 @@ async def classify_with_jev(
             candidates=jev_candidates,
             correlation_id=correlation_id,
         )
-    except JevTimeout:
+    except JevError as exc:
+        latency_ms = _elapsed_ms(provider_started)
         await note_jev_breaker_failure(settings)
-        return await fail("jev_timeout")
-    except JevRateLimited:
-        await note_jev_breaker_failure(settings)
-        return await fail("jev_rate_limited")
-    except JevAuthError:
-        await note_jev_breaker_failure(settings)
-        return await fail("jev_auth_error")
-    except JevInvalidResponse:
-        await note_jev_breaker_failure(settings)
-        return await fail("jev_invalid_response")
-    except JevError:
-        await note_jev_breaker_failure(settings)
-        return await fail("jev_unavailable")
+        return await fail(_error_code(exc), latency_ms=latency_ms)
     except Exception:
         logger.exception("jev classify failed without provider detail")
+        latency_ms = _elapsed_ms(provider_started)
         await note_jev_breaker_failure(settings)
-        return await fail("jev_unavailable")
+        return await fail("jev_unavailable", latency_ms=latency_ms)
 
+    latency_ms = _elapsed_ms(provider_started)
     await note_jev_breaker_success(settings)
-    latency_ms = int((time.perf_counter() - provider_started) * 1000)
     record_jev_latency(latency_ms / 1000)
     note_jev_success()
     record_jev_request("ok")
@@ -590,19 +618,23 @@ async def classify_lines_with_jev(
                 shadow_mode=settings.jev_shadow_mode,
                 reason_code=cached.reason_code,
             )
-            results[line_no] = cached.model_copy(
-                update={
-                    "from_cache": True,
-                    "input_hash": input_hash,
-                    "candidate_set_hash": candidate_hash,
-                }
+            results[line_no] = _as_cache_hit(
+                cached, input_hash=input_hash, candidate_set_hash=candidate_hash
             )
         else:
             misses[line_no] = text
     if not misses:
         return results
 
-    async def fail_line(line_no: int, code: str, started: float) -> JevSupplierDecision:
+    async def fail_line(
+        line_no: int,
+        code: str,
+        started: float,
+        *,
+        latency_ms: int | None = None,
+        provider_call: bool = True,
+        count_error: bool = True,
+    ) -> JevSupplierDecision:
         return await _record_failure(
             code,
             started,
@@ -613,16 +645,15 @@ async def classify_lines_with_jev(
             line_no=line_no,
             input_hash=hash_message_input(misses[line_no], settings=settings),
             candidate_set_hash=candidate_hash,
+            latency_ms=latency_ms,
+            provider_call=provider_call,
+            count_error=count_error,
         )
-
-    if not allow_jev_request(settings):
-        started = time.perf_counter()
-        for line_no in misses:
-            results[line_no] = await fail_line(line_no, "jev_breaker_open", started)
-        return results
 
     client = get_jev_client()
     batch_fn = getattr(client, "classify_supplier_lines", None)
+    # Legacy adapters own the breaker inside classify_with_jev. A pre-check
+    # here would consume the half-open probe and leave the breaker stuck.
     if batch_fn is None:
         for line_no, text in misses.items():
             results[line_no] = await classify_with_jev(
@@ -644,6 +675,16 @@ async def classify_lines_with_jev(
     miss_items = list(misses.items())
     for start in range(0, len(miss_items), chunk_size):
         chunk = dict(miss_items[start : start + chunk_size])
+        if not allow_jev_request(settings):
+            for line_no, _text in miss_items[start:]:
+                results[line_no] = await fail_line(
+                    line_no,
+                    "jev_breaker_open",
+                    time.perf_counter(),
+                    provider_call=False,
+                    count_error=False,
+                )
+            return results
         provider_started = time.perf_counter()
         try:
             answers = await batch_fn(
@@ -652,30 +693,50 @@ async def classify_lines_with_jev(
                 correlation_id=f"jev:{message_in_id}:batch",
             )
         except JevError as exc:
+            latency_ms = _elapsed_ms(provider_started)
             await note_jev_breaker_failure(settings)
             code = _error_code(exc)
-            for line_no in chunk:
-                results[line_no] = await fail_line(line_no, code, provider_started)
+            for index, line_no in enumerate(chunk):
+                # One HTTP attempt: latency, request and error counters once.
+                results[line_no] = await fail_line(
+                    line_no,
+                    code,
+                    provider_started,
+                    latency_ms=latency_ms,
+                    provider_call=index == 0,
+                    count_error=index == 0,
+                )
             continue
         except Exception:
             logger.exception("jev batch classify failed without provider detail")
+            latency_ms = _elapsed_ms(provider_started)
             await note_jev_breaker_failure(settings)
-            for line_no in chunk:
+            for index, line_no in enumerate(chunk):
                 results[line_no] = await fail_line(
-                    line_no, "jev_unavailable", provider_started
+                    line_no,
+                    "jev_unavailable",
+                    provider_started,
+                    latency_ms=latency_ms,
+                    provider_call=index == 0,
+                    count_error=index == 0,
                 )
             continue
 
+        latency_ms = _elapsed_ms(provider_started)
         await note_jev_breaker_success(settings)
-        latency_ms = int((time.perf_counter() - provider_started) * 1000)
         record_jev_latency(latency_ms / 1000)
         note_jev_success()
         record_jev_request("ok")
         for line_no, text in chunk.items():
             answer = answers.get(line_no)
             if answer is None or isinstance(answer, JevInvalidResponse):
+                # The chunk latency is already recorded once above.
                 results[line_no] = await fail_line(
-                    line_no, "jev_invalid_response", provider_started
+                    line_no,
+                    "jev_invalid_response",
+                    provider_started,
+                    latency_ms=latency_ms,
+                    provider_call=False,
                 )
                 continue
             decision = apply_provider_decision(
@@ -739,16 +800,28 @@ async def _record_failure(
     line_no: int = 1,
     input_hash: str | None = None,
     candidate_set_hash: str | None = None,
+    latency_ms: int | None = None,
+    provider_call: bool = True,
+    count_error: bool = True,
 ) -> JevSupplierDecision:
-    latency_ms = int((time.perf_counter() - started) * 1000)
-    record_jev_error(code)
-    record_jev_latency(latency_ms / 1000)
-    record_jev_request("error")
+    """Persist a fail-closed decision.
+
+    ``provider_call`` is true only for the single observation of one HTTP
+    attempt. Extra lines of the same chunk and breaker short-circuits must
+    not add latency samples or request counts. ``count_error`` is false for
+    ``jev_breaker_open``: that path never reached the provider.
+    """
+    measured = latency_ms if latency_ms is not None else _elapsed_ms(started)
+    if count_error:
+        record_jev_error(code)
+    if provider_call:
+        record_jev_latency(measured / 1000)
+        record_jev_request("error")
     decision = _fallback(
         reason=code,
         error_code=code,
         model=settings.jev_model,
-        latency_ms=latency_ms,
+        latency_ms=measured if provider_call or latency_ms is not None else None,
     )
     decision = decision.model_copy(
         update={
@@ -772,7 +845,7 @@ async def _record_failure(
         SCHEMA_VERSION,
         decision.action.value,
         decision.reason_code,
-        latency_ms,
+        decision.latency_ms,
     )
     if session is not None and message_in_id is not None and supplier_id is not None:
         await persist_jev_decision(

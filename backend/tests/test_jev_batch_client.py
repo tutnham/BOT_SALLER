@@ -123,9 +123,11 @@ async def test_one_request_for_many_lines() -> None:
     # The noul is authoritative: low probability reads not_price in code.
     assert second.message_choice == "not_price"
     assert second.price_probability == Decimal("0.01")
-    # Usage is per request; per-line token split would be invented data.
-    assert first.input_tokens is None
-    assert first.output_tokens is None
+    # Usage запроса целиком — на первой разобранной строке, не делится по строкам.
+    assert first.input_tokens == 120
+    assert first.output_tokens == 40
+    assert second.input_tokens is None
+    assert second.output_tokens is None
 
 
 @pytest.mark.asyncio
@@ -166,6 +168,8 @@ async def test_partial_invalid_line_keeps_other_answers() -> None:
     )
     await client.aclose()
     assert isinstance(result[1], JevProviderResponse)
+    assert result[1].input_tokens == 120
+    assert result[1].output_tokens == 40
     assert isinstance(result[2], JevInvalidResponse)
 
 
@@ -182,6 +186,8 @@ async def test_missing_line_answer_is_invalid_for_that_line() -> None:
     )
     await client.aclose()
     assert isinstance(result[1], JevProviderResponse)
+    assert result[1].input_tokens == 120
+    assert result[1].output_tokens == 40
     assert isinstance(result[2], JevInvalidResponse)
 
 

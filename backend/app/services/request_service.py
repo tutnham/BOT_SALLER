@@ -313,8 +313,10 @@ async def create_request(
         total_sent += sent_count
         if sent_count >= 1:
             request.status = RequestStatus.awaiting_answers
-        else:
-            # A5: ноль доставок RFQ — заявка требует внимания, а не зависает в open
+        elif failed_lines:
+            # A5: карточка «RFQ не доставлен» только когда были попытки и все упали.
+            # «Категория неизвестна» и «нет поставщиков» уже получили свой алерт
+            # и остаются open — повторять рассылку там нечего.
             request.status = RequestStatus.needs_recheck
             try:
                 from app.services.request_card_service import (

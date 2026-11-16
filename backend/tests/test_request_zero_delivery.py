@@ -123,3 +123,24 @@ async def test_outbox_mode_queued_delivery_is_not_failure(
         assert all("RFQ не доставлен" not in text for _, text, _ in telegram.sent)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_unknown_category_stays_open_without_delivery_card(
+    db_session: AsyncSession,
+    seed_employee,
+    seed_suppliers: list[Supplier],
+    seed_markup_rules,
+) -> None:
+    telegram = MockTelegramClient()
+    outcome = await create_request(
+        db_session,
+        group_chat_id=GROUP,
+        employee_id=seed_employee.id,
+        source_text="неизвестный товар без бренда",
+        telegram=telegram,
+    )
+    request = outcome.requests[0]
+    assert outcome.sent_count == 0
+    assert request.status is RequestStatus.open
+    assert all("RFQ не доставлен" not in text for _chat_id, text, _markup in telegram.sent)

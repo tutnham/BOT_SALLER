@@ -33,7 +33,7 @@ Webhook работает асинхронно (`WEBHOOK_ASYNC_ENABLED=true`, `OU
 
 ## Circuit breaker
 
-После `JEV_BREAKER_FAILURE_STREAK` (по умолчанию 5) подряд ошибок провайдера breaker открывается: вызовы Jev мгновенно уходят в fallback с reason `jev_breaker_open`, HTTP не выполняется. Раз в `JEV_BREAKER_COOLDOWN_SECONDS` (по умолчанию 60) допускается один half-open пробный запрос; успех закрывает breaker, неудача снова открывает. Открытие/закрытие сопровождается admin-алертом и счётчиком `jev_breaker_trips_total`; состояние видно в `jev_health_snapshot()` (`breaker`).
+После `JEV_BREAKER_FAILURE_STREAK` (по умолчанию 5) подряд ошибок провайдера breaker открывается: вызовы Jev мгновенно уходят в fallback с reason `jev_breaker_open`, HTTP не выполняется. Раз в `JEV_BREAKER_COOLDOWN_SECONDS` (по умолчанию 60) допускается один half-open пробный запрос; успех закрывает breaker, неудача снова открывает. Открытие и повторное открытие дают admin-алерт и инкремент `jev_breaker_trips_total`; закрытие — только алерт. Состояние видно в `jev_health_snapshot()` (`breaker`). Если внутри одного многострочного ответа чанк открыл breaker, остальные чанки этого сообщения в HTTP не идут.
 
 Breaker дополняет, а не заменяет kill switch `JEV_ENABLED=false`: при ложных привязках или инциденте по-прежнему выключать через `JEV_ENABLED`. Строки fallback с `jev_breaker_open` записываются с `error_code` и не попадают в кэш решений.
 
