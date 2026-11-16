@@ -34,13 +34,18 @@ from app.llm.schemas import (
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
 from app.services.alert_service import send_admin_alert
 from app.services.audit_service import record_audit
-from app.services.markup_service import apply_markup, load_rules
+from app.services.markup_service import (
+    ensure_markup_rule_for_product,
+    get_markup,
+    invalidate_markup_rules_cache,
+    load_rules,
+)
 from app.services.parser_client import ParserClientError, iter_posts
 
 CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
 RAW_PRICE_PARSE_BATCH = 200
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
-from app.telegram.keyboards import CallbackData, button, inline_keyboard
+from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
 
 
@@ -423,12 +428,10 @@ def build_draft_items(
             "model": row.get("model"),
             "storage": row.get("storage"),
         }
-        our_price, _markup, _rule_id, _key = apply_markup(
-            min_price,
-            product,
-            rules,
-            default=default_markup,
-        )
+        markup = get_markup(product, rules, default=default_markup)
+        if markup.is_fallback:
+            continue
+        our_price = min_price + markup.markup
         title = format_sku_title(
             model=row.get("model"),
             storage=row.get("storage"),
@@ -447,6 +450,53 @@ def build_draft_items(
     return draft_items
 
 
+def _product_markup_phrase(row: dict[str, Any]) -> str:
+    return format_sku_title(
+        model=row.get("model"),
+        storage=row.get("storage"),
+        color=None,
+        region=None,
+        sim=None,
+    )
+
+
+async def collect_unknown_markup_products(
+    session: AsyncSession,
+    aggregated: list[dict[str, Any]],
+    rules: list[MarkupRule],
+) -> list[MarkupRule]:
+    """Create markup rules for parsed products that have no fixed markup yet."""
+    settings = get_settings()
+    day_start = _today_start_utc(settings.tz)
+    now = datetime.now(UTC)
+    prompted: list[MarkupRule] = []
+    seen_keys: set[str] = set()
+    for row in aggregated:
+        product = {"model": row.get("model"), "storage": row.get("storage")}
+        if not get_markup(product, rules, default=settings.default_markup).is_fallback:
+            continue
+        phrase = _product_markup_phrase(row)
+        if not phrase or phrase == "—":
+            continue
+        try:
+            rule = await ensure_markup_rule_for_product(session, phrase=phrase)
+        except ValueError:
+            continue
+        if not rule.rule_key or rule.rule_key in seen_keys:
+            continue
+        seen_keys.add(rule.rule_key)
+        if rule.markup_fixed is not None:
+            continue
+        if rule.updated_at is not None and rule.updated_at >= day_start:
+            continue
+        rule.updated_at = now
+        prompted.append(rule)
+    if prompted:
+        await session.flush()
+        invalidate_markup_rules_cache()
+    return prompted
+
+
 def _draft_items_fingerprint(items: list[dict[str, Any]]) -> str:
     canonical = json.dumps(items, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -463,7 +513,7 @@ async def _find_identical_pending_draft(
 
     result = await session.execute(
         select(PriceListDraft).where(
-            PriceListDraft.status == "pending",
+            PriceListDraft.status.in_(("pending", "stored")),
             PriceListDraft.generated_at >= day_start,
         )
     )
@@ -531,17 +581,54 @@ def format_draft_lines(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _new_product_markup_keyboard(rule_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [
+                menu_button(str(preset), "mk_set", rule_id, page=preset)
+                for preset in (500, 800, 1000)
+            ],
+            [menu_button("Своя сумма", "mk_custom", rule_id)],
+        ]
+    )
+
+
+async def notify_unknown_markup_rules(
+    telegram: TelegramClientProtocol,
+    *,
+    chat_ids: list[int],
+    rules: list[MarkupRule],
+) -> None:
+    """Ask owners in bot DM which markup to use for newly parsed products."""
+    for rule in rules:
+        label = (rule.rule_key or rule.category or "товар").replace("_", " ")
+        if label.startswith("custom "):
+            label = label[len("custom ") :]
+        message = render_template("markup_new_product_prompt", rule_label=label)
+        markup = _new_product_markup_keyboard(int(rule.id))
+        for chat_id in chat_ids:
+            try:
+                await telegram.send_message(int(chat_id), message, reply_markup=markup)
+            except TelegramSendError as exc:
+                logger.warning(
+                    "Failed to ask markup for rule_id={} chat_id={}: {}",
+                    rule.id,
+                    chat_id,
+                    exc,
+                )
+
+
 async def build_morning_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
 ) -> dict[str, Any]:
-    """
-    Full §9.5 pipeline: ingest → parse → aggregate → markup → draft → notify.
-    """
+    """Ingest channel prices, parse, store today's snapshot. Do not publish."""
     settings = get_settings()
     channel_new, degraded = await ingest_channel_prices(session)
     await parse_pending_raw_prices(session)
     aggregated = await aggregate_today(session)
+    rules = await load_rules(session)
+    unknown_rules = await collect_unknown_markup_products(session, aggregated, rules)
     rules = await load_rules(session)
     draft_items = build_draft_items(aggregated, rules, settings.default_markup)
 
@@ -554,43 +641,29 @@ async def build_morning_price(
             telegram=telegram,
         )
 
-    if not draft_items:
-        await send_admin_alert(
-            render_template("alert_morning_price_empty"),
-            telegram=telegram,
-        )
-        return {
-            "status": "ok",
-            "draft_id": None,
-            "items": 0,
-            "raw_prices_new": channel_new,
-            "degraded": degraded,
-        }
-
-    existing = await _find_identical_pending_draft(session, draft_items)
-    if existing is not None:
-        return {
-            "status": "ok",
-            "draft_id": existing.id,
-            "items": len(draft_items),
-            "raw_prices_new": channel_new,
-            "degraded": degraded,
-            "reused": True,
-        }
-
-    draft = PriceListDraft(items=draft_items, status="pending")
-    session.add(draft)
-    await session.flush()
-
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
-        "draft_id": draft.id,
+        "draft_id": None,
         "items": len(draft_items),
         "raw_prices_new": channel_new,
         "degraded": degraded,
-        "reused": False,
-        "approval_items_block": format_draft_lines(draft_items),
+        "markup_prompt_rule_ids": [int(rule.id) for rule in unknown_rules],
     }
+    if not draft_items and not unknown_rules:
+        return result
+
+    if draft_items:
+        existing = await _find_identical_pending_draft(session, draft_items)
+        if existing is not None:
+            result["draft_id"] = existing.id
+            result["reused"] = True
+        else:
+            draft = PriceListDraft(items=draft_items, status="stored")
+            session.add(draft)
+            await session.flush()
+            result["draft_id"] = draft.id
+            result["reused"] = False
+    return result
 
 
 async def notify_morning_price_draft(

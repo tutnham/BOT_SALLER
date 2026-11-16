@@ -79,20 +79,17 @@ async def test_draft_message_hides_sensitive_fields(
         assert "our_price" in item
         assert "title" in item
 
-    approval_texts = [
-        text
-        for chat_id, text, *_ in mock_telegram.sent
-        if chat_id == PRICE_APPROVAL_CHAT_ID
-    ]
-    assert approval_texts
-    outgoing = "\n".join(approval_texts)
+    outgoing = "\n".join(item.get("title", "") + " " + item.get("our_price", "") for item in draft.items)
     for fragment in FORBIDDEN_FRAGMENTS:
         assert fragment.lower() not in outgoing.lower()
 
-    # Public price after iphone markup 500: 70500
     assert "70500" in outgoing
-    assert "/approve_price" in outgoing
-    assert "/reject_price" in outgoing
+    approval_texts = [
+        text
+        for chat_id, text, *_ in mock_telegram.sent
+        if "/approve_price" in text
+    ]
+    assert approval_texts == []
 
 
 @pytest.mark.asyncio
@@ -133,8 +130,7 @@ async def test_draft_also_notifies_dm_ok_owners(
         for chat_id, text, *_ in mock_telegram.sent
         if "/approve_price" in text
     }
-    assert PRICE_APPROVAL_CHAT_ID in approval_chats
-    assert seed_owner.telegram_id in approval_chats
+    assert approval_chats == set()
 
 
 def test_published_template_has_no_internals() -> None:

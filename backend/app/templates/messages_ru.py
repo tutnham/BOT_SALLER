@@ -117,6 +117,11 @@ TEMPLATES: dict[str, str] = {
     "markup_rule_created": (
         "Правило «{rule_label}» создано: +{amount} ₽ к закупке."
     ),
+    "markup_new_product_prompt": (
+        "В прайсе новая позиция: «{rule_label}».\n"
+        "Какую наценку поставить? Сейчас правила нет, цена в расчёт не пойдёт, "
+        "пока не выберете сумму."
+    ),
     "supplier_categories_list": "Категории поставщиков:\n{lines}",
     "supplier_category_updated": "Поставщик #{supplier_id}: категории {categories}",
     "bind_ok": "Сообщение привязано к заявке #{request_id}",
@@ -580,6 +585,9 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name == "admin_price_channels":
         kwargs.setdefault("channels_block", "Список пуст.")
+
+    if name == "markup_new_product_prompt":
+        kwargs.setdefault("rule_label", "товар")
 
     if name == "admin_price_channel_unbound":
         kwargs.setdefault("count", 0)

@@ -219,6 +219,40 @@ def slug_rule_key(phrase: str) -> str:
     return key[:120]
 
 
+async def ensure_markup_rule_for_product(
+    session: AsyncSession,
+    *,
+    phrase: str,
+    brand: str | None = None,
+) -> MarkupRule:
+    """Create an active rule for a parsed product if missing. Markup may be empty."""
+    pattern = phrase_to_model_pattern(phrase)
+    rule_key = slug_rule_key(phrase)
+    existing = await session.scalar(
+        select(MarkupRule).where(MarkupRule.rule_key == rule_key)
+    )
+    if existing is not None:
+        if not existing.model_pattern:
+            existing.model_pattern = pattern
+            invalidate_markup_rules_cache()
+            await session.flush()
+        return existing
+
+    rule = MarkupRule(
+        category=rule_key,
+        rule_key=rule_key,
+        brand=brand or "*",
+        model_pattern=pattern,
+        markup_fixed=None,
+        priority=60,
+        active=True,
+    )
+    session.add(rule)
+    invalidate_markup_rules_cache()
+    await session.flush()
+    return rule
+
+
 async def create_markup_rule(
     session: AsyncSession,
     *,

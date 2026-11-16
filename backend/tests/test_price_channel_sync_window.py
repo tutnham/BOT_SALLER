@@ -7,16 +7,31 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.handlers.admin_menu import _is_listed_price_channel
 from app.services.admin_service import (
     bind_supplier_price_channel,
     unbind_supplier_price_channel,
     unbind_suppliers_by_price_channel,
 )
+from app.services.parser_client import ParserChannel
 from app.services.price_service import (
     CHANNEL_PRICE_CONTENT_TYPES,
     _today_start_utc,
     channel_price_sync_from,
 )
+
+
+def test_price_channels_list_includes_legacy_monitoring_purpose() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-100123,
+        username=None,
+        title="-100123",
+        purpose="monitoring",
+        status="active",
+        is_active=True,
+    )
+    assert _is_listed_price_channel(channel) is True
 
 
 def test_channel_price_content_types_include_caption_media() -> None:

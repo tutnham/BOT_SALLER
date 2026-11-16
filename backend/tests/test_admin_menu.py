@@ -1155,8 +1155,8 @@ async def test_price_channels_list_hides_non_price_purpose(
         mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
     )
     assert "Prices" in list_text
-    assert "News" not in list_text
-    assert not any("News" in label for label in labels)
+    assert "News" in list_text
+    assert any("News" in label for label in labels)
 
 
 @pytest.mark.asyncio

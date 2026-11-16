@@ -22,6 +22,13 @@ pytestmark = pytest.mark.acceptance
 
 
 def test_draft_hides_supplier_purchase_and_markup() -> None:
+    rule = MarkupRule(
+        category="iphone_17_pro",
+        rule_key="iphone_17_pro",
+        model_pattern=r"iphone\s+17\s+pro",
+        markup_fixed=Decimal("800"),
+        active=True,
+    )
     items = build_draft_items(
         [
             {
@@ -35,7 +42,7 @@ def test_draft_hides_supplier_purchase_and_markup() -> None:
                 "currency": "RUB",
             }
         ],
-        [],
+        [rule],
         Decimal("500"),
     )
     assert len(items) == 1
@@ -44,6 +51,26 @@ def test_draft_hides_supplier_purchase_and_markup() -> None:
     assert "markup" not in blob
     assert "80000" not in blob
     assert Decimal(items[0]["our_price"]) > Decimal("80000")
+
+
+def test_draft_skips_products_without_markup_rule() -> None:
+    items = build_draft_items(
+        [
+            {
+                "sku_key": "dyson-v15",
+                "model": "Dyson V15",
+                "storage": None,
+                "color": None,
+                "region": None,
+                "sim": None,
+                "min_price": Decimal("40000"),
+                "currency": "RUB",
+            }
+        ],
+        [],
+        Decimal("500"),
+    )
+    assert items == []
 
 
 @pytest.mark.asyncio

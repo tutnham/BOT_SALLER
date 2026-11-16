@@ -1562,9 +1562,7 @@ async def _send_supplier_channel_list(
         )
         return
 
-    price_channels = [
-        ch for ch in channels if ch.purpose == "supplier_price_source"
-    ]
+    price_channels = [ch for ch in channels if _is_listed_price_channel(ch)]
     rows: list[list[dict[str, Any]]] = [
         [menu_button("Не привязан / отвязать", "supplier_unbind_ch", supplier_id)]
     ]
@@ -1719,6 +1717,11 @@ async def _send_bind_supplier_list(
     )
 
 
+def _is_listed_price_channel(ch: parser_client.ParserChannel) -> bool:
+    """Admin «Каналы прайсов» shows every live parser row, including legacy monitoring."""
+    return bool(ch.is_active)
+
+
 def _price_channel_label(ch: parser_client.ParserChannel) -> str:
     name = ch.title or ch.username or ch.channel_id or ch.id
     if ch.status == "active" and ch.channel_id is not None:
@@ -1758,11 +1761,7 @@ async def _send_price_channels(
     if extra_channel is not None and all(ch.id != extra_channel.id for ch in channels):
         channels = [*channels, extra_channel]
 
-    visible = [
-        ch
-        for ch in channels
-        if ch.is_active and ch.purpose == "supplier_price_source"
-    ]
+    visible = [ch for ch in channels if _is_listed_price_channel(ch)]
     lines = [_price_channel_label(ch) for ch in visible]
     channels_block = "\n".join(lines) if lines else "Список пуст."
 

@@ -46,7 +46,7 @@ class ParserChannel(BaseModel):
     channel_id: int | None = None
     username: str | None = None
     title: str | None = None
-    purpose: str
+    purpose: str = "supplier_price_source"
     status: str = "active"
     is_active: bool = True
     error_text: str | None = None
@@ -243,8 +243,8 @@ async def list_channels(
             continue
         try:
             channels.append(ParserChannel.model_validate(item))
-        except ValidationError:
-            logger.warning("Skipping invalid parser channel")
+        except ValidationError as exc:
+            logger.warning("Skipping invalid parser channel: {}", exc)
     return channels
 
 

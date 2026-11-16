@@ -28,12 +28,12 @@ class ChannelOut(BaseModel):
     channel_id: int | None
     username: str | None
     title: str | None
-    purpose: str
-    status: str
+    purpose: ParserChannelPurpose
+    status: ParserChannelStatus
     is_active: bool
     error_text: str | None = None
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "use_enum_values": True}
 
 
 class ChannelCreate(BaseModel):

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Owner
+from app.db.models import MarkupRule, Owner
 from app.services.billing_service import (
     build_llm_billing_reminder_text,
     period_key_for_datetime,
@@ -18,7 +18,7 @@ from app.services.billing_service import (
     release_reminder,
     reserve_reminder,
 )
-from app.services.price_service import build_morning_price, notify_morning_price_draft
+from app.services.price_service import build_morning_price, notify_unknown_markup_rules
 from app.services.recheck_service import send_due_rechecks
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
@@ -48,18 +48,24 @@ async def run_morning_price(
     telegram: TelegramClientProtocol,
 ) -> dict[str, Any]:
     result = await build_morning_price(session, telegram)
-    items_block = result.pop("approval_items_block", None)
-    draft_id = result.get("draft_id")
-    reused = bool(result.get("reused"))
-    # Commit draft before Telegram notify so timeouts cannot orphan draft_id.
+    prompt_ids = [int(rule_id) for rule_id in result.pop("markup_prompt_rule_ids", [])]
     await session.commit()
-    if draft_id is not None and not reused and items_block is not None:
-        await notify_morning_price_draft(
+    if prompt_ids:
+        rules: list[MarkupRule] = []
+        for rule_id in prompt_ids:
+            rule = await session.get(MarkupRule, rule_id)
+            if rule is not None:
+                rules.append(rule)
+        destinations = await _resolve_owner_destinations(
             session,
-            telegram,
-            draft_id=int(draft_id),
-            items_block=str(items_block),
+            fallback_chat_id=get_settings().admin_alert_chat_id,
         )
+        if destinations and rules:
+            await notify_unknown_markup_rules(
+                telegram,
+                chat_ids=destinations,
+                rules=rules,
+            )
     return result
 
 

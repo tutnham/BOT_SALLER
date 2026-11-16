@@ -87,7 +87,7 @@ async def test_morning_price_happy_path_manual_and_channel(
 
     draft = await db_session.get(PriceListDraft, body["draft_id"])
     assert draft is not None
-    assert draft.status == "pending"
+    assert draft.status == "stored"
     assert isinstance(draft.items, list)
     assert draft.items[0]["our_price"]
     assert "supplier" not in str(draft.items).lower()
@@ -98,17 +98,7 @@ async def test_morning_price_happy_path_manual_and_channel(
     approval_msgs = [
         text for chat_id, text, markup in mock_telegram.sent if "/approve_price" in text
     ]
-    assert approval_msgs
-    markup = next(markup for _, text, markup in mock_telegram.sent if "/approve_price" in text)
-    callbacks = [
-        btn["callback_data"]
-        for row in (markup or {}).get("inline_keyboard", [])
-        for btn in row
-        if btn.get("callback_data")
-    ]
-    assert any(data.startswith("price:approve:") for data in callbacks)
-    assert any(data.startswith("price:reject:") for data in callbacks)
-    assert all(len(data.encode("utf-8")) <= 64 for data in callbacks)
+    assert approval_msgs == []
 
 
 @pytest.mark.asyncio
