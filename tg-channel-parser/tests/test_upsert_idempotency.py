@@ -182,3 +182,43 @@ async def test_upsert_other_marks_post_failed() -> None:
     assert result is new_post
     assert new_post.error_text == "unsupported_media_type"
     assert new_post.status == ParserStatus.failed
+
+
+@pytest.mark.asyncio
+async def test_upsert_channel_reactivates_soft_deleted_row() -> None:
+    """ON CONFLICT по channel_id обязан восстанавливать is_active=true."""
+    from sqlalchemy.dialects import postgresql
+
+    from app.db.models import ParserChannelPurpose
+    from app.mtproto.upsert import upsert_channel
+
+    row = SimpleNamespace(channel_id=-100123, is_active=True)
+    captured: dict[str, str] = {}
+
+    async def execute(stmt: Any) -> Any:
+        captured["sql"] = str(
+            stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        return _ReturningResult(row)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute)
+    session.flush = AsyncMock()
+
+    result = await upsert_channel(
+        session,
+        channel_id=-100123,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+    )
+    assert result is row
+    sql = captured["sql"].lower()
+    assert "on conflict (channel_id) do update set" in sql
+    set_clause = sql.split("do update set", 1)[1]
+    assert "is_active" in set_clause
+    insert_values = sql.split("on conflict", 1)[0]
+    assert "is_active" in insert_values

@@ -678,12 +678,161 @@ async def test_price_channels_list_shows_real_statuses(
     assert any(label.startswith("✅") and "Active" in label for label in labels)
     assert any(label.startswith("⏳") and "Pending" in label for label in labels)
     assert any(label.startswith("❌") and "Failed" in label for label in labels)
-    assert not any("Deleted" in label for label in labels)
+    # мягко удалённый канал видим с пометкой и кнопкой восстановления
+    assert any(
+        label.startswith("🗑") and "Deleted" in label and "(удалён)" in label
+        for label in labels
+    )
+    assert labels.count("Удалить") == 3
+    assert labels.count("Восстановить") == 1
     list_text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
     assert "Active" in list_text
     assert "Pending" in list_text
     assert "Failed" in list_text
-    assert "Deleted" not in list_text
+    assert "Deleted" in list_text
+    assert "(удалён)" in list_text
+
+
+@pytest.mark.asyncio
+async def test_price_channel_restore_callback(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added: list[str] = []
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(4, -100444, "deleted_ch", "Deleted", False, status="failed")
+        ]
+
+    async def _add(handle: str) -> object:
+        added.append(handle)
+        return _FakeParserChannel(4, -100444, "deleted_ch", "Deleted", True, status="pending")
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "add_channel", _add)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_restore",
+            CallbackData(namespace="admin", action="price_channel_restore", arg=4),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    assert added == ["@deleted_ch"]
+    last_text = (
+        mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    )
+    assert "восстанавливается" in last_text
+
+
+@pytest.mark.asyncio
+async def test_price_channel_restore_numeric_fallback(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added: list[str] = []
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(5, -100555, None, "Numeric", False, status="failed")
+        ]
+
+    async def _add(handle: str) -> object:
+        added.append(handle)
+        return _FakeParserChannel(5, -100555, None, "Numeric", True, status="pending")
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "add_channel", _add)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_restore_num",
+            CallbackData(namespace="admin", action="price_channel_restore", arg=5),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    assert added == ["-100555"]
+
+
+@pytest.mark.asyncio
+async def test_price_channel_restore_error_shows_friendly_message(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(4, -100444, "deleted_ch", "Deleted", False, status="failed")
+        ]
+
+    async def _add(handle: str) -> object:
+        raise parser_client.ParserClientError("parser_transport_error:connection refused")
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "add_channel", _add)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_restore_err",
+            CallbackData(namespace="admin", action="price_channel_restore", arg=4),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    last_text = (
+        mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    )
+    assert "Не удалось восстановить канал" in last_text
+    assert "parser_transport_error" not in last_text
+
+
+@pytest.mark.asyncio
+async def test_supplier_channel_pick_excludes_deleted_channels(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(1, -100111, "active_ch", "Active", True, status="active"),
+            _FakeParserChannel(4, -100444, "deleted_ch", "Deleted", False, status="failed"),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_sup_ch",
+            CallbackData(namespace="admin", action="supplier_channel", arg=1),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    labels = _button_labels(markup)
+    assert any("active_ch" in label for label in labels)
+    assert not any("deleted_ch" in label for label in labels)
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ def _install_pyrogram_stub() -> None:
     errors = ModuleType("pyrogram.errors")
     errors.FloodWait = Exception
     errors.SessionPasswordNeeded = Exception
+    errors.PeerIdInvalid = type("PeerIdInvalid", (Exception,), {})
     sys.modules["pyrogram"] = pyrogram
     sys.modules["pyrogram.errors"] = errors
     sys.modules["pyrogram.filters"] = pyrogram.filters
@@ -27,6 +28,8 @@ def _install_pyrogram_stub() -> None:
 
 
 _install_pyrogram_stub()
+
+from pyrogram.errors import PeerIdInvalid  # noqa: E402
 
 from app.db.models import (  # noqa: E402
     ParserChannel,
@@ -37,6 +40,21 @@ from app.db.models import (  # noqa: E402
     ParserTaskType,
 )
 from app.worker import task_worker  # noqa: E402
+
+
+class _EmptyResult:
+    """Результат select без строк (поиск дубликата channel_id не нашёл совпадений)."""
+
+    def scalar_one_or_none(self):
+        return None
+
+
+class _OneResult:
+    def __init__(self, value) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
 
 
 @pytest.mark.asyncio
@@ -157,6 +175,9 @@ async def test_resolve_numeric_channel_passes_int_to_get_chat() -> None:
             assert ident == 1
             return channel
 
+        async def execute(self, stmt):
+            return _EmptyResult()
+
         async def flush(self) -> None:
             return None
 
@@ -204,6 +225,9 @@ async def test_resolve_numeric_handle_from_title_when_channel_id_pending() -> No
     class _Session:
         async def get(self, model, ident):
             return channel
+
+        async def execute(self, stmt):
+            return _EmptyResult()
 
         async def flush(self) -> None:
             return None
@@ -270,6 +294,9 @@ async def test_resolve_backfill_failure_enqueues_retry_task() -> None:
 
         async def get(self, model, ident):
             return channel
+
+        async def execute(self, stmt):
+            return _EmptyResult()
 
         async def flush(self) -> None:
             return None
@@ -522,3 +549,254 @@ async def test_process_claimed_task_dispatches_backfill() -> None:
 
     backfill_mock.assert_awaited_once()
     assert fake_session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_positive_id_retries_with_canonical_prefix() -> None:
+    """Положительный ID без -100: PeerIdInvalid → повтор с каноническим префиксом."""
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="1234567890",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+    seen: list[object] = []
+
+    class _Chat:
+        id = -1001234567890
+        username = "price"
+        title = "Price"
+
+    class _Client:
+        async def get_chat(self, ref: object) -> _Chat:
+            seen.append(ref)
+            if ref == 1234567890:
+                raise PeerIdInvalid()
+            return _Chat()
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def execute(self, stmt):
+            return _EmptyResult()
+
+        async def flush(self) -> None:
+            return None
+
+    with patch.object(task_worker, "backfill_channel_on_activate", AsyncMock()):
+        await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert seen == [1234567890, -1001234567890]
+    assert channel.channel_id == -1001234567890
+    assert channel.status == ParserChannelStatus.active
+    assert task.status == ParserStatus.processed
+
+
+@pytest.mark.asyncio
+async def test_resolve_non_peer_error_does_not_try_canonical() -> None:
+    """Не-PeerIdInvalid ошибка не запускает эвристику -100: обычный retry."""
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="1234567890",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+    seen: list[object] = []
+
+    class _Client:
+        async def get_chat(self, ref: object):
+            seen.append(ref)
+            raise RuntimeError("network down")
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert seen == [1234567890]
+    assert task.status == ParserStatus.new
+    assert task.error_text is not None
+    assert task.error_text.startswith("resolve_error:RuntimeError")
+    assert channel.status == ParserChannelStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_resolve_duplicate_channel_merges_and_reactivates_existing() -> None:
+    """Коллизия UNIQUE channel_id: дубликат помечается, существующая строка реактивируется."""
+    existing = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.failed,
+        is_active=False,
+        error_text="deleted_by_admin",
+    )
+    duplicate = ParserChannel(
+        id=2,
+        channel_id=None,
+        username="price_dup",
+        title=None,
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=2,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+
+    class _Chat:
+        id = -1001234567890
+        username = "price"
+        title = "Price"
+
+    class _Client:
+        async def get_chat(self, ref: object) -> _Chat:
+            return _Chat()
+
+    class _Session:
+        async def get(self, model, ident):
+            return duplicate
+
+        async def execute(self, stmt):
+            return _OneResult(existing)
+
+        async def flush(self) -> None:
+            return None
+
+    backfill_mock = AsyncMock()
+    with patch.object(task_worker, "backfill_channel_on_activate", backfill_mock):
+        await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert duplicate.status == ParserChannelStatus.failed
+    assert duplicate.error_text == "duplicate_of_channel:1"
+    assert duplicate.channel_id is None
+    assert task.status == ParserStatus.processed
+    assert existing.is_active is True
+    assert existing.status == ParserChannelStatus.active
+    assert existing.error_text is None
+    backfill_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recover_crashed_task_retries_via_fail_or_retry() -> None:
+    task = ParserTask(
+        id=55,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+
+    class FakeSession:
+        committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, model, ident):
+            return task
+
+        async def commit(self):
+            self.committed = True
+
+    fake_session = FakeSession()
+
+    class FakeFactory:
+        def __call__(self):
+            return fake_session
+
+    with patch.object(task_worker, "get_session_factory", return_value=FakeFactory()):
+        await task_worker._recover_crashed_task(55, "processor_crash:RuntimeError:boom")
+
+    assert fake_session.committed is True
+    assert task.status == ParserStatus.new
+    assert task.error_text == "processor_crash:RuntimeError:boom"
+    assert task.scheduled_at > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_survives_processor_crash() -> None:
+    """Исключение обработчика не убивает цикл: задача восстанавливается, цикл продолжается."""
+
+    class _Stop(BaseException):
+        pass
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def commit(self):
+            return None
+
+    fake_session = FakeSession()
+
+    class FakeFactory:
+        def __call__(self):
+            return fake_session
+
+    client = MagicMock()
+    claim_mock = AsyncMock(side_effect=[55, _Stop()])
+    process_mock = AsyncMock(side_effect=RuntimeError("boom"))
+    recover_mock = AsyncMock()
+    with (
+        patch.object(task_worker, "get_session_factory", return_value=FakeFactory()),
+        patch.object(task_worker, "reclaim_stale_processing", AsyncMock(return_value=0)),
+        patch.object(task_worker, "_claim_next_task_id", claim_mock),
+        patch.object(task_worker, "_process_claimed_task", process_mock),
+        patch.object(task_worker, "_recover_crashed_task", recover_mock),
+    ):
+        with pytest.raises(_Stop):
+            await task_worker.run_task_poll_loop(client)
+
+    process_mock.assert_awaited_once_with(55, client)
+    recover_mock.assert_awaited_once()
+    recover_args = recover_mock.await_args.args
+    assert recover_args[0] == 55
+    assert "processor_crash:RuntimeError" in recover_args[1]
+    # цикл дошёл до второй итерации (повторный claim), а не умер на первой
+    assert claim_mock.await_count == 2

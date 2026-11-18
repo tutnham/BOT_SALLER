@@ -429,8 +429,9 @@ TEMPLATES: dict[str, str] = {
     "admin_await_supplier_name": "Введите название нового поставщика:",
     "admin_await_rename": "Введите новое название поставщика:",
     "admin_await_channel_handle": (
-        "Введите username или ID канала с прайсами:\n"
-        "Пример: @supplier_prices или -1001234567890"
+        "Введите @username или ID канала с прайсами:\n"
+        "Пример: @supplier_prices или -1001234567890\n"
+        "Числовой ID — полный, в формате -100… (как в Telegram Bot API)."
     ),
     "admin_need_name": "Название не может быть пустым. Введите ещё раз:",
     "admin_need_channel": "Канал не может быть пустым. Введите ещё раз:",
@@ -448,6 +449,13 @@ TEMPLATES: dict[str, str] = {
     ),
     "admin_price_channel_delete_error": (
         "Не удалось удалить канал. Проверьте доступность сервиса парсера."
+    ),
+    "admin_price_channel_restored": (
+        "Канал {label} восстанавливается. Дождитесь статуса ✅ в списке каналов."
+    ),
+    "admin_price_channel_restore_error": (
+        "Не удалось восстановить канал. Проверьте доступность сервиса парсера "
+        "или добавьте канал заново через «➕ Добавить канал»."
     ),
     "admin_price_channel_unbound": (
         "Канал удалён. Снята привязка у поставщиков: {count}."

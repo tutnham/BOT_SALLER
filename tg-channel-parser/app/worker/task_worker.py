@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from pyrogram.errors import PeerIdInvalid
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -31,6 +32,7 @@ from app.db.session import get_session_factory
 from app.mtproto.channel_backfill import backfill_channel_on_activate
 from app.mtproto.channel_handle import mtproto_chat_ref
 from app.mtproto.flood_wait import with_flood_wait
+from app.mtproto.upsert import get_channel_by_tg_id
 from app.storage.local_storage import LocalStorage, guess_ext, media_key
 from app.utils.hashing import sha256_file
 
@@ -183,22 +185,53 @@ async def process_resolve_channel(
     try:
         chat = await with_flood_wait(lambda: client.get_chat(target))
     except Exception as exc:
-        await _fail_or_retry(
-            session,
-            task,
-            None,
-            f"resolve_error:{type(exc).__name__}:{exc}",
-        )
-        if task.status == ParserStatus.failed:
-            channel.status = ParserChannelStatus.failed
-            channel.error_text = task.error_text
-        return
+        chat = None
+        # Эвристика: положительный ID канала без префикса -100 (формат Bot API)
+        if isinstance(target, int) and target > 0 and isinstance(exc, PeerIdInvalid):
+            canonical = int(f"-100{target}")
+            try:
+                chat = await with_flood_wait(lambda: client.get_chat(canonical))
+            except Exception:
+                chat = None
+        if chat is None:
+            await _fail_or_retry(
+                session,
+                task,
+                None,
+                f"resolve_error:{type(exc).__name__}:{exc}",
+            )
+            if task.status == ParserStatus.failed:
+                channel.status = ParserChannelStatus.failed
+                channel.error_text = task.error_text
+            return
 
     if chat is None:
         await _fail_or_retry(session, task, None, "chat_not_found")
         if task.status == ParserStatus.failed:
             channel.status = ParserChannelStatus.failed
             channel.error_text = task.error_text
+        return
+
+    # Коллизия UNIQUE channel_id: тот же канал уже зарегистрирован другой строкой
+    # (например, добавлен и по @username, и по числовому ID).
+    existing = await get_channel_by_tg_id(session, int(chat.id))
+    if existing is not None and existing.id != channel.id:
+        existing.is_active = True
+        existing.status = ParserChannelStatus.active
+        existing.error_text = None
+        existing.username = getattr(chat, "username", None) or existing.username
+        existing.title = getattr(chat, "title", None) or existing.title
+        channel.status = ParserChannelStatus.failed
+        channel.error_text = f"duplicate_of_channel:{existing.id}"
+        task.status = ParserStatus.processed
+        task.error_text = channel.error_text
+        await session.flush()
+        logger.warning(
+            "Resolve duplicate: channel row {} merged into {} (tg_id={})",
+            channel.id,
+            existing.id,
+            chat.id,
+        )
         return
 
     channel.channel_id = chat.id
@@ -385,6 +418,25 @@ async def _process_claimed_task(task_id: int, client: Any) -> None:
         await session.commit()
 
 
+async def _recover_crashed_task(task_id: int, error: str) -> None:
+    """Пометить задачу, уронившую обработчик, через retry/failed в отдельной сессии."""
+    factory = get_session_factory()
+    try:
+        async with factory() as session:
+            task = await session.get(ParserTask, task_id)
+            if task is None or task.status != ParserStatus.processing:
+                return
+            post = (
+                await session.get(ParserPost, task.post_id)
+                if task.post_id is not None
+                else None
+            )
+            await _fail_or_retry(session, task, post, error)
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to recover crashed task_id={}", task_id)
+
+
 async def run_task_poll_loop(client: Any) -> None:
     """Claim and process parser_tasks using the shared MTProto client."""
     settings = get_settings()
@@ -399,7 +451,15 @@ async def run_task_poll_loop(client: Any) -> None:
         if task_id is None:
             await asyncio.sleep(settings.task_poll_interval_seconds)
             continue
-        await _process_claimed_task(task_id, client)
+        try:
+            await _process_claimed_task(task_id, client)
+        except Exception as exc:
+            # Ошибка одного обработчика не должна убивать весь воркер:
+            # иначе каналы навсегда остаются pending при живом heartbeat.
+            logger.exception("Task {} crashed the processor", task_id)
+            await _recover_crashed_task(
+                task_id, f"processor_crash:{type(exc).__name__}:{exc}"
+            )
 
 
 def main() -> None:

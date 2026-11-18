@@ -145,7 +145,15 @@ async def create_channel(
         existing.is_active = True
         existing.error_text = None
         _enqueue_resolve_task(db, existing)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            # Например, uq_parser_channels_pending_username: уже есть pending-строка
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=_integrity_conflict_detail(exc),
+            ) from None
         await db.commit()
         return existing
 

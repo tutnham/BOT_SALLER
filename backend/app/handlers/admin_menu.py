@@ -997,6 +997,44 @@ async def _dispatch_callback(
         )
         return
 
+    if action == "price_channel_restore":
+        parser_pk = int(cd.arg)
+        try:
+            channels = await parser_client.list_channels()
+            matched = next((ch for ch in channels if ch.id == parser_pk), None)
+            if matched is None:
+                raise parser_client.ParserClientError("parser_channel_not_found")
+            if matched.username:
+                handle = f"@{matched.username}"
+            elif matched.channel_id is not None:
+                handle = str(matched.channel_id)
+            else:
+                handle = (matched.title or "").strip()
+            if not handle:
+                raise parser_client.ParserClientError("parser_channel_handle_missing")
+            restored = await parser_client.add_channel(handle)
+        except parser_client.ParserClientError:
+            await _send_or_edit(
+                telegram,
+                chat_id=chat_id,
+                text=render_template("admin_price_channel_restore_error"),
+                message_id=message_id,
+                markup=inline_keyboard([[menu_button("К каналам", "price_channels")]]),
+            )
+            return
+        notice = render_template(
+            "admin_price_channel_restored",
+            label=str(restored.title or restored.username or restored.channel_id or handle),
+        )
+        await _send_price_channels(
+            session,
+            telegram,
+            chat_id,
+            message_id=message_id,
+            notice=notice,
+        )
+        return
+
     if action == "purge_confirm":
         deleted = await purge_service.hard_delete_request(session, cd.arg)
         text = render_template(
@@ -1562,7 +1600,9 @@ async def _send_supplier_channel_list(
         )
         return
 
-    price_channels = [ch for ch in channels if _is_listed_price_channel(ch)]
+    price_channels = [
+        ch for ch in channels if _is_listed_price_channel(ch) and ch.is_active
+    ]
     rows: list[list[dict[str, Any]]] = [
         [menu_button("Не привязан / отвязать", "supplier_unbind_ch", supplier_id)]
     ]
@@ -1718,12 +1758,14 @@ async def _send_bind_supplier_list(
 
 
 def _is_listed_price_channel(ch: parser_client.ParserChannel) -> bool:
-    """Admin «Каналы прайсов» shows every live parser row, including legacy monitoring."""
-    return bool(ch.is_active)
+    """Admin «Каналы прайсов» shows live rows plus soft-deleted/failed ones for restore."""
+    return bool(ch.is_active) or ch.status == "failed"
 
 
 def _price_channel_label(ch: parser_client.ParserChannel) -> str:
     name = ch.title or ch.username or ch.channel_id or ch.id
+    if not ch.is_active:
+        return f"🗑 {name} (удалён)"
     if ch.status == "active" and ch.channel_id is not None:
         icon = "✅"
     elif ch.status == "failed":
@@ -1768,10 +1810,15 @@ async def _send_price_channels(
     rows: list[list[dict[str, Any]]] = []
     for ch in visible:
         label = _price_channel_label(ch)
+        action_button = (
+            menu_button("Удалить", "price_channel_delete", ch.id)
+            if ch.is_active
+            else menu_button("Восстановить", "price_channel_restore", ch.id)
+        )
         rows.append(
             [
                 button(label, cd=_cb("noop", arg=ch.id)),
-                menu_button("Удалить", "price_channel_delete", ch.id),
+                action_button,
             ]
         )
     rows.append(

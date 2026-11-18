@@ -50,6 +50,12 @@ async def upsert_channel(
     status: ParserChannelStatus = ParserChannelStatus.active,
     error_text: str | None = None,
 ) -> ParserChannel:
+    """Register or reactivate a channel by Telegram channel_id.
+
+    Повторная регистрация мягко удалённой строки (is_active=false) обязана
+    восстанавливать is_active=true: иначе канал невидим в меню бота и не
+    попадает в realtime-фильтр листнера.
+    """
     stmt = (
         insert(ParserChannel)
         .values(
@@ -59,6 +65,7 @@ async def upsert_channel(
             purpose=purpose,
             status=status,
             error_text=error_text,
+            is_active=True,
         )
         .on_conflict_do_update(
             index_elements=[ParserChannel.channel_id],
@@ -68,6 +75,7 @@ async def upsert_channel(
                 "purpose": purpose,
                 "status": status,
                 "error_text": error_text,
+                "is_active": True,
             },
         )
         .returning(ParserChannel)
