@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import MarkupRule, PriceListDraft, Supplier
 from app.services.price_service import insert_raw_price
 from app.templates.messages_ru import render_template
-from tests.conftest import MockLLMClient
+from tests.conftest import PRICE_APPROVAL_CHAT_ID, MockLLMClient
 
 FORBIDDEN_FRAGMENTS = (
     "Supplier One",
@@ -89,7 +89,11 @@ async def test_draft_message_hides_sensitive_fields(
         for chat_id, text, *_ in mock_telegram.sent
         if "/approve_price" in text
     ]
-    assert approval_texts == []
+    assert approval_texts
+    for text in approval_texts:
+        lowered = text.lower()
+        for fragment in FORBIDDEN_FRAGMENTS:
+            assert fragment.lower() not in lowered
 
 
 @pytest.mark.asyncio
@@ -130,7 +134,7 @@ async def test_draft_also_notifies_dm_ok_owners(
         for chat_id, text, *_ in mock_telegram.sent
         if "/approve_price" in text
     }
-    assert approval_chats == set()
+    assert approval_chats == {PRICE_APPROVAL_CHAT_ID, seed_owner.telegram_id}
 
 
 def test_published_template_has_no_internals() -> None:

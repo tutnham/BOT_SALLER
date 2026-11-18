@@ -87,7 +87,7 @@ async def test_morning_price_happy_path_manual_and_channel(
 
     draft = await db_session.get(PriceListDraft, body["draft_id"])
     assert draft is not None
-    assert draft.status == "stored"
+    assert draft.status == "pending"
     assert isinstance(draft.items, list)
     assert draft.items[0]["our_price"]
     assert "supplier" not in str(draft.items).lower()
@@ -96,15 +96,27 @@ async def test_morning_price_happy_path_manual_and_channel(
     assert seed_channel_supplier.last_price_sync_at is not None
 
     approval_msgs = [
-        text for chat_id, text, markup in mock_telegram.sent if "/approve_price" in text
+        (text, markup)
+        for _chat_id, text, markup in mock_telegram.sent
+        if "/approve_price" in text
     ]
-    assert approval_msgs == []
+    assert len(approval_msgs) == 1
+    text, markup = approval_msgs[0]
+    assert f"#{body['draft_id']}" in text
+    labels = [
+        button.get("text")
+        for row in (markup or {}).get("inline_keyboard", [])
+        for button in row
+    ]
+    assert "✅ Утвердить" in labels
+    assert "❌ Отклонить" in labels
 
 
 @pytest.mark.asyncio
 async def test_morning_price_safe_rerun(
     webhook_client: AsyncClient,
     db_session: AsyncSession,
+    mock_telegram,
     mock_llm,
     seed_suppliers: list[Supplier],
     seed_markup_rules: list[MarkupRule],
@@ -148,3 +160,7 @@ async def test_morning_price_safe_rerun(
 
     raw_count = await db_session.scalar(select(func.count()).select_from(RawPrice))
     assert raw_count == 1
+    approval_msgs = [
+        text for _chat_id, text, _markup in mock_telegram.sent if "/approve_price" in text
+    ]
+    assert len(approval_msgs) == 1

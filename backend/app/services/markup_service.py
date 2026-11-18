@@ -183,6 +183,26 @@ async def update_rule_markup(
     return await update_rule_markup_by_id(session, rule.id, markup_rub)
 
 
+async def decline_unpriced_markup_rule(
+    session: AsyncSession,
+    rule_id: int,
+) -> str:
+    """Deactivate a new product rule that still has no markup.
+
+    Returns ``declined``, ``missing``, or ``already_priced``.
+    """
+    rule = await session.get(MarkupRule, rule_id)
+    if rule is None:
+        return "missing"
+    if rule.markup_fixed is not None:
+        return "already_priced"
+    rule.active = False
+    rule.updated_at = datetime.now(UTC)
+    invalidate_markup_rules_cache()
+    await session.flush()
+    return "declined"
+
+
 async def update_rule_markup_by_id(
     session: AsyncSession,
     rule_id: int,

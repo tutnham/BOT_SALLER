@@ -243,6 +243,27 @@ async def send_markup_edit(
     )
 
 
+async def decline_markup_prompt(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    rule_id: int,
+    telegram: TelegramClientProtocol,
+) -> None:
+    from app.services.markup_service import decline_unpriced_markup_rule
+
+    outcome = await decline_unpriced_markup_rule(session, rule_id)
+    rule = await session.get(MarkupRule, rule_id)
+    label = _markup_label(rule) if rule is not None else str(rule_id)
+    if outcome == "missing":
+        text = render_template("markup_rule_not_found", rule_key=rule_id)
+    elif outcome == "already_priced":
+        text = render_template("markup_product_already_priced", rule_label=label)
+    else:
+        text = render_template("markup_product_declined", rule_label=label)
+    await telegram.send_message(chat_id, text)
+
+
 async def apply_markup_choice(
     session: AsyncSession,
     *,

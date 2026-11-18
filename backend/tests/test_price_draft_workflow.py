@@ -55,7 +55,7 @@ async def test_draft_created_pending(
     draft_id = resp.json()["draft_id"]
     draft = await db_session.get(PriceListDraft, draft_id)
     assert draft is not None
-    assert draft.status == "stored"
+    assert draft.status == "pending"
     assert draft.approved_by is None
 
 

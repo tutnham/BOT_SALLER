@@ -335,6 +335,17 @@ async def _dispatch_callback(
         )
         return
 
+    if action == "mk_skip":
+        from app.handlers.owner_commands import decline_markup_prompt
+
+        await decline_markup_prompt(
+            session,
+            chat_id=chat_id,
+            rule_id=cd.arg,
+            telegram=telegram,
+        )
+        return
+
     if action == "mk_set":
         from decimal import Decimal
 

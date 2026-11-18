@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MarkupRule, Owner
+from app.db.models import MarkupRule, Owner, PriceListDraft
 from app.services.billing_service import (
     build_llm_billing_reminder_text,
     period_key_for_datetime,
@@ -18,7 +18,13 @@ from app.services.billing_service import (
     release_reminder,
     reserve_reminder,
 )
-from app.services.price_service import build_morning_price, notify_unknown_markup_rules
+from app.services.price_service import (
+    build_morning_price,
+    format_draft_lines,
+    notify_morning_price_draft,
+    notify_unknown_markup_rules,
+    resolve_price_draft_destinations,
+)
 from app.services.recheck_service import send_due_rechecks
 from app.services.report_service import build_report
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
@@ -49,17 +55,30 @@ async def run_morning_price(
 ) -> dict[str, Any]:
     result = await build_morning_price(session, telegram)
     prompt_ids = [int(rule_id) for rule_id in result.pop("markup_prompt_rule_ids", [])]
+    notify_draft = bool(result.pop("notify_draft", False))
+    draft_id = result.get("draft_id")
     await session.commit()
+    if notify_draft and draft_id is not None:
+        draft = await session.get(PriceListDraft, int(draft_id))
+        items = draft.items if draft is not None and isinstance(draft.items, list) else []
+        await notify_morning_price_draft(
+            session,
+            telegram,
+            draft_id=int(draft_id),
+            items_block=format_draft_lines(items),
+        )
     if prompt_ids:
         rules: list[MarkupRule] = []
         for rule_id in prompt_ids:
             rule = await session.get(MarkupRule, rule_id)
             if rule is not None:
                 rules.append(rule)
-        destinations = await _resolve_owner_destinations(
-            session,
-            fallback_chat_id=get_settings().admin_alert_chat_id,
-        )
+        destinations = await resolve_price_draft_destinations(session)
+        if not destinations:
+            destinations = await _resolve_owner_destinations(
+                session,
+                fallback_chat_id=get_settings().admin_alert_chat_id,
+            )
         if destinations and rules:
             await notify_unknown_markup_rules(
                 telegram,

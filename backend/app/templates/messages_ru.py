@@ -127,8 +127,14 @@ TEMPLATES: dict[str, str] = {
     ),
     "markup_new_product_prompt": (
         "В прайсе новая позиция: «{rule_label}».\n"
-        "Какую наценку поставить? Сейчас правила нет, цена в расчёт не пойдёт, "
-        "пока не выберете сумму."
+        "Добавить её в наценки? Выберите сумму или нажмите «Не добавлять».\n"
+        "Пока сумма не выбрана, позиция в прайс на утверждение не попадает."
+    ),
+    "markup_product_declined": (
+        "Позиция «{rule_label}» в наценки не добавлена."
+    ),
+    "markup_product_already_priced": (
+        "Для «{rule_label}» наценка уже выбрана."
     ),
     "supplier_categories_list": "Категории поставщиков:\n{lines}",
     "supplier_category_updated": "Поставщик #{supplier_id}: категории {categories}",

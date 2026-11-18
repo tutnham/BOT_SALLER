@@ -591,6 +591,7 @@ def _new_product_markup_keyboard(rule_id: int) -> dict[str, Any]:
                 for preset in (500, 800, 1000)
             ],
             [menu_button("Своя сумма", "mk_custom", rule_id)],
+            [menu_button("Не добавлять", "mk_skip", rule_id)],
         ]
     )
 
@@ -624,7 +625,7 @@ async def build_morning_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
 ) -> dict[str, Any]:
-    """Ingest channel prices, parse, store today's snapshot. Do not publish."""
+    """Ingest channel prices, parse, and queue a pending draft for owner approval."""
     settings = get_settings()
     channel_new, degraded = await ingest_channel_prices(session)
     await parse_pending_raw_prices(session)
@@ -650,6 +651,7 @@ async def build_morning_price(
         "raw_prices_new": channel_new,
         "degraded": degraded,
         "markup_prompt_rule_ids": [int(rule.id) for rule in unknown_rules],
+        "notify_draft": False,
     }
     if not draft_items and not unknown_rules:
         return result
@@ -659,12 +661,17 @@ async def build_morning_price(
         if existing is not None:
             result["draft_id"] = existing.id
             result["reused"] = True
+            # Старые снимки со статусом stored ещё никому не показывали.
+            if existing.status == "stored":
+                existing.status = "pending"
+                result["notify_draft"] = True
         else:
-            draft = PriceListDraft(items=draft_items, status="stored")
+            draft = PriceListDraft(items=draft_items, status="pending")
             session.add(draft)
             await session.flush()
             result["draft_id"] = draft.id
             result["reused"] = False
+            result["notify_draft"] = True
     return result
 
 
