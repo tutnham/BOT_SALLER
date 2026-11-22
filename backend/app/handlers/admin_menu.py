@@ -6,7 +6,8 @@ Telegram UI and callback data.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from app.config import get_settings
 from app.db.models import (
     Employee,
     PendingChat,
+    PriceListDraft,
     ProductCategory,
     RequestStatus,
     Supplier,
@@ -1046,6 +1048,21 @@ async def _dispatch_callback(
         )
         return
 
+    if action == "parser":
+        await _send_parser_screen(
+            session,
+            telegram,
+            chat_id,
+            tab=cd.arg,
+            page=cd.page,
+            message_id=message_id,
+        )
+        return
+
+    if action == "parser_run":
+        await _run_parser_morning_price(session, telegram, chat_id, cd.arg, message_id)
+        return
+
     if action == "purge_confirm":
         deleted = await purge_service.hard_delete_request(session, cd.arg)
         text = render_template(
@@ -1198,6 +1215,7 @@ async def _send_main_menu(
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],
+        [menu_button("Парсер", "parser")],
         [menu_button("Business", "business_status")],
         [menu_button("Ошибки системы", "dlq")],
     ]
@@ -1845,6 +1863,292 @@ async def _send_price_channels(
         message_id=message_id,
         markup=inline_keyboard(rows),
     )
+
+
+_PARSER_TAB_LABELS = ("Цены", "Каналы и статус")
+_MANUAL_MORNING_PRICE_TIMEOUT = 300.0
+_PARSER_LINE_LIMIT = 120
+_PARSER_READY_REASON_LIMIT = 200
+_PARSER_READY_REASON_COUNT = 3
+_manual_morning_price_tasks: set[asyncio.Task[None]] = set()
+
+
+def _clip(text: str, limit: int) -> str:
+    """Обрезать строку экрана, чтобы сообщение уложилось в лимит Telegram."""
+    cleaned = text.strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    if limit <= 1:
+        return cleaned[:limit]
+    return cleaned[: limit - 1] + "…"
+
+
+def _ready_reasons_text(reasons: object) -> str:
+    """Не больше трёх причин готовности парсера и 200 символов."""
+    if not isinstance(reasons, list):
+        return "—"
+    parts = [str(item).strip() for item in reasons if str(item).strip()]
+    if not parts:
+        return "—"
+    return _clip(", ".join(parts[:_PARSER_READY_REASON_COUNT]), _PARSER_READY_REASON_LIMIT)
+
+
+def _parser_is_today(value: datetime | None) -> bool:
+    if value is None:
+        return False
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    tz = ZoneInfo(get_settings().tz)
+    return value.astimezone(tz).date() == datetime.now(tz).date()
+
+
+def _parser_short_dt(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    return value.astimezone(ZoneInfo(get_settings().tz)).strftime("%d.%m %H:%M")
+
+
+async def _parser_prices_block(session: AsyncSession) -> tuple[list[str], list[str]]:
+    """Цены, которые парсер достал из каналов за сегодня, + состояние черновика."""
+    from decimal import Decimal
+
+    from app.services import parser_diagnostics, price_service
+
+    aggregated = await price_service.aggregate_today(session)
+    lines = [
+        "{} — {} {}".format(
+            _clip(
+                price_service.format_sku_title(
+                    model=row.get("model"),
+                    storage=row.get("storage"),
+                    color=row.get("color"),
+                    region=row.get("region"),
+                    sim=row.get("sim"),
+                ),
+                _PARSER_LINE_LIMIT,
+            ),
+            Decimal(str(row["min_price"])).quantize(Decimal("0.01")),
+            row.get("currency") or "RUB",
+        )
+        for row in aggregated
+    ]
+
+    draft = (
+        await session.execute(
+            select(PriceListDraft).order_by(PriceListDraft.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    meta: list[str] = []
+    if draft is None:
+        meta.append("Черновика прайса ещё не было.")
+    elif _parser_is_today(draft.generated_at):
+        items_count = len(draft.items) if isinstance(draft.items, list) else 0
+        meta.append(
+            f"Черновик #{draft.id}: статус {draft.status}, позиций {items_count}, "
+            f"создан {_parser_short_dt(draft.generated_at)}"
+        )
+    else:
+        meta.append("Сегодня черновика нет.")
+    alert_lines = parser_diagnostics.format_last_alert_lines(
+        await parser_diagnostics.last_alert_codes(session)
+    )
+    if alert_lines:
+        meta.append(f"Почему прайс пуст:\n{alert_lines}")
+    return lines, meta
+
+
+async def _parser_channels_block(session: AsyncSession) -> tuple[list[str], list[str]]:
+    """Каналы парсера, их статусы и привязка к активным поставщикам."""
+    channels = await parser_client.list_channels()
+    ready, ready_body = await parser_client.fetch_parser_ready()
+    result = await session.execute(
+        select(Supplier).where(Supplier.price_channel_id.is_not(None))
+    )
+    bound = {
+        int(supplier.price_channel_id): supplier
+        for supplier in result.scalars().all()
+        if supplier.price_channel_id is not None
+    }
+
+    lines: list[str] = []
+    bound_count = 0
+    for ch in channels:
+        if not _is_listed_price_channel(ch):
+            continue
+        supplier = bound.get(int(ch.channel_id)) if ch.channel_id is not None else None
+        if supplier is not None:
+            bound_count += 1
+        sync_at = supplier.last_price_sync_at if supplier is not None else None
+        target = supplier.name if supplier is not None else "не привязан"
+        lines.append(
+            f"{_price_channel_label(ch)} · id={ch.channel_id or '—'} · {target} · "
+            f"синхр. {_parser_short_dt(sync_at)}"
+        )
+
+    ready_line = "готов" if ready else "НЕ готов"
+    meta = [f"Парсер {ready_line} · каналов {len(lines)}, привязано {bound_count}."]
+    if not ready:
+        meta.append(f"Причины: {_ready_reasons_text(ready_body.get('reasons'))}.")
+    failed = [ch for ch in channels if ch.status == "failed" and ch.error_text]
+    for ch in failed[:3]:
+        meta.append(f"Ошибка {ch.title or ch.username or ch.id}: {(ch.error_text or '')[:60]}")
+    return lines, meta
+
+
+def _parser_pager(tab: int, page: int, total: int) -> list[list[dict[str, Any]]]:
+    nav: list[dict[str, Any]] = []
+    if page > 0:
+        nav.append(menu_button("◀ Назад", "parser", tab, page=page - 1))
+    if (page + 1) * _PAGE_SIZE < total:
+        nav.append(menu_button("Вперед ▶", "parser", tab, page=page + 1))
+    return [nav] if nav else []
+
+
+async def _send_parser_screen(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    *,
+    tab: int,
+    page: int = 0,
+    message_id: int | None = None,
+    notice: str | None = None,
+) -> None:
+    tab = tab if tab in (0, 1) else 0
+    page = max(page, 0)
+    try:
+        if tab == 0:
+            lines, meta = await _parser_prices_block(session)
+        else:
+            lines, meta = await _parser_channels_block(session)
+    except parser_client.ParserClientError as exc:
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template(
+                "admin_parser_error",
+                detail=f"{parser_client.classify_parser_error(exc)}: {exc}",
+            ),
+            message_id=message_id,
+            markup=inline_keyboard(
+                [
+                    [menu_button("🔄 Повторить", "parser", tab)],
+                    [menu_button("В меню", "main_menu")],
+                ]
+            ),
+        )
+        return
+
+    total = len(lines)
+    visible = lines[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+    pages = max(1, -(-total // _PAGE_SIZE))
+    text = render_template(
+        "admin_parser_screen",
+        tab_title=_PARSER_TAB_LABELS[tab],
+        body_block="\n".join(visible) if visible else "Пусто.",
+        meta_block="\n".join([f"Стр. {page + 1} из {pages}", *meta]),
+    )
+    if notice:
+        text = f"{notice}\n\n{text}"
+
+    rows = _parser_pager(tab, page, total)
+    rows.append(
+        [
+            menu_button(_PARSER_TAB_LABELS[1 - tab], "parser", 1 - tab),
+            menu_button("🔄 Обновить", "parser", tab),
+        ]
+    )
+    rows.append([menu_button("▶ Запустить прайс", "parser_run", tab)])
+    rows.append([menu_button("В меню", "main_menu")])
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=text,
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+def _morning_price_result_text(result: dict[str, Any]) -> str:
+    if result.get("status") == "skipped":
+        return "Утренний прайс уже выполняется — подожди минуту."
+    draft_id = result.get("draft_id")
+    notice = (
+        f"Готово: позиций {result.get('items', 0)}, "
+        f"новых прайсов {result.get('raw_prices_new', 0)}, "
+        f"черновик {'#' + str(draft_id) if draft_id else 'не создан'}."
+    )
+    reasons = result.get("reason") or []
+    if reasons:
+        notice = f"{notice} Причины: {', '.join(str(code) for code in reasons)}."
+    return notice
+
+
+async def _finish_manual_morning_price(chat_id: int) -> None:
+    """Прогон утреннего прайса вне сессии апдейта: свой коннект, тот же лок, потолок 300 с."""
+    from app import jobs
+    from app.db.session import get_scheduler_session_factory
+    from app.telegram.jobs_router import _run_locked
+
+    telegram = get_telegram_client()
+    text = "Утренний прайс не запустился. Подробности в логах."
+    try:
+        factory = get_scheduler_session_factory()
+        async with factory() as session:
+            try:
+                result = await asyncio.wait_for(
+                    _run_locked(session, "morning-price", jobs.run_morning_price),
+                    timeout=_MANUAL_MORNING_PRICE_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.warning("Manual morning price timed out chat_id={}", chat_id)
+                text = "Утренний прайс не уложился в 5 минут. Проверь парсер и логи."
+            except Exception:
+                logger.exception("Manual morning price failed chat_id={}", chat_id)
+                try:
+                    await session.commit()
+                except Exception:
+                    logger.exception("Manual morning price audit commit failed")
+            else:
+                try:
+                    await session.commit()
+                except Exception:
+                    logger.exception("Manual morning price audit commit failed")
+                text = _morning_price_result_text(result)
+    except Exception:
+        logger.exception("Manual morning price session failed chat_id={}", chat_id)
+    try:
+        await telegram.send_message(chat_id, text)
+    except Exception:
+        logger.exception("Failed to report manual morning price chat_id={}", chat_id)
+
+
+def _schedule_manual_morning_price(chat_id: int) -> None:
+    task = asyncio.create_task(
+        _finish_manual_morning_price(chat_id),
+        name="manual-morning-price",
+    )
+    _manual_morning_price_tasks.add(task)
+    task.add_done_callback(_manual_morning_price_tasks.discard)
+
+
+async def _run_parser_morning_price(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    tab: int,
+    message_id: int | None,
+) -> None:
+    """Сразу ответить на кнопку. Джоб идёт отдельной задачей и не держит апдейт."""
+    await _send_parser_screen(
+        session,
+        telegram,
+        chat_id,
+        tab=tab if tab in (0, 1) else 0,
+        message_id=message_id,
+        notice="Запущено, результат придёт сообщением.",
+    )
+    _schedule_manual_morning_price(chat_id)
 
 
 async def _handle_dialog_text(

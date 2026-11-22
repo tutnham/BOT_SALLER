@@ -48,7 +48,7 @@ LLM_API_KEY=
 | `DEFAULT_MARKUP` | Базовая наценка в рублях, если в `markup_rules` нет `markup_fixed` |
 | `PARSER_TIMEOUT_SECONDS` | Сколько ждать ответ парсера каналов |
 | `PARSER_API_URL` | `http://tg-parser-api:8000` в сети `zakupki-internal`. Не менять после redeploy parser |
-| `PARSER_API_TOKEN` | Bearer-токен для `GET /posts` (тот же, что `API_AUTH_TOKEN` у парсера) |
+| `PARSER_API_TOKEN` | Bearer-токен для `GET /posts` (тот же, что `API_AUTH_TOKEN` у парсера). Пустой → парсер отвечает 401, цен из каналов нет |
 | `LLM_PROVIDER` | Только `openai` / `openai_compatible` / `openrouter` / `ollama`. Не `deepseek` |
 | `LLM_BASE_URL` | Для DeepSeek: `https://api.deepseek.com` (код дописывает `/chat/completions`) |
 | `LLM_MODEL` | Например `deepseek-chat` |
@@ -164,7 +164,8 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 
 - [ ] В `.env` заполнены `PRICE_APPROVAL_CHAT_IDS` (или legacy `PRICE_APPROVAL_CHAT_ID`) и `PRICE_PUBLISH_CHAT_IDS`
 - [ ] LLM: `openai_compatible` + `LLM_BASE_URL` провайдера + Restart backend после правки Coolify
-- [ ] Задан `PARSER_API_TOKEN` (если нужны каналы)
+- [ ] Задан `PARSER_API_TOKEN` (если нужны каналы) и `PARSER_API_URL` на порту **8000**
+- [ ] Проверка без логов: `/menu` → **Парсер** → «▶ Запустить прайс». Либо черновик, либо `[ALERT] Утренний прайс не собран` с причиной — тишины быть не может
 - [ ] В БД есть активные `markup_rules` (хотя бы `*`)
 - [ ] У нужных поставщиков заполнен `price_channel_id` **или** они шлют `прайс` в ЛС
 - [ ] Парсер развёрнут и подписан на каналы (для channel_post)

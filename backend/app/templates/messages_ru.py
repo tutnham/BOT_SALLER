@@ -296,12 +296,10 @@ TEMPLATES: dict[str, str] = {
         "Пример: «беру #12 у поставщика 3 за 85000»\n"
         "Или: /deal 12 3 85000"
     ),
-    "alert_morning_price_degraded": (
-        "[ALERT] Утренний прайс: ошибки при загрузке из каналов "
-        "(degraded={degraded_count}). Проверьте парсер и каналы поставщиков."
-    ),
     "alert_morning_price_empty": (
-        "[ALERT] Утренний прайс: черновик не создан — нет позиций для публикации."
+        "[ALERT] Утренний прайс не собран — черновика нет.\n"
+        "Причины:\n{reason_block}\n"
+        "Диагностика: «Меню» → «Парсер»."
     ),
     "help": (
         "Работайте кнопками в личке с ботом.\n"
@@ -432,6 +430,13 @@ TEMPLATES: dict[str, str] = {
     "admin_bind_supplier": "Выберите поставщика для этой беседы:",
     "admin_price_channels": "Каналы прайсов поставщиков:\n{channels_block}",
     "admin_price_channels_error": "Не удалось загрузить каналы: {detail}",
+    "admin_parser_screen": (
+        "🔍 Парсер — {tab_title}\n\n{body_block}\n\n{meta_block}"
+    ),
+    "admin_parser_error": (
+        "🔍 Парсер недоступен: {detail}\n"
+        "Проверь PARSER_API_URL (порт 8000) и PARSER_API_TOKEN = API_AUTH_TOKEN парсера."
+    ),
     "admin_await_supplier_name": "Введите название нового поставщика:",
     "admin_await_rename": "Введите новое название поставщика:",
     "admin_await_channel_handle": (
@@ -607,6 +612,10 @@ def render_template(name: str, **kwargs: Any) -> str:
 
     if name == "admin_price_channels":
         kwargs.setdefault("channels_block", "Список пуст.")
+
+    if name == "admin_parser_screen":
+        kwargs.setdefault("body_block", "—")
+        kwargs.setdefault("meta_block", "")
 
     if name == "markup_new_product_prompt":
         kwargs.setdefault("rule_label", "товар")

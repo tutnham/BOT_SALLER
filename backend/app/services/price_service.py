@@ -7,11 +7,11 @@ import hashlib
 import json
 from datetime import UTC, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,7 +32,6 @@ from app.llm.schemas import (
     validate_price_list_payload,
 )
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
-from app.services.alert_service import send_admin_alert
 from app.services.audit_service import record_audit
 from app.services.markup_service import (
     ensure_markup_rule_for_product,
@@ -40,13 +39,30 @@ from app.services.markup_service import (
     invalidate_markup_rules_cache,
     load_rules,
 )
-from app.services.parser_client import ParserClientError, iter_posts
+from app.services.ops_status_service import llm_configuration_snapshot
+from app.services.parser_client import (
+    ParserClientError,
+    classify_parser_error,
+    iter_posts,
+)
+from app.services.parser_diagnostics import alert_morning_price, diagnose_morning_price
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
 
 CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
 RAW_PRICE_PARSE_BATCH = 200
+
+
+class IngestStats(NamedTuple):
+    """Итоги выгрузки из парсера. Поля 0/1 совпадают со старым ``tuple[int, int]``."""
+
+    raw_new: int
+    degraded: int
+    channels_checked: int = 0
+    posts_seen: int = 0
+    posts_without_text: int = 0
+    faults: tuple[str, ...] = ()
 
 
 def build_raw_price_content_hash(supplier_id: int, raw_text: str) -> str:
@@ -148,11 +164,12 @@ async def insert_raw_price(
 
 async def ingest_channel_prices(
     session: AsyncSession,
-) -> tuple[int, int]:
+) -> IngestStats:
     """
     Fetch channel posts for suppliers with ``price_channel_id``.
 
-    Returns ``(raw_prices_new, degraded_count)``.
+    Помимо счётчиков возвращает причины, по которым данных нет: утренний джоб
+    не имеет права завершаться «ok» молча.
     """
     result = await session.execute(
         select(Supplier).where(
@@ -162,12 +179,13 @@ async def ingest_channel_prices(
     )
     suppliers = list(result.scalars().all())
     raw_new = 0
-    degraded = 0
+    posts_seen = 0
+    posts_without_text = 0
 
     semaphore = asyncio.Semaphore(5)
 
     async def _ingest_supplier_channel(supplier: Supplier) -> tuple[Supplier, Exception | None]:
-        nonlocal raw_new
+        nonlocal raw_new, posts_seen, posts_without_text
         channel_id = supplier.price_channel_id
         if channel_id is None:
             return supplier, None
@@ -185,8 +203,10 @@ async def ingest_channel_prices(
                             content_type=content_type,
                         ):
                             for post in page:
+                                posts_seen += 1
                                 text_body = (post.raw_text or "").strip()
                                 if not text_body:
+                                    posts_without_text += 1
                                     continue
                                 if max_post_date is None or post.post_date > max_post_date:
                                     max_post_date = post.post_date
@@ -213,12 +233,15 @@ async def ingest_channel_prices(
         *[_ingest_supplier_channel(supplier) for supplier in suppliers]
     )
 
+    degraded = 0
+    faults: list[str] = []
     for supplier, fetch_error in fetch_results:
         channel_id = supplier.price_channel_id
         if channel_id is None:
             continue
         if fetch_error is not None:
             degraded += 1
+            faults.append(classify_parser_error(fetch_error))
             logger.warning(
                 "Parser unavailable for supplier_id={} channel_id={}: {}",
                 supplier.id,
@@ -226,7 +249,14 @@ async def ingest_channel_prices(
                 fetch_error,
             )
 
-    return raw_new, degraded
+    return IngestStats(
+        raw_new=raw_new,
+        degraded=degraded,
+        channels_checked=len(suppliers),
+        posts_seen=posts_seen,
+        posts_without_text=posts_without_text,
+        faults=tuple(faults),
+    )
 
 
 async def _resolve_price_list(
@@ -452,6 +482,32 @@ def build_draft_items(
     return draft_items
 
 
+async def count_unparsed_raw_prices_today(session: AsyncSession) -> int:
+    """Сегодняшние raw_prices без parsed_items — сколько ждёт разбора LLM."""
+    day_start = _today_start_utc(get_settings().tz)
+    result = await session.execute(
+        select(func.count(RawPrice.id)).where(
+            RawPrice.received_at >= day_start,
+            ~RawPrice.parsed_items.any(),
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def count_low_confidence_items_today(session: AsyncSession) -> int:
+    """Сегодняшние parsed_items, отброшенные агрегатором из-за low confidence."""
+    day_start = _today_start_utc(get_settings().tz)
+    result = await session.execute(
+        select(func.count(ParsedItem.id))
+        .join(RawPrice, RawPrice.id == ParsedItem.raw_price_id)
+        .where(
+            RawPrice.received_at >= day_start,
+            ParsedItem.condition.like("low_confidence:%"),
+        )
+    )
+    return int(result.scalar_one())
+
+
 def _product_markup_phrase(row: dict[str, Any]) -> str:
     return format_sku_title(
         model=row.get("model"),
@@ -627,7 +683,7 @@ async def build_morning_price(
 ) -> dict[str, Any]:
     """Ingest channel prices, parse, and queue a pending draft for owner approval."""
     settings = get_settings()
-    channel_new, degraded = await ingest_channel_prices(session)
+    stats = await ingest_channel_prices(session)
     await parse_pending_raw_prices(session)
     aggregated = await aggregate_today(session)
     rules = await load_rules(session)
@@ -635,24 +691,30 @@ async def build_morning_price(
     rules = await load_rules(session)
     draft_items = build_draft_items(aggregated, rules, settings.default_markup)
 
-    if degraded > 0:
-        await send_admin_alert(
-            render_template(
-                "alert_morning_price_degraded",
-                degraded_count=degraded,
-            ),
-            telegram=telegram,
-        )
-
     result: dict[str, Any] = {
         "status": "ok",
         "draft_id": None,
         "items": len(draft_items),
-        "raw_prices_new": channel_new,
-        "degraded": degraded,
+        "raw_prices_new": stats.raw_new,
+        "degraded": stats.degraded,
         "markup_prompt_rule_ids": [int(rule.id) for rule in unknown_rules],
         "notify_draft": False,
     }
+
+    if not draft_items:
+        reasons = diagnose_morning_price(
+            stats=stats,
+            draft_items=0,
+            aggregated_items=len(aggregated),
+            llm_configured=bool(llm_configuration_snapshot()["configured"]),
+            unparsed_raw=await count_unparsed_raw_prices_today(session),
+            low_confidence=await count_low_confidence_items_today(session),
+            confidence_threshold=settings.confidence_threshold,
+        )
+        result["reason"] = [reason.code for reason in reasons]
+        if reasons:
+            await alert_morning_price(session, telegram, reasons)
+
     if not draft_items and not unknown_rules:
         return result
 

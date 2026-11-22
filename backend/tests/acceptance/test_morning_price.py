@@ -84,8 +84,8 @@ async def test_unavailable_parser_is_degraded(
         yield  # pragma: no cover
 
     monkeypatch.setattr("app.services.price_service.iter_posts", _fail)
-    _new, degraded = await ingest_channel_prices(db_session)
-    assert degraded == 1
+    stats = await ingest_channel_prices(db_session)
+    assert stats.degraded == 1
     assert seed_channel_supplier.id
 
 

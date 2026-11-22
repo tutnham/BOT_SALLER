@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -1634,5 +1635,513 @@ async def test_delete_supplier_from_menu(
     )
     assert resp.json()["status"] == "ok"
     assert await db_session.get(Supplier, supplier_id) is None
+
+
+def _last_text(mock_telegram) -> str:
+    return mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+
+
+async def _wait_manual_morning_price() -> None:
+    from app.handlers.admin_menu import _manual_morning_price_tasks
+
+    pending = list(_manual_morning_price_tasks)
+    if pending:
+        await asyncio.gather(*pending)
+
+
+def _last_markup(mock_telegram):
+    return mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+
+
+@pytest.mark.asyncio
+async def test_main_menu_has_parser_button(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+) -> None:
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_menu_command_payload(OWNER_TG_ID),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    callbacks = _callback_data_from_markup(_last_markup(mock_telegram))
+    assert any(data.startswith("admin:parser:0:") for data in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_parser_prices_tab_explains_empty_state(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+) -> None:
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_prices",
+            CallbackData(namespace="admin", action="parser", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    text = _last_text(mock_telegram)
+    assert "Парсер — Цены" in text
+    assert "Пусто." in text
+    assert "Черновика прайса ещё не было." in text
+    labels = _button_labels(_last_markup(mock_telegram))
+    assert "Каналы и статус" in labels
+    assert "▶ Запустить прайс" in labels
+
+
+@pytest.mark.asyncio
+async def test_parser_prices_tab_shows_collected_prices(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    seed_channel_supplier: Supplier,
+    mock_telegram,
+) -> None:
+    from decimal import Decimal
+
+    from app.db.models import ParsedItem, PriceListDraft, RawPrice
+
+    raw = RawPrice(
+        supplier_id=seed_channel_supplier.id,
+        text="iPhone 16 256 80000",
+        content_hash="parser-screen-iphone-16",
+        source="channel_post",
+        received_at=datetime.now(UTC),
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ParsedItem(
+                raw_price_id=raw.id,
+                sku_key="iphone-16-256",
+                model="iPhone 16",
+                storage="256",
+                price=Decimal("80000.00"),
+                currency="RUB",
+            ),
+            PriceListDraft(items=[{"title": "iPhone 16 256", "our_price": "80800.00"}]),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_prices_data",
+            CallbackData(namespace="admin", action="parser", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    text = _last_text(mock_telegram)
+    assert "iPhone 16 256 — 80000.00 RUB" in text
+    assert "Черновик #" in text
+
+
+@pytest.mark.asyncio
+async def test_parser_channels_tab_shows_status_and_binding(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_channel_supplier: Supplier,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[parser_client.ParserChannel]:
+        return [
+            parser_client.ParserChannel(
+                id=1,
+                channel_id=seed_channel_supplier.price_channel_id,
+                username="@channel_prices",
+                title="Channel Prices",
+                status="active",
+                is_active=True,
+            ),
+            parser_client.ParserChannel(
+                id=2,
+                channel_id=-100999,
+                username="@other",
+                title="Other",
+                status="failed",
+                is_active=True,
+                error_text="channel not accessible",
+            ),
+        ]
+
+    async def _ready(**_kwargs):
+        return False, {"status": "degraded", "reasons": ["no_listener"]}
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "fetch_parser_ready", _ready)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_channels",
+            CallbackData(namespace="admin", action="parser", arg=1),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    text = _last_text(mock_telegram)
+    assert "Парсер — Каналы и статус" in text
+    assert "✅ Channel Prices" in text
+    assert "❌ Other (channel not accessible" in text
+    assert "не привязан" in text
+    assert "Парсер НЕ готов" in text
+    assert "Причины: no_listener" in text
+
+
+@pytest.mark.asyncio
+async def test_parser_tab_error_screen_offers_retry(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[parser_client.ParserChannel]:
+        raise parser_client.ParserClientError("parser_http_401:unauthorized")
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_err",
+            CallbackData(namespace="admin", action="parser", arg=1),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    assert "Парсер недоступен" in _last_text(mock_telegram)
+    assert "🔄 Повторить" in _button_labels(_last_markup(mock_telegram))
+
+
+@pytest.mark.asyncio
+async def test_parser_run_does_not_start_job_twice(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import jobs
+    from app.telegram import jobs_router
+
+    calls: list[int] = []
+
+    async def _locked(*_args, **_kwargs) -> bool:
+        return False
+
+    async def _runner(*_args, **_kwargs) -> dict:
+        calls.append(1)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(jobs_router, "acquire_job_lock", _locked)
+    monkeypatch.setattr(jobs, "run_morning_price", _runner)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_run_busy",
+            CallbackData(namespace="admin", action="parser_run", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await _wait_manual_morning_price()
+
+    assert calls == []
+    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    assert "уже выполняется" in _last_text(mock_telegram)
+
+
+@pytest.mark.asyncio
+async def test_parser_run_reports_result(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import jobs
+    from app.telegram import jobs_router
+
+    calls: list[int] = []
+
+    async def _acquired(*_args, **_kwargs) -> bool:
+        return True
+
+    async def _released(*_args, **_kwargs) -> None:
+        return None
+
+    async def _runner(*_args, **_kwargs) -> dict:
+        calls.append(1)
+        return {"status": "ok", "items": 3, "raw_prices_new": 1, "draft_id": 42}
+
+    monkeypatch.setattr(jobs_router, "acquire_job_lock", _acquired)
+    monkeypatch.setattr(jobs_router, "release_job_lock", _released)
+    monkeypatch.setattr(jobs, "run_morning_price", _runner)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_run",
+            CallbackData(namespace="admin", action="parser_run", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await _wait_manual_morning_price()
+
+    assert len(calls) == 1
+    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    text = _last_text(mock_telegram)
+    assert "позиций 3" in text
+    assert "черновик #42" in text
+
+
+@pytest.mark.asyncio
+async def test_parser_run_returns_before_job_finishes(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Кнопка не ждёт прайс: ответ уходит, пока джоб ещё стоит на паузе."""
+    from app import jobs
+    from app.telegram import jobs_router
+
+    release = asyncio.Event()
+
+    async def _acquired(*_args, **_kwargs) -> bool:
+        return True
+
+    async def _released(*_args, **_kwargs) -> None:
+        return None
+
+    async def _runner(*_args, **_kwargs) -> dict:
+        await release.wait()
+        return {"status": "ok", "items": 0, "raw_prices_new": 0, "draft_id": None}
+
+    monkeypatch.setattr(jobs_router, "acquire_job_lock", _acquired)
+    monkeypatch.setattr(jobs_router, "release_job_lock", _released)
+    monkeypatch.setattr(jobs, "run_morning_price", _runner)
+
+    resp = await asyncio.wait_for(
+        webhook_client.post(
+            "/telegram/webhook",
+            json=_callback_payload(
+                OWNER_TG_ID,
+                "cb_parser_run_async",
+                CallbackData(namespace="admin", action="parser_run", arg=0),
+            ),
+            headers=webhook_headers,
+        ),
+        timeout=3,
+    )
+    assert resp.json()["status"] == "ok"
+    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    assert not any("Готово:" in text for _chat, text, _markup in mock_telegram.sent)
+
+    release.set()
+    await _wait_manual_morning_price()
+
+
+@pytest.mark.asyncio
+async def test_manual_morning_price_uses_scheduler_session_and_timeout(
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.handlers import admin_menu
+    from app.telegram.client import set_telegram_client
+
+    seen: dict[str, object] = {}
+
+    class _Session:
+        async def commit(self) -> None:
+            seen["committed"] = True
+
+    class _Scope:
+        async def __aenter__(self) -> _Session:
+            session = _Session()
+            seen["session"] = session
+            return session
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    def _factory():
+        return lambda: _Scope()
+
+    async def _locked(session, name, runner):  # noqa: ANN001
+        seen["locked_session"] = session
+        seen["lock_name"] = name
+        assert runner is not None
+        return {"status": "ok", "items": 2, "raw_prices_new": 1, "draft_id": 7}
+
+    real_wait = asyncio.wait_for
+
+    async def _wait(awaitable, limit):  # noqa: ANN001
+        seen["timeout"] = limit
+        return await real_wait(awaitable, limit)
+
+    set_telegram_client(mock_telegram)
+    monkeypatch.setattr("app.db.session.get_scheduler_session_factory", _factory)
+    monkeypatch.setattr("app.telegram.jobs_router._run_locked", _locked)
+    monkeypatch.setattr(admin_menu.asyncio, "wait_for", _wait)
+
+    try:
+        await admin_menu._finish_manual_morning_price(OWNER_TG_ID)
+    finally:
+        set_telegram_client(None)
+
+    assert seen["timeout"] == 300.0
+    assert seen["lock_name"] == "morning-price"
+    assert seen["locked_session"] is seen["session"]
+    assert seen["committed"] is True
+    assert "позиций 2" in _last_text(mock_telegram)
+    assert "черновик #7" in _last_text(mock_telegram)
+
+
+@pytest.mark.asyncio
+async def test_parser_prices_tab_keeps_reasons_beside_old_draft(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    mock_telegram,
+) -> None:
+    from app.db.models import PriceListDraft
+    from app.services import app_settings_service
+    from app.services.parser_diagnostics import _ALERT_KEY_PREFIX
+
+    db_session.add(
+        PriceListDraft(
+            items=[{"title": "старый", "our_price": "100.00"}],
+            generated_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+    await app_settings_service.set_setting(
+        db_session,
+        f"{_ALERT_KEY_PREFIX}posts_empty",
+        datetime.now(UTC).isoformat(),
+    )
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_old_draft",
+            CallbackData(namespace="admin", action="parser", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    text = _last_text(mock_telegram)
+    assert "Сегодня черновика нет." in text
+    assert "Черновик #" not in text
+    assert "парсер не отдал ни одного поста" in text
+
+
+@pytest.mark.asyncio
+async def test_parser_screen_clips_long_title_and_ready_reasons(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    seed_channel_supplier: Supplier,
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.db.models import ParsedItem, RawPrice
+    from app.handlers.admin_menu import _PARSER_LINE_LIMIT, _PARSER_READY_REASON_LIMIT
+
+    raw = RawPrice(
+        supplier_id=seed_channel_supplier.id,
+        text="long model",
+        content_hash="parser-screen-long-model",
+        source="channel_post",
+        received_at=datetime.now(UTC),
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    db_session.add(
+        ParsedItem(
+            raw_price_id=raw.id,
+            sku_key="long-model",
+            model="M" * 400,
+            price=Decimal("100.00"),
+            currency="RUB",
+        )
+    )
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_long_title",
+            CallbackData(namespace="admin", action="parser", arg=0),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    text = _last_text(mock_telegram)
+    assert "M" * (_PARSER_LINE_LIMIT + 1) not in text
+    assert "…" in text
+    assert "100.00 RUB" in text
+
+    long_reasons = [f"reason-{index}-" + ("R" * 80) for index in range(5)]
+
+    async def _list() -> list[parser_client.ParserChannel]:
+        return []
+
+    async def _ready(**_kwargs):
+        return False, {"reasons": long_reasons}
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    monkeypatch.setattr(parser_client, "fetch_parser_ready", _ready)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_parser_long_reasons",
+            CallbackData(namespace="admin", action="parser", arg=1),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    channels = _last_text(mock_telegram)
+    assert "reason-0-" in channels
+    assert "reason-3-" not in channels
+    reason_line = next(line for line in channels.splitlines() if line.startswith("Причины:"))
+    assert len(reason_line) <= len("Причины: ") + _PARSER_READY_REASON_LIMIT + 1
 
 

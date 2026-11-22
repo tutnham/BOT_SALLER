@@ -290,10 +290,10 @@ async def test_ingest_updates_last_price_sync_at(
         "app.services.price_service.iter_posts",
         new=_fake_iter_posts,
     ):
-        raw_new, degraded = await ingest_channel_prices(db_session)
+        stats = await ingest_channel_prices(db_session)
 
-    assert raw_new == 1
-    assert degraded == 0
+    assert stats.raw_new == 1
+    assert stats.degraded == 0
     await db_session.refresh(seed_channel_supplier)
     assert seed_channel_supplier.last_price_sync_at == post_date
 
@@ -311,10 +311,12 @@ async def test_ingest_degrades_on_parser_failure(
         "app.services.price_service.iter_posts",
         new=_fail_iter,
     ):
-        raw_new, degraded = await ingest_channel_prices(db_session)
+        stats = await ingest_channel_prices(db_session)
 
-    assert raw_new == 0
-    assert degraded == 1
+    assert stats.raw_new == 0
+    assert stats.degraded == 1
+    assert stats.faults == ("http_error",)
+    assert stats.posts_seen == 0
     await db_session.refresh(seed_channel_supplier)
     assert seed_channel_supplier.last_price_sync_at is None
 
@@ -375,10 +377,10 @@ async def test_ingest_reads_photo_caption(
         "app.services.price_service.iter_posts",
         new=_fake_iter_posts,
     ):
-        raw_new, degraded = await ingest_channel_prices(db_session)
+        stats = await ingest_channel_prices(db_session)
 
-    assert raw_new == 1
-    assert degraded == 0
+    assert stats.raw_new == 1
+    assert stats.degraded == 0
     count = await db_session.scalar(select(func.count()).select_from(RawPrice))
     assert count == 1
 

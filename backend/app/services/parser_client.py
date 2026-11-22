@@ -72,6 +72,29 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+def classify_parser_error(exc: BaseException) -> str:
+    """Стабильный токен причины для алертов и экрана «Парсер».
+
+    Пустой PARSER_API_TOKEN учитываем только на 401: иначе транспортная ошибка
+    или 5xx выглядели бы как проблема секрета.
+    """
+    settings = get_settings()
+    message = str(exc)
+    if not (settings.parser_api_url or "").strip():
+        return "url_missing"
+    if "parser_transport_error" in message or "parser_no_response" in message:
+        return "unreachable"
+    if "parser_http_401" in message or "parser_http_403" in message:
+        if not (settings.parser_api_token or "").strip():
+            return "token_missing"
+        return "auth"
+    if "parser_http_" in message:
+        return "http_error"
+    if "invalid" in message:
+        return "bad_response"
+    return "unknown"
+
+
 async def _request(
     method: str,
     path: str,
