@@ -1871,7 +1871,7 @@ async def test_parser_run_does_not_start_job_twice(
     await _wait_manual_morning_price()
 
     assert calls == []
-    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
     assert "уже выполняется" in _last_text(mock_telegram)
 
 
@@ -1915,7 +1915,7 @@ async def test_parser_run_reports_result(
     await _wait_manual_morning_price()
 
     assert len(calls) == 1
-    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
     text = _last_text(mock_telegram)
     assert "позиций 3" in text
     assert "черновик #42" in text
@@ -1962,7 +1962,7 @@ async def test_parser_run_returns_before_job_finishes(
         timeout=3,
     )
     assert resp.json()["status"] == "ok"
-    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
     assert not any("Готово:" in text for _chat, text, _markup in mock_telegram.sent)
 
     release.set()
@@ -2017,7 +2017,7 @@ async def test_manual_morning_price_uses_scheduler_session_and_timeout(
     finally:
         set_telegram_client(None)
 
-    assert seen["timeout"] == 300.0
+    assert seen["timeout"] == 1800.0
     assert seen["lock_name"] == "morning-price"
     assert seen["locked_session"] is seen["session"]
     assert seen["committed"] is True
@@ -2060,11 +2060,13 @@ async def test_manual_morning_price_pulls_channel_before_draft(
         async def __aexit__(self, *_exc: object) -> bool:
             return False
 
-    async def _sync(channel_id: int, **_kwargs: object) -> str:
+    async def _sync(channel_id: int, **kwargs: object) -> str:
+        assert kwargs.get("full_history") is True
         order.append(f"sync:{channel_id}")
         return "processed"
 
-    async def _price(_session: object, _telegram: object) -> dict:
+    async def _price(_session: object, _telegram: object, *, full_history: bool = False) -> dict:
+        assert full_history is True
         order.append("price")
         return {"status": "ok", "items": 1, "raw_prices_new": 1, "draft_id": 3}
 

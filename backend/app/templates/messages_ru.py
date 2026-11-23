@@ -163,6 +163,20 @@ TEMPLATES: dict[str, str] = {
         "По вашему запросу · Заявка #{request_id}\n"
         "Цена: {price_text}"
     ),
+    "supplier_quote_staff": (
+        "Заявка #{request_id} · {supplier_label}\n"
+        "Закуп: {purchase_price_text}\n"
+        "Клиенту: {price_text}"
+    ),
+    "supplier_low_confidence_staff": (
+        "Заявка #{request_id} · {supplier_label}\n"
+        "Цена: —\n"
+        "Комментарий: {raw_text}"
+    ),
+    "price_changed_staff": (
+        "Заявка #{request_id} · {supplier_label}\n"
+        "Цена для клиента: было {old_price} ₽, стало {new_price} ₽"
+    ),
     "client_price_updated": (
         "Обновление по заявке #{request_id}\n"
         "Новая цена: {price_text}"
@@ -535,6 +549,9 @@ _SUPPLIER_LABEL_TEMPLATES = frozenset(
         "bargain_sent",
         "alert_unbound_supplier_message",
         "alert_auto_bound_supplier_price",
+        "supplier_quote_staff",
+        "supplier_low_confidence_staff",
+        "price_changed_staff",
     }
 )
 
@@ -590,6 +607,14 @@ def render_template(name: str, **kwargs: Any) -> str:
     if name == "supplier_quote_parsed":
         kwargs.pop("available", None)
         kwargs.pop("qty", None)
+        kwargs.setdefault("price_text", _format_price(kwargs.pop("price", None)))
+
+    if name == "supplier_quote_staff":
+        kwargs.pop("available", None)
+        kwargs.pop("qty", None)
+        kwargs.setdefault(
+            "purchase_price_text", _format_price(kwargs.pop("purchase_price", None))
+        )
         kwargs.setdefault("price_text", _format_price(kwargs.pop("price", None)))
 
     if name == "client_price_updated":

@@ -19,8 +19,12 @@ async def backfill_channel_on_activate(
     *,
     channel: ParserChannel,
     settings: Settings | None = None,
+    limit_override: int | None = None,
 ) -> int:
-    """Pull recent channel history into parser_posts (idempotent upsert)."""
+    """Pull recent channel history into parser_posts (idempotent upsert).
+
+    ``limit_override=0`` means unlimited (full channel history).
+    """
     cfg = settings or get_settings()
     if channel.channel_id is None:
         return 0
@@ -28,7 +32,7 @@ async def backfill_channel_on_activate(
     chat_id = channel.channel_id
     inserted = 0
     scanned = 0
-    limit = cfg.backfill_on_activate_limit
+    limit = cfg.backfill_on_activate_limit if limit_override is None else limit_override
     factory = get_session_factory()
     history = client.get_chat_history(chat_id=chat_id)
     if history is None:
@@ -37,7 +41,7 @@ async def backfill_channel_on_activate(
 
     try:
         async for message in history:
-            if scanned >= limit:
+            if limit > 0 and scanned >= limit:
                 break
             scanned += 1
             msg_date = message.date

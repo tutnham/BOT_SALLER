@@ -271,19 +271,38 @@ async def reuse_today_price_for_request(
 
     if not delivered and not settings.auto_publish_first_valid_price and telegram is not None:
         from app.services.quote_service import display_price_for_group
+        from app.services.staff_ephemeral_notify import (
+            deliver_request_group_price_notice,
+            render_staff_quote_parsed,
+        )
         from app.templates.messages_ru import render_template
 
-        text = render_template(
-            "supplier_quote_parsed",
-            request_id=request.id,
-            price=display_price_for_group(quote),
-        )
-        try:
-            await telegram.send_message(request.group_chat_id, text)
-        except Exception:
-            logger.exception("known-today client send failed request_id={}", request.id)
-        else:
-            delivered = True
+        supplier = await session.get(Supplier, quote.supplier_id)
+        if supplier is not None:
+            try:
+                await deliver_request_group_price_notice(
+                    session,
+                    telegram,
+                    request,
+                    supplier=supplier,
+                    existing_quote_before=None,
+                    public_text=render_template(
+                        "supplier_quote_parsed",
+                        request_id=request.id,
+                        price=display_price_for_group(quote),
+                    ),
+                    staff_text=render_staff_quote_parsed(
+                        request_id=request.id,
+                        supplier=supplier,
+                        quote=quote,
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "known-today client send failed request_id={}", request.id
+                )
+            else:
+                delivered = True
 
     if not delivered:
         if request.price_state in (

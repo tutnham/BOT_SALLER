@@ -13,6 +13,7 @@
 
 - **`СЕРВИСЫ.md`** — production Coolify/VPS, env, deploy parser
 - **`PHASE4_SETUP.md`** — morning-price, parser env, чеклист
+- **`docs/STAFF_EPHEMERAL_PRICES.md`** — последующие цены поставщиков только персоналу в группе (Telegram ephemeral)
 - **`TG_CHANNEL_PARSER_DOCUMENTATION.md`** — спека parser
 - **`Техническая документация  бот для закупок.md`** — спека backend
 - **`CLAUDE.md`** / **`AGENTS.md`** — правила для агентов
@@ -40,7 +41,7 @@
 
 Jev (TypeSafe) — отдельный классификатор ответов поставщика, не замена `LLM_PROVIDER`. По умолчанию выключен. Включение и откат: `docs/JEV_RUNBOOK.md`. Kill switch: `JEV_ENABLED=false` и перезапуск.
 
-Клиентская цена: первая валидная цена текущего дня уходит в чат-источник запроса ровно один раз, если включён `AUTO_PUBLISH_FIRST_VALID_PRICE`. По умолчанию выключено. Сообщение ставится в `telegram_outbox`. При `CLIENT_PRICE_INLINE_DELIVERY=true` (значение по умолчанию) процесс web сам забирает очередь и пишет heartbeat `worker`. Отдельный `backend-worker` (`python -m app.workers.main`) нужен, когда inline-доставка выключена или включён `WEBHOOK_ASYNC_ENABLED`. Поведение и откат: `docs/PRICE_PUBLICATION_RUNBOOK.md`.
+Клиентская цена: первая валидная цена текущего дня уходит в чат-источник запроса ровно один раз, если включён `AUTO_PUBLISH_FIRST_VALID_PRICE`. По умолчанию выключено. Сообщение ставится в `telegram_outbox`. При `CLIENT_PRICE_INLINE_DELIVERY=true` (значение по умолчанию) процесс web сам забирает очередь и пишет heartbeat `worker`. Отдельный `backend-worker` (`python -m app.workers.main`) нужен, когда inline-доставка выключена или включён `WEBHOOK_ASYNC_ENABLED`. Поведение и откат: `docs/PRICE_PUBLICATION_RUNBOOK.md`. Последующие цены поставщиков в группе заказчика видят только сотрудники и владельцы (Telegram Ephemeral Messages; бот — админ группы): `docs/STAFF_EPHEMERAL_PRICES.md`.
 
 Многострочный `/ask` (2+ непустых строк) создаёт пакет `request_batches` с превью. Однострочный `/ask` переиспользует сегодняшнюю цену, если она есть, иначе сразу шлёт RFQ. Система выбирает минимальную допустимую котировку для клиентской цены; закупку сотрудник подтверждает отдельно.
 

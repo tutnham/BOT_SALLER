@@ -19,6 +19,7 @@ from app.services.billing_service import (
     reserve_reminder,
 )
 from app.services.price_service import (
+    build_full_history_price,
     build_morning_price,
     format_draft_lines,
     notify_morning_price_draft,
@@ -52,8 +53,11 @@ async def _resolve_owner_destinations(
 async def run_morning_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
+    *,
+    full_history: bool = False,
 ) -> dict[str, Any]:
-    result = await build_morning_price(session, telegram)
+    builder = build_full_history_price if full_history else build_morning_price
+    result = await builder(session, telegram)
     prompt_ids = [int(rule_id) for rule_id in result.pop("markup_prompt_rule_ids", [])]
     notify_draft = bool(result.pop("notify_draft", False))
     draft_id = result.get("draft_id")

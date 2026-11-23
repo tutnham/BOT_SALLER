@@ -43,6 +43,7 @@ class ChannelCreate(BaseModel):
 
 class ChannelBackfillIn(BaseModel):
     channel_id: int = Field(..., description="Telegram channel id, including the -100 prefix")
+    full_history: bool = Field(default=False, description="True = забрать всю историю канала без лимита")
 
 
 class ChannelBackfillOut(BaseModel):
@@ -85,13 +86,16 @@ def _integrity_conflict_detail(exc: IntegrityError) -> str:
     return "pending_channel_username_exists"
 
 
-def _enqueue_backfill_task(db: AsyncSession, channel: ParserChannel) -> ParserTask:
+def _enqueue_backfill_task(
+    db: AsyncSession, channel: ParserChannel, *, full_history: bool = False
+) -> ParserTask:
     task = ParserTask(
         post_id=None,
         channel_id=channel.id,
         task_type=ParserTaskType.backfill_channel,
         status=ParserStatus.new,
         max_attempts=5,
+        history_limit=0 if full_history else None,
     )
     db.add(task)
     return task
@@ -255,8 +259,10 @@ async def enqueue_channel_backfill(
         None,
     )
     if task is None:
-        task = _enqueue_backfill_task(db, channel)
+        task = _enqueue_backfill_task(db, channel, full_history=payload.full_history)
         await db.flush()
+    elif payload.full_history and task.history_limit != 0:
+        task.history_limit = 0
     await db.commit()
     return ChannelBackfillOut(
         task_id=task.id,

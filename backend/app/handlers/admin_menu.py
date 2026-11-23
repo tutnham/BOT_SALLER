@@ -1866,7 +1866,7 @@ async def _send_price_channels(
 
 
 _PARSER_TAB_LABELS = ("Цены", "Каналы и статус")
-_MANUAL_MORNING_PRICE_TIMEOUT = 300.0
+_MANUAL_MORNING_PRICE_TIMEOUT = 1800.0
 _PARSER_LINE_LIMIT = 120
 _PARSER_READY_REASON_LIMIT = 200
 _PARSER_READY_REASON_COUNT = 3
@@ -2107,7 +2107,9 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
     for supplier in suppliers:
         channel_id = int(supplier.price_channel_id)
         try:
-            status = await parser_client.sync_channel_history(channel_id)
+            status = await parser_client.sync_channel_history(
+                channel_id, full_history=True, timeout=900.0
+            )
         except parser_client.ParserClientError as exc:
             notes.append(
                 f"{supplier.name}: парсер не принял забор "
@@ -2128,7 +2130,7 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
 
 
 async def _finish_manual_morning_price(chat_id: int) -> None:
-    """Прогон утреннего прайса вне сессии апдейта: свой коннект, тот же лок, потолок 300 с."""
+    """Полный прайс по кнопке вне сессии апдейта: свой коннект, тот же лок, потолок 30 мин."""
     from app import jobs
     from app.db.session import get_scheduler_session_factory
     from app.telegram.jobs_router import _run_locked
@@ -2141,7 +2143,9 @@ async def _finish_manual_morning_price(chat_id: int) -> None:
             try:
                 async def _pull_then_price(locked_session, telegram_client):  # noqa: ANN001
                     note = await _pull_bound_channel_posts(locked_session)
-                    price = await jobs.run_morning_price(locked_session, telegram_client)
+                    price = await jobs.run_morning_price(
+                        locked_session, telegram_client, full_history=True
+                    )
                     if note and isinstance(price, dict):
                         return {**price, "parser_pull": note}
                     return price
@@ -2152,7 +2156,7 @@ async def _finish_manual_morning_price(chat_id: int) -> None:
                 )
             except TimeoutError:
                 logger.warning("Manual morning price timed out chat_id={}", chat_id)
-                text = "Утренний прайс не уложился в 5 минут. Проверь парсер и логи."
+                text = "Прайс не уложился в 30 минут. Проверь парсер и логи."
             except Exception:
                 logger.exception("Manual morning price failed chat_id={}", chat_id)
                 try:
@@ -2196,7 +2200,7 @@ async def _run_parser_morning_price(
         chat_id,
         tab=tab if tab in (0, 1) else 0,
         message_id=message_id,
-        notice="Запущено. Сначала забираю посты канала, потом собираю прайс.",
+        notice="Запущено. Забираю полную историю канала, потом собираю прайс без наценки. Первый прогон может занять несколько минут.",
     )
     _schedule_manual_morning_price(chat_id)
 

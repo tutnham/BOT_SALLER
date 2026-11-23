@@ -32,6 +32,7 @@ class GroupFailTelegramClient(MockTelegramClient):
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
         business_connection_id: str | None = None,
+        ephemeral_message_parameters: dict[str, Any] | None = None,
     ) -> int:
         if chat_id == self.fail_chat_id:
             raise TelegramSendError("test_group_send_failed")
@@ -41,6 +42,7 @@ class GroupFailTelegramClient(MockTelegramClient):
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             business_connection_id=business_connection_id,
+            ephemeral_message_parameters=ephemeral_message_parameters,
         )
 
 

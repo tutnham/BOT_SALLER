@@ -324,13 +324,14 @@ class ParserBackfill(BaseModel):
 async def enqueue_channel_backfill(
     channel_id: int,
     *,
+    full_history: bool = False,
     http_client: httpx.AsyncClient | None = None,
 ) -> ParserBackfill:
-    """Ask tg-runtime to pull recent channel history. Does not run MTProto here."""
+    """Ask tg-runtime to pull channel history. Does not run MTProto here."""
     payload = await _request(
         "POST",
         "/channels/backfill",
-        json_body={"channel_id": channel_id},
+        json_body={"channel_id": channel_id, "full_history": full_history},
         http_client=http_client,
     )
     if not isinstance(payload, dict):
@@ -362,13 +363,16 @@ async def fetch_channel_backfill(
 async def sync_channel_history(
     channel_id: int,
     *,
+    full_history: bool = False,
     timeout: float = 90.0,
     poll_seconds: float = 2.0,
     http_client: httpx.AsyncClient | None = None,
 ) -> str:
     """Enqueue backfill and wait until the runtime finishes or the wait expires."""
     started = asyncio.get_running_loop().time()
-    task = await enqueue_channel_backfill(channel_id, http_client=http_client)
+    task = await enqueue_channel_backfill(
+        channel_id, full_history=full_history, http_client=http_client
+    )
     while task.status in {"new", "processing"}:
         if asyncio.get_running_loop().time() - started >= timeout:
             return task.status

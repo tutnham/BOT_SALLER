@@ -126,6 +126,7 @@ async def insert_raw_price(
     source: str,
     source_post_id: int | None = None,
     source_message_link: str | None = None,
+    post_date: datetime | None = None,
 ) -> tuple[RawPrice | None, bool]:
     """
     Conflict-safe insert into ``raw_prices``.
@@ -143,6 +144,7 @@ async def insert_raw_price(
             source=source,
             source_post_id=source_post_id,
             source_message_link=source_message_link,
+            post_date=post_date,
         )
         .on_conflict_do_nothing(index_elements=["content_hash"])
         .returning(RawPrice.id)
@@ -164,6 +166,8 @@ async def insert_raw_price(
 
 async def ingest_channel_prices(
     session: AsyncSession,
+    *,
+    full_history: bool = False,
 ) -> IngestStats:
     """
     Fetch channel posts for suppliers with ``price_channel_id``.
@@ -192,7 +196,7 @@ async def ingest_channel_prices(
         async with semaphore:
             try:
                 settings = get_settings()
-                from_ = channel_price_sync_from(supplier, settings.tz)
+                from_ = None if full_history else channel_price_sync_from(supplier, settings.tz)
                 max_post_date: datetime | None = None
                 fetch_error: Exception | None = None
                 for content_type in CHANNEL_PRICE_CONTENT_TYPES:
@@ -201,6 +205,7 @@ async def ingest_channel_prices(
                             channel_id=int(channel_id),
                             from_=from_,
                             content_type=content_type,
+                            page_size=500 if full_history else 100,
                         ):
                             for post in page:
                                 posts_seen += 1
@@ -217,12 +222,16 @@ async def ingest_channel_prices(
                                     source="channel_post",
                                     source_post_id=post.post_id,
                                     source_message_link=post.message_link,
+                                    post_date=post.post_date,
                                 )
                                 if is_new and raw is not None:
                                     raw_new += 1
                     except ParserClientError as exc:
                         fetch_error = exc
-                if max_post_date is not None:
+                if max_post_date is not None and (
+                    supplier.last_price_sync_at is None
+                    or max_post_date > supplier.last_price_sync_at
+                ):
                     supplier.last_price_sync_at = max_post_date
                     await session.flush()
                 return supplier, fetch_error
@@ -319,7 +328,11 @@ async def _materialize_parsed_items(
     return inserted
 
 
-async def parse_pending_raw_prices(session: AsyncSession) -> int:
+async def parse_pending_raw_prices(
+    session: AsyncSession,
+    *,
+    include_history: bool = False,
+) -> int:
     """
     Parse today's raw_prices that still lack parsed_items.
 
@@ -334,13 +347,15 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
     last_id = 0
 
     while True:
+        conditions = [
+            RawPrice.id > last_id,
+            ~RawPrice.parsed_items.any(),
+        ]
+        if not include_history:
+            conditions.append(RawPrice.received_at >= day_start)
         result = await session.execute(
             select(RawPrice)
-            .where(
-                RawPrice.received_at >= day_start,
-                RawPrice.id > last_id,
-                ~RawPrice.parsed_items.any(),
-            )
+            .where(*conditions)
             .options(selectinload(RawPrice.parsed_items))
             .order_by(RawPrice.id.asc())
             .limit(RAW_PRICE_PARSE_BATCH)
@@ -393,6 +408,10 @@ async def parse_pending_raw_prices(session: AsyncSession) -> int:
                 session, raw, parsed, threshold=threshold
             )
 
+        if include_history:
+            # Таймаут полного прогона не должен терять уже оплаченную работу LLM.
+            await session.commit()
+
     return inserted
 
 
@@ -438,6 +457,44 @@ async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
     return [dict(row) for row in result.mappings().all()]
 
 
+async def aggregate_latest(session: AsyncSession) -> list[dict[str, Any]]:
+    """
+    Full-history aggregation: newest post wins per ``(sku_key, currency)``.
+
+    Same row shape as ``aggregate_today`` (``price AS min_price``); RUB only.
+    """
+    sql = text(
+        """
+        WITH latest_items AS (
+            SELECT
+                pi.id,
+                pi.sku_key,
+                pi.model,
+                pi.storage,
+                pi.color,
+                pi.region,
+                pi.sim,
+                pi.price,
+                pi.currency,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pi.sku_key, pi.currency
+                    ORDER BY rp.post_date DESC NULLS LAST, rp.id DESC, pi.id DESC
+                ) AS rn
+            FROM parsed_items pi
+            JOIN raw_prices rp ON rp.id = pi.raw_price_id
+            WHERE pi.currency = 'RUB'
+              AND COALESCE(pi.condition, '') NOT LIKE 'low_confidence:%'
+        )
+        SELECT sku_key, model, storage, color, region, sim, price AS min_price, currency
+        FROM latest_items
+        WHERE rn = 1
+        ORDER BY sku_key
+        """
+    )
+    result = await session.execute(sql)
+    return [dict(row) for row in result.mappings().all()]
+
+
 def build_draft_items(
     aggregated: list[dict[str, Any]],
     rules: list[MarkupRule],
@@ -476,6 +533,34 @@ def build_draft_items(
                 "sku_key": row["sku_key"],
                 "title": title,
                 "our_price": str(our_price.quantize(Decimal("0.01"))),
+                "currency": "RUB",
+            }
+        )
+    return draft_items
+
+
+def build_full_history_draft_items(
+    aggregated: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Manual full-history draft: supplier price as-is, no markup."""
+    draft_items: list[dict[str, Any]] = []
+    for row in aggregated:
+        currency = row.get("currency") or "RUB"
+        if currency != "RUB":
+            continue
+        price = Decimal(str(row["min_price"])).quantize(Decimal("0.01"))
+        title = format_sku_title(
+            model=row.get("model"),
+            storage=row.get("storage"),
+            color=row.get("color"),
+            region=row.get("region"),
+            sim=row.get("sim"),
+        )
+        draft_items.append(
+            {
+                "sku_key": row["sku_key"],
+                "title": title,
+                "our_price": str(price),
                 "currency": "RUB",
             }
         )
@@ -734,6 +819,59 @@ async def build_morning_price(
             result["draft_id"] = draft.id
             result["reused"] = False
             result["notify_draft"] = True
+    return result
+
+
+async def build_full_history_price(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+) -> dict[str, Any]:
+    """Manual button: full channel history, newest price per sku, no markup."""
+    settings = get_settings()
+    stats = await ingest_channel_prices(session, full_history=True)
+    await parse_pending_raw_prices(session, include_history=True)
+    aggregated = await aggregate_latest(session)
+    draft_items = build_full_history_draft_items(aggregated)
+
+    result: dict[str, Any] = {
+        "status": "ok",
+        "draft_id": None,
+        "items": len(draft_items),
+        "raw_prices_new": stats.raw_new,
+        "degraded": stats.degraded,
+        "markup_prompt_rule_ids": [],
+        "notify_draft": False,
+    }
+
+    if not draft_items:
+        reasons = diagnose_morning_price(
+            stats=stats,
+            draft_items=0,
+            aggregated_items=len(aggregated),
+            llm_configured=bool(llm_configuration_snapshot()["configured"]),
+            unparsed_raw=await count_unparsed_raw_prices_today(session),
+            low_confidence=await count_low_confidence_items_today(session),
+            confidence_threshold=settings.confidence_threshold,
+        )
+        result["reason"] = [reason.code for reason in reasons]
+        if reasons:
+            await alert_morning_price(session, telegram, reasons)
+        return result
+
+    existing = await _find_identical_pending_draft(session, draft_items)
+    if existing is not None:
+        result["draft_id"] = existing.id
+        result["reused"] = True
+        if existing.status == "stored":
+            existing.status = "pending"
+            result["notify_draft"] = True
+    else:
+        draft = PriceListDraft(items=draft_items, status="pending")
+        session.add(draft)
+        await session.flush()
+        result["draft_id"] = draft.id
+        result["reused"] = False
+        result["notify_draft"] = True
     return result
 
 

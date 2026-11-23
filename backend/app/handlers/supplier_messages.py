@@ -39,6 +39,12 @@ from app.services.binding_labels import candidate_label
 from app.services.candidate_loader_service import load_eligible_candidates
 from app.services.price_service import insert_raw_price
 from app.services.quote_service import display_price_for_group, upsert_quote
+from app.services.staff_ephemeral_notify import (
+    deliver_request_group_price_notice,
+    render_staff_low_confidence,
+    render_staff_price_changed,
+    render_staff_quote_parsed,
+)
 from app.services.reply_binding_service import (
     BindingDecision,
     compatible_model_candidates,
@@ -337,28 +343,50 @@ async def process_bound_supplier_reply(
         )
 
     if quote is not None and followup != "duplicate":
-        forward_text = render_template(
+        public_text = render_template(
             "supplier_quote_parsed",
             request_id=request.id,
             available=parsed.available,
             price=display_price_for_group(quote),
             qty=parsed.qty,
         )
-    else:
-        forward_text = render_template(
-            "supplier_low_confidence",
+        staff_text = render_staff_quote_parsed(
             request_id=request.id,
+            supplier=supplier,
+            quote=quote,
+            available=parsed.available,
+            qty=parsed.qty,
+        )
+    else:
+        public_text = None
+        staff_text = render_staff_low_confidence(
+            request_id=request.id,
+            supplier=supplier,
             raw_text=raw_text,
         )
 
     if followup != "duplicate" and request.batch_id is None:
         if not get_settings().auto_publish_first_valid_price:
-            await _send_notice_best_effort(
-                telegram,
-                request.group_chat_id,
-                forward_text,
-                request_id=request.id,
-            )
+            if quote is not None:
+                await deliver_request_group_price_notice(
+                    session,
+                    telegram,
+                    request,
+                    supplier=supplier,
+                    existing_quote_before=existing_quote,
+                    public_text=public_text,
+                    staff_text=staff_text,
+                )
+            else:
+                await deliver_request_group_price_notice(
+                    session,
+                    telegram,
+                    request,
+                    supplier=supplier,
+                    existing_quote_before=existing_quote,
+                    staff_text=staff_text,
+                    force_staff_ephemeral=True,
+                )
 
     if (
         quote is not None
@@ -373,16 +401,19 @@ async def process_bound_supplier_reply(
             and new_final is not None
             and previous_price_final != new_final
         ):
-            await _send_notice_best_effort(
+            await deliver_request_group_price_notice(
+                session,
                 telegram,
-                request.group_chat_id,
-                render_template(
-                    "price_changed",
+                request,
+                supplier=supplier,
+                existing_quote_before=existing_quote,
+                staff_text=render_staff_price_changed(
                     request_id=request.id,
+                    supplier=supplier,
                     old_price=previous_price_final,
                     new_price=new_final,
                 ),
-                request_id=request.id,
+                force_staff_ephemeral=True,
             )
     return quote
 

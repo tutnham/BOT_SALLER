@@ -119,6 +119,7 @@ class MockTelegramClient:
         self.answer_callbacks: list[tuple[str, str | None, bool]] = []
         self.edited: list[tuple[int, int, str, dict[str, Any] | None]] = []
         self.chats: dict[int, dict[str, Any]] = {}
+        self.ephemeral_message_parameters: list[dict[str, Any] | None] = []
         self._next_id = 9000
 
     async def send_message(
@@ -129,11 +130,13 @@ class MockTelegramClient:
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
         business_connection_id: str | None = None,
+        ephemeral_message_parameters: dict[str, Any] | None = None,
     ) -> int:
         self._next_id += 1
         self.sent.append((chat_id, text, reply_markup))
         self.parse_modes.append(parse_mode)
         self.business_connection_ids.append(business_connection_id)
+        self.ephemeral_message_parameters.append(ephemeral_message_parameters)
         return self._next_id
 
     async def answer_callback_query(

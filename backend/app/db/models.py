@@ -941,6 +941,7 @@ class RawPrice(Base):
     )
     source_post_id: Mapped[int | None] = mapped_column(BigInteger)
     source_message_link: Mapped[str | None] = mapped_column(Text)
+    post_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -5,15 +5,20 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import MessageIn, QuoteSource, Request, RequestStatus, Supplier
+from app.db.models import MessageIn, Quote, QuoteSource, Request, RequestStatus, Supplier
 from app.parsers.price_parse import parse_price_from_text
 from app.parsers.product_normalizer import extract_product_attrs
 from app.parsers.regex_parser import parse_supplier_reply
 from app.services.candidate_loader_service import load_eligible_candidates
 from app.services.quote_service import display_price_for_group, upsert_quote
+from app.services.staff_ephemeral_notify import (
+    deliver_request_group_price_notice,
+    render_staff_quote_parsed,
+)
 from app.services.reply_binding_service import find_clear_text_match
 from app.services.supplier_review_service import ensure_review_item_for_message
 from app.telegram.client import TelegramClientProtocol
@@ -114,6 +119,12 @@ async def process_batch_supplier_reply(
             and price_result.price is not None
             and not price_result.validation_errors
         ):
+            existing_quote = await session.scalar(
+                select(Quote).where(
+                    Quote.request_id == match.id,
+                    Quote.supplier_id == supplier.id,
+                )
+            )
             parsed = parse_supplier_reply(line)
             quote = await upsert_quote(
                 session,
@@ -128,13 +139,24 @@ async def process_batch_supplier_reply(
                 bargain=match.status is RequestStatus.bargaining,
             )
             if quote is not None and not get_settings().auto_publish_first_valid_price:
-                await telegram.send_message(
-                    match.group_chat_id,
-                    render_template(
+                await deliver_request_group_price_notice(
+                    session,
+                    telegram,
+                    match,
+                    supplier=supplier,
+                    existing_quote_before=existing_quote,
+                    public_text=render_template(
                         "supplier_quote_parsed",
                         request_id=match.id,
                         available=parsed.available,
                         price=display_price_for_group(quote),
+                        qty=parsed.qty,
+                    ),
+                    staff_text=render_staff_quote_parsed(
+                        request_id=match.id,
+                        supplier=supplier,
+                        quote=quote,
+                        available=parsed.available,
                         qty=parsed.qty,
                     ),
                 )

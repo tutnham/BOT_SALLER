@@ -35,8 +35,9 @@ class TelegramClientProtocol(Protocol):
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
         business_connection_id: str | None = None,
+        ephemeral_message_parameters: dict[str, Any] | None = None,
     ) -> int:
-        """Send text message; return ``message_id``."""
+        """Send text message; return ``message_id`` (or ephemeral id when ``message_id`` is 0)."""
         ...
 
     async def answer_callback_query(
@@ -163,6 +164,7 @@ class TelegramClient:
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
         business_connection_id: str | None = None,
+        ephemeral_message_parameters: dict[str, Any] | None = None,
     ) -> int:
         """Send text message; return ``message_id``."""
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
@@ -172,10 +174,18 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         if business_connection_id is not None:
             payload["business_connection_id"] = business_connection_id
+        if ephemeral_message_parameters is not None:
+            payload["ephemeral_message_parameters"] = ephemeral_message_parameters
         result = await self._request("sendMessage", payload, throttle_chat_id=chat_id)
-        if not isinstance(result, dict) or "message_id" not in result:
+        if not isinstance(result, dict):
             raise TelegramSendError("telegram_empty_send_result")
-        return int(result["message_id"])
+        message_id = result.get("message_id")
+        if message_id is not None:
+            return int(message_id)
+        ephemeral_id = result.get("ephemeral_message_id")
+        if ephemeral_id is not None:
+            return int(ephemeral_id)
+        raise TelegramSendError("telegram_empty_send_result")
 
     async def answer_callback_query(
         self,

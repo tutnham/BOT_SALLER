@@ -285,7 +285,9 @@ async def process_backfill_channel(
         return
 
     try:
-        await backfill_channel_on_activate(client, channel=channel)
+        await backfill_channel_on_activate(
+            client, channel=channel, limit_override=task.history_limit
+        )
     except Exception as exc:
         await _fail_or_retry(
             session,

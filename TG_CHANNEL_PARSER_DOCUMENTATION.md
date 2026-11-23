@@ -1,7 +1,7 @@
 # Техническая документация: сервис парсинга Telegram-канала (MTProto, userbot)
 
 Версия: 1.0
-Статус относительно основного проекта («бот закупок»): **отдельный сервис**. Своя БД `tg_parser`, свой Alembic (head `0007_backfill_task_type`; цепочка `0005_runtime_heartbeat` → `0006_post_edited_at` → `0007_backfill_task_type`). Backend ходит только по HTTP (`PARSER_API_URL`, Bearer `PARSER_API_TOKEN`).
+Статус относительно основного проекта («бот закупок»): **отдельный сервис**. Своя БД `tg_parser`, свой Alembic (head `0008_task_history_limit`; цепочка … → `0007_backfill_task_type` → `0008_task_history_limit`). Backend ходит только по HTTP (`PARSER_API_URL`, Bearer `PARSER_API_TOKEN`).
 
 **Фактический runtime (2026-10-30):** один процесс `tg-runtime` (`app.mtproto.runtime`: listener, poll задач, heartbeat) и `tg-parser-api`. Отдельных постоянных сервисов `tg-listener` и `tg-worker` в `docker-compose.tg-parser.yml` нет. Разбор прайсов делает backend (`morning-price`). Задачи `ai_process` не ставятся: каталога `app/ai/` нет, флаг `AI_PROCESS_ENABLED` только пишет предупреждение в лог. Схемы ниже, где нарисованы `tg-listener`, `tg-worker` и Ollama, описывают ранний набросок, не текущий compose.
 
@@ -217,6 +217,8 @@ API / меню: POST /channels {"handle":"@x"|"-100…","purpose":"supplier_pric
 **Формат числового ID.** Каналы в MTProto имеют отрицательные ID с префиксом `-100` (например, `-1001234567890`). Положительный «голый» ID (формат Bot API без префикса) принимается API, но `get_chat` может вернуть `PeerIdInvalid`; resolve-воркер в этом случае пробует `-100<id>` и принимает результат без проверки `chat.type` (OPS-014). В меню бота вводить `@username` или полный ID `-100…`.
 
 **Дубликаты.** Один канал, добавленный и по `@username`, и по числовому ID, создаёт две pending-строки. При resolve второй строки воркер находит существующую строку с тем же `channel_id`, ставит ей `is_active=true` и `status=active`, а дубликат помечает `status='failed', error_text='duplicate_of_channel:<pk>'` — UNIQUE `channel_id` не нарушается. Merge не ставит `backfill_channel` и не отменяет соседние `resolve_channel` дубликата (OPS-016).
+
+**Забор истории по API (из backend).** `POST /channels/backfill` с телом `{"channel_id": -100…, "full_history": false|true}`. Ставит задачу `backfill_channel` в `parser_tasks`. `full_history=true` — без лимита страниц (для кнопки «▶ Запустить прайс» в меню бота); `false` — инкремент с курсора `last_synced_message_id`. Ответ: `{task_id, status, channel_id, error_text?}`. Backend: `parser_client.sync_channel_history`.
 
 ### 6.1 Backfill (первичная загрузка истории)
 

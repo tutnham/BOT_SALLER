@@ -233,6 +233,7 @@ class ParserTask(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("3"))
     error_text: Mapped[str | None] = mapped_column(Text)
+    history_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scheduled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
