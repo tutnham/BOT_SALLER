@@ -285,9 +285,16 @@ async def process_backfill_channel(
         return
 
     try:
+        await session.refresh(task)
+        initial_limit = task.history_limit
         await backfill_channel_on_activate(
-            client, channel=channel, limit_override=task.history_limit
+            client, channel=channel, limit_override=initial_limit
         )
+        await session.refresh(task)
+        if task.history_limit == 0 and initial_limit != 0:
+            await backfill_channel_on_activate(
+                client, channel=channel, limit_override=0
+            )
     except Exception as exc:
         await _fail_or_retry(
             session,

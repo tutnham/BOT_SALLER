@@ -166,6 +166,40 @@ async def test_parse_include_history_covers_old_raws(
 
 
 @pytest.mark.asyncio
+async def test_insert_raw_price_backfills_missing_post_date_on_conflict(
+    db_session: AsyncSession,
+    seed_suppliers: list[Supplier],
+) -> None:
+    supplier_id = seed_suppliers[0].id
+    text = "iPhone 15 256 Black 70000"
+    first, is_new = await insert_raw_price(
+        db_session,
+        supplier_id=supplier_id,
+        text=text,
+        source="channel_post",
+        post_date=None,
+    )
+    assert is_new is True
+    assert first is not None
+    assert first.post_date is None
+
+    newer = datetime(2026, 11, 20, tzinfo=UTC)
+    second, is_new2 = await insert_raw_price(
+        db_session,
+        supplier_id=supplier_id,
+        text=text,
+        source="channel_post",
+        post_date=newer,
+    )
+    assert is_new2 is False
+    assert second is not None
+    assert second.id == first.id
+    assert second.post_date == newer
+    await db_session.refresh(first)
+    assert first.post_date == newer
+
+
+@pytest.mark.asyncio
 async def test_manual_full_history_job_draft_without_markup(
     db_session: AsyncSession,
     mock_telegram,

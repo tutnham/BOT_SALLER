@@ -351,6 +351,9 @@ async def test_process_backfill_channel_success() -> None:
         async def get(self, model, ident):
             return channel
 
+        async def refresh(self, obj) -> None:
+            return None
+
     backfill_mock = AsyncMock(return_value=5)
     with patch.object(task_worker, "backfill_channel_on_activate", backfill_mock):
         await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
@@ -358,6 +361,50 @@ async def test_process_backfill_channel_success() -> None:
     backfill_mock.assert_awaited_once()
     assert task.status == ParserStatus.processed
     assert task.error_text is None
+
+
+@pytest.mark.asyncio
+async def test_process_backfill_channel_reruns_when_upgraded_to_full_history() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=-1001234567890,
+        username="price",
+        title="Price",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.active,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=11,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+        history_limit=None,
+    )
+
+    refresh_calls = 0
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def refresh(self, obj) -> None:
+            nonlocal refresh_calls
+            refresh_calls += 1
+            if refresh_calls >= 2 and obj is task:
+                task.history_limit = 0
+
+    backfill_mock = AsyncMock(return_value=3)
+    with patch.object(task_worker, "backfill_channel_on_activate", backfill_mock):
+        await task_worker.process_backfill_channel(_Session(), task, MagicMock())  # type: ignore[arg-type]
+
+    assert backfill_mock.await_count == 2
+    assert backfill_mock.await_args_list[0].kwargs.get("limit_override") is None
+    assert backfill_mock.await_args_list[1].kwargs.get("limit_override") == 0
+    assert task.status == ParserStatus.processed
 
 
 @pytest.mark.asyncio
@@ -384,6 +431,9 @@ async def test_process_backfill_channel_retries_with_backoff() -> None:
     class _Session:
         async def get(self, model, ident):
             return channel
+
+        async def refresh(self, obj) -> None:
+            return None
 
     with patch.object(
         task_worker,
@@ -422,6 +472,9 @@ async def test_process_backfill_channel_fails_after_max_attempts() -> None:
     class _Session:
         async def get(self, model, ident):
             return channel
+
+        async def refresh(self, obj) -> None:
+            return None
 
     with patch.object(
         task_worker,

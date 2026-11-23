@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -10,7 +11,16 @@ import pytest
 from app import scheduler as scheduler_mod
 from app.config import get_settings
 from app.scheduler import build_job_specs, setup_scheduler
-from app.utils.job_lock import acquire_job_lock, release_job_lock
+from app.utils.job_lock import acquire_job_lock, job_connection_lock, release_job_lock
+
+
+@asynccontextmanager
+async def _fake_job_lock_always(*_args: object, **_kwargs: object):
+    yield True
+
+
+def _patch_scheduler_job_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scheduler_mod, "job_connection_lock", _fake_job_lock_always)
 
 
 class _LockResult:
@@ -121,6 +131,7 @@ async def test_job_morning_price_alerts_on_failure(monkeypatch: pytest.MonkeyPat
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+    _patch_scheduler_job_lock(monkeypatch)
 
     await scheduler_mod.job_morning_price()
 
@@ -150,6 +161,7 @@ async def test_run_guarded_alerts_after_rollback_failure(
     monkeypatch.setattr(scheduler_mod, "get_scheduler_session_factory", lambda: session_factory)
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+    _patch_scheduler_job_lock(monkeypatch)
 
     await scheduler_mod._run_guarded(
         "morning-price",
@@ -188,6 +200,7 @@ async def test_non_alerting_jobs_do_not_notify_on_failure(
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+    _patch_scheduler_job_lock(monkeypatch)
 
     await getattr(scheduler_mod, f"job_{job_name.replace('-', '_')}")()
 
@@ -211,6 +224,7 @@ async def test_job_llm_billing_reminder_alerts_on_failure(
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+    _patch_scheduler_job_lock(monkeypatch)
 
     await scheduler_mod.job_llm_billing_reminder()
 
@@ -230,6 +244,7 @@ async def test_job_recheck_due_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(scheduler_mod, "get_telegram_client", lambda: telegram)
     monkeypatch.setattr(scheduler_mod, "run_recheck_due", runner)
     monkeypatch.setattr(scheduler_mod, "send_admin_alert", alert)
+    _patch_scheduler_job_lock(monkeypatch)
 
     await scheduler_mod.job_recheck_due()
 
@@ -257,3 +272,23 @@ async def test_job_lock_blocks_concurrent_runs(
     assert await release_job_lock(db_session, name) is True
     assert await acquire_job_lock(db_session, name) is True
     await release_job_lock(db_session, name)
+
+
+@pytest.mark.asyncio
+async def test_job_connection_lock_survives_work_session_commit(
+    engine,
+    db_session,
+) -> None:
+    """Advisory lock on a dedicated connection must not drop when the job session commits."""
+    name = "commit-survival-test"
+    async with job_connection_lock(engine, name) as acquired:
+        assert acquired is True
+        await db_session.commit()
+        async with engine.connect() as other:
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            other_session = AsyncSession(bind=other, expire_on_commit=False)
+            try:
+                assert await acquire_job_lock(other_session, name) is False
+            finally:
+                await other_session.close()

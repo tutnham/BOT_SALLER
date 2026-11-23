@@ -100,6 +100,12 @@ def format_sku_title(
     return " ".join(parts).strip() or "—"
 
 
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def _today_start_utc(tz_name: str) -> datetime:
     tz = ZoneInfo(tz_name)
     now_local = datetime.now(tz)
@@ -161,6 +167,9 @@ async def insert_raw_price(
         .options(selectinload(RawPrice.parsed_items))
     )
     existing = existing_result.scalar_one_or_none()
+    if existing is not None and post_date is not None and existing.post_date is None:
+        existing.post_date = _as_utc(post_date)
+        await session.flush()
     return existing, False
 
 
@@ -187,6 +196,7 @@ async def ingest_channel_prices(
     posts_without_text = 0
 
     semaphore = asyncio.Semaphore(5)
+    write_lock = asyncio.Lock()
 
     async def _ingest_supplier_channel(supplier: Supplier) -> tuple[Supplier, Exception | None]:
         nonlocal raw_new, posts_seen, posts_without_text
@@ -213,27 +223,31 @@ async def ingest_channel_prices(
                                 if not text_body:
                                     posts_without_text += 1
                                     continue
-                                if max_post_date is None or post.post_date > max_post_date:
-                                    max_post_date = post.post_date
-                                raw, is_new = await insert_raw_price(
-                                    session,
-                                    supplier_id=supplier.id,
-                                    text=text_body,
-                                    source="channel_post",
-                                    source_post_id=post.post_id,
-                                    source_message_link=post.message_link,
-                                    post_date=post.post_date,
-                                )
-                                if is_new and raw is not None:
-                                    raw_new += 1
+                                post_date = _as_utc(post.post_date)
+                                if max_post_date is None or post_date > max_post_date:
+                                    max_post_date = post_date
+                                async with write_lock:
+                                    raw, is_new = await insert_raw_price(
+                                        session,
+                                        supplier_id=supplier.id,
+                                        text=text_body,
+                                        source="channel_post",
+                                        source_post_id=post.post_id,
+                                        source_message_link=post.message_link,
+                                        post_date=post_date,
+                                    )
+                                    if is_new and raw is not None:
+                                        raw_new += 1
                     except ParserClientError as exc:
                         fetch_error = exc
-                if max_post_date is not None and (
-                    supplier.last_price_sync_at is None
-                    or max_post_date > supplier.last_price_sync_at
-                ):
-                    supplier.last_price_sync_at = max_post_date
-                    await session.flush()
+                if max_post_date is not None:
+                    cursor = supplier.last_price_sync_at
+                    if cursor is not None and cursor.tzinfo is None:
+                        cursor = cursor.replace(tzinfo=UTC)
+                    if cursor is None or max_post_date > cursor:
+                        async with write_lock:
+                            supplier.last_price_sync_at = max_post_date
+                            await session.flush()
                 return supplier, fetch_error
             except ParserClientError as exc:
                 return supplier, exc
@@ -579,6 +593,22 @@ async def count_unparsed_raw_prices_today(session: AsyncSession) -> int:
     return int(result.scalar_one())
 
 
+async def count_unparsed_raw_prices_all(session: AsyncSession) -> int:
+    result = await session.execute(
+        select(func.count(RawPrice.id)).where(~RawPrice.parsed_items.any())
+    )
+    return int(result.scalar_one())
+
+
+async def count_low_confidence_items_all(session: AsyncSession) -> int:
+    result = await session.execute(
+        select(func.count(ParsedItem.id)).where(
+            ParsedItem.condition.like("low_confidence:%")
+        )
+    )
+    return int(result.scalar_one())
+
+
 async def count_low_confidence_items_today(session: AsyncSession) -> int:
     """Сегодняшние parsed_items, отброшенные агрегатором из-за low confidence."""
     day_start = _today_start_utc(get_settings().tz)
@@ -849,8 +879,8 @@ async def build_full_history_price(
             draft_items=0,
             aggregated_items=len(aggregated),
             llm_configured=bool(llm_configuration_snapshot()["configured"]),
-            unparsed_raw=await count_unparsed_raw_prices_today(session),
-            low_confidence=await count_low_confidence_items_today(session),
+            unparsed_raw=await count_unparsed_raw_prices_all(session),
+            low_confidence=await count_low_confidence_items_all(session),
             confidence_threshold=settings.confidence_threshold,
         )
         result["reason"] = [reason.code for reason in reasons]

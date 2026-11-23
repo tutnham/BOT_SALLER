@@ -7,11 +7,13 @@ Uses 64-bit signed keys derived from stable job names so scheduler, manual
 from __future__ import annotations
 
 import hashlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import cast
 
 from loguru import logger
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 def _advisory_lock_key(name: str) -> int:
@@ -46,3 +48,33 @@ async def release_job_lock(session: AsyncSession, name: str) -> bool:
     if not released:
         logger.warning("Job lock was not held on release: name={}", name)
     return released
+
+
+@asynccontextmanager
+async def job_connection_lock(
+    engine: AsyncEngine,
+    name: str,
+) -> AsyncIterator[bool]:
+    """Hold a session-level advisory lock on one dedicated DB connection.
+
+    Work sessions may ``commit()`` during the job without releasing the lock;
+    the lock connection stays checked out until this context exits.
+    """
+    async with engine.connect() as conn:
+        key = _advisory_lock_key(name)
+        result = await conn.execute(
+            text("SELECT pg_try_advisory_lock(:key)").bindparams(key=key)
+        )
+        locked = cast(bool, result.scalar_one())
+        if not locked:
+            logger.info("Job lock already held: name={}", name)
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            unlock = await conn.execute(
+                text("SELECT pg_advisory_unlock(:key)").bindparams(key=key)
+            )
+            if not cast(bool, unlock.scalar_one()):
+                logger.warning("Job lock was not held on release: name={}", name)

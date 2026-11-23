@@ -1843,19 +1843,22 @@ async def test_parser_run_does_not_start_job_twice(
     mock_telegram,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from contextlib import asynccontextmanager
+
     from app import jobs
     from app.telegram import jobs_router
 
     calls: list[int] = []
 
-    async def _locked(*_args, **_kwargs) -> bool:
-        return False
+    @asynccontextmanager
+    async def _lock_busy(*_args: object, **_kwargs: object):
+        yield False
 
     async def _runner(*_args, **_kwargs) -> dict:
         calls.append(1)
         return {"status": "ok"}
 
-    monkeypatch.setattr(jobs_router, "acquire_job_lock", _locked)
+    monkeypatch.setattr(jobs_router, "job_connection_lock", _lock_busy)
     monkeypatch.setattr(jobs, "run_morning_price", _runner)
 
     resp = await webhook_client.post(
@@ -1883,23 +1886,22 @@ async def test_parser_run_reports_result(
     mock_telegram,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from contextlib import asynccontextmanager
+
     from app import jobs
     from app.telegram import jobs_router
 
     calls: list[int] = []
 
-    async def _acquired(*_args, **_kwargs) -> bool:
-        return True
-
-    async def _released(*_args, **_kwargs) -> None:
-        return None
+    @asynccontextmanager
+    async def _lock_free(*_args: object, **_kwargs: object):
+        yield True
 
     async def _runner(*_args, **_kwargs) -> dict:
         calls.append(1)
         return {"status": "ok", "items": 3, "raw_prices_new": 1, "draft_id": 42}
 
-    monkeypatch.setattr(jobs_router, "acquire_job_lock", _acquired)
-    monkeypatch.setattr(jobs_router, "release_job_lock", _released)
+    monkeypatch.setattr(jobs_router, "job_connection_lock", _lock_free)
     monkeypatch.setattr(jobs, "run_morning_price", _runner)
 
     resp = await webhook_client.post(
@@ -1930,23 +1932,22 @@ async def test_parser_run_returns_before_job_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Кнопка не ждёт прайс: ответ уходит, пока джоб ещё стоит на паузе."""
+    from contextlib import asynccontextmanager
+
     from app import jobs
     from app.telegram import jobs_router
 
     release = asyncio.Event()
 
-    async def _acquired(*_args, **_kwargs) -> bool:
-        return True
-
-    async def _released(*_args, **_kwargs) -> None:
-        return None
+    @asynccontextmanager
+    async def _lock_free(*_args: object, **_kwargs: object):
+        yield True
 
     async def _runner(*_args, **_kwargs) -> dict:
         await release.wait()
         return {"status": "ok", "items": 0, "raw_prices_new": 0, "draft_id": None}
 
-    monkeypatch.setattr(jobs_router, "acquire_job_lock", _acquired)
-    monkeypatch.setattr(jobs_router, "release_job_lock", _released)
+    monkeypatch.setattr(jobs_router, "job_connection_lock", _lock_free)
     monkeypatch.setattr(jobs, "run_morning_price", _runner)
 
     resp = await asyncio.wait_for(
@@ -2088,6 +2089,67 @@ async def test_manual_morning_price_pulls_channel_before_draft(
     text = _last_text(mock_telegram)
     assert "Посты канала забраны." in text
     assert "черновик #3" in text
+
+
+@pytest.mark.asyncio
+async def test_manual_morning_price_skips_draft_when_backfill_incomplete(
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.handlers import admin_menu
+    from app.services import parser_client
+    from app.telegram.client import set_telegram_client
+
+    price_called = False
+
+    class _Rows:
+        def scalars(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                all=lambda: [
+                    SimpleNamespace(name="лански", price_channel_id=-1001722834216)
+                ]
+            )
+
+    class _Session:
+        async def execute(self, _stmt: object) -> _Rows:
+            return _Rows()
+
+        async def commit(self) -> None:
+            return None
+
+    class _Scope:
+        async def __aenter__(self) -> _Session:
+            return _Session()
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    async def _sync(channel_id: int, **kwargs: object) -> str:
+        return "processing"
+
+    async def _price(*_args: object, **_kwargs: object) -> dict:
+        nonlocal price_called
+        price_called = True
+        return {"status": "ok", "draft_id": 1}
+
+    async def _locked(session, _name, runner):  # noqa: ANN001
+        return await runner(session, mock_telegram)
+
+    set_telegram_client(mock_telegram)
+    monkeypatch.setattr("app.db.session.get_scheduler_session_factory", lambda: (lambda: _Scope()))
+    monkeypatch.setattr(parser_client, "sync_channel_history", _sync)
+    monkeypatch.setattr("app.jobs.run_morning_price", _price)
+    monkeypatch.setattr("app.telegram.jobs_router._run_locked", _locked)
+    try:
+        await admin_menu._finish_manual_morning_price(OWNER_TG_ID)
+    finally:
+        set_telegram_client(None)
+
+    assert price_called is False
+    text = _last_text(mock_telegram)
+    assert "черновик не создан" in text
 
 
 @pytest.mark.asyncio

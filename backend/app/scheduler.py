@@ -16,7 +16,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.session import get_scheduler_session_factory
+from app.db.session import get_engine, get_scheduler_session_factory
 from app.jobs import (
     run_daily_report,
     run_llm_billing_reminder,
@@ -25,7 +25,7 @@ from app.jobs import (
 )
 from app.services.alert_service import send_admin_alert
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
-from app.utils.job_lock import acquire_job_lock, release_job_lock
+from app.utils.job_lock import job_connection_lock
 
 
 class JobSpec(NamedTuple):
@@ -71,42 +71,40 @@ async def _run_guarded(
     session_factory = get_scheduler_session_factory()
     telegram = get_telegram_client()
     async with session_factory() as session:
-        if not await acquire_job_lock(session, job_name):
-            logger.info("Job {} skipped: already running on another instance", job_name)
-            return
-
-        from app.services.telemetry import observe_cron
-
-        try:
-            with observe_cron(job_name):
-                await asyncio.wait_for(
-                    runner(session, telegram),
-                    timeout=timeout_seconds,
+        async with job_connection_lock(get_engine(), job_name) as acquired:
+            if not acquired:
+                logger.info(
+                    "Job {} skipped: already running on another instance", job_name
                 )
-            logger.info("Job {} finished successfully", job_name)
-            await _record_job_run(job_name, "ok", started)
-        except Exception as exc:
+                return
+
+            from app.services.telemetry import observe_cron
+
             try:
-                await session.rollback()
-            except Exception:
-                logger.exception("Job {} rollback failed after error", job_name)
-            err_type = type(exc).__name__
-            logger.exception("Job {} failed: {}", job_name, err_type)
-            await _record_job_run(job_name, "failed", started, error_type=err_type)
-            if alert_on_failure:
-                await send_admin_alert(
-                    (
-                        f"⚠️ Job {job_name} failed\n"
-                        f"Error: {err_type}\n"
-                        "Check backend logs and parser availability."
-                    ),
-                    telegram=telegram,
-                )
-        finally:
-            try:
-                await release_job_lock(session, job_name)
-            except Exception:
-                logger.exception("Job {} advisory unlock failed", job_name)
+                with observe_cron(job_name):
+                    await asyncio.wait_for(
+                        runner(session, telegram),
+                        timeout=timeout_seconds,
+                    )
+                logger.info("Job {} finished successfully", job_name)
+                await _record_job_run(job_name, "ok", started)
+            except Exception as exc:
+                try:
+                    await session.rollback()
+                except Exception:
+                    logger.exception("Job {} rollback failed after error", job_name)
+                err_type = type(exc).__name__
+                logger.exception("Job {} failed: {}", job_name, err_type)
+                await _record_job_run(job_name, "failed", started, error_type=err_type)
+                if alert_on_failure:
+                    await send_admin_alert(
+                        (
+                            f"⚠️ Job {job_name} failed\n"
+                            f"Error: {err_type}\n"
+                            "Check backend logs and parser availability."
+                        ),
+                        telegram=telegram,
+                    )
 
 
 async def job_morning_price() -> None:

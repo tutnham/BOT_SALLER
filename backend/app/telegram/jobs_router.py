@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_db
+from app.db.session import get_db, get_engine
 from app.jobs import (
     run_daily_report,
     run_llm_billing_reminder,
@@ -19,7 +19,7 @@ from app.jobs import (
 )
 from app.telegram.client import TelegramClientProtocol, get_telegram_client
 from app.telegram.deps import verify_webhook_secret
-from app.utils.job_lock import acquire_job_lock, release_job_lock
+from app.utils.job_lock import job_connection_lock
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -40,33 +40,32 @@ async def _run_locked(
     from app.services.audit_service import record_admin_mutation
     from app.services.job_run_service import record_job_run
 
-    if not await acquire_job_lock(session, lock_name):
-        return {"status": "skipped", "reason": "already_running"}
-    started = datetime.now(UTC)
-    try:
-        result = await runner(session, get_telegram_client())
-        await record_job_run(lock_name, "ok", started)
-        await record_admin_mutation(
-            session,
-            action="manual_job_run",
-            entity_type="job",
-            entity_id=lock_name,
-            new_state={"status": "ok"},
-        )
-        return result
-    except Exception as exc:
-        await record_job_run(lock_name, "failed", started, error_type=type(exc).__name__)
-        await record_admin_mutation(
-            session,
-            action="manual_job_run",
-            entity_type="job",
-            entity_id=lock_name,
-            new_state={"status": "failed", "error_type": type(exc).__name__},
-            outcome="failed",
-        )
-        raise
-    finally:
-        await release_job_lock(session, lock_name)
+    async with job_connection_lock(get_engine(), lock_name) as acquired:
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+        started = datetime.now(UTC)
+        try:
+            result = await runner(session, get_telegram_client())
+            await record_job_run(lock_name, "ok", started)
+            await record_admin_mutation(
+                session,
+                action="manual_job_run",
+                entity_type="job",
+                entity_id=lock_name,
+                new_state={"status": "ok"},
+            )
+            return result
+        except Exception as exc:
+            await record_job_run(lock_name, "failed", started, error_type=type(exc).__name__)
+            await record_admin_mutation(
+                session,
+                action="manual_job_run",
+                entity_type="job",
+                entity_id=lock_name,
+                new_state={"status": "failed", "error_type": type(exc).__name__},
+                outcome="failed",
+            )
+            raise
 
 
 @router.post("/daily-report", dependencies=[Depends(verify_webhook_secret)])

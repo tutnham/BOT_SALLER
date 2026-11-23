@@ -1867,6 +1867,7 @@ async def _send_price_channels(
 
 _PARSER_TAB_LABELS = ("Цены", "Каналы и статус")
 _MANUAL_MORNING_PRICE_TIMEOUT = 1800.0
+_FULL_HISTORY_PULL_BUDGET = 900.0
 _PARSER_LINE_LIMIT = 120
 _PARSER_READY_REASON_LIMIT = 200
 _PARSER_READY_REASON_COUNT = 3
@@ -2072,6 +2073,15 @@ async def _send_parser_screen(
 def _morning_price_result_text(result: dict[str, Any]) -> str:
     if result.get("status") == "skipped":
         return "Утренний прайс уже выполняется — подожди минуту."
+    if result.get("status") == "error":
+        reasons = result.get("reason") or []
+        if "backfill_incomplete" in reasons:
+            pull = result.get("parser_pull")
+            detail = f" {pull}" if pull else ""
+            return (
+                "Полная история канала ещё не забрана парсером — черновик не создан."
+                f"{detail}"
+            )
     draft_id = result.get("draft_id")
     notice = (
         f"Готово: позиций {result.get('items', 0)}, "
@@ -2087,8 +2097,12 @@ def _morning_price_result_text(result: dict[str, Any]) -> str:
     return notice
 
 
-async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
-    """Ручной забор истории привязанных каналов. MTProto остаётся в парсере."""
+async def _pull_bound_channel_posts(session: AsyncSession) -> tuple[bool, str | None]:
+    """Ручной забор истории привязанных каналов. MTProto остаётся в парсере.
+
+    Returns ``(all_complete, user_note)``. ``all_complete`` is False when any
+    channel failed or the shared pull budget expired before ``processed``.
+    """
     result = await session.execute(
         select(Supplier).where(
             Supplier.active.is_(True),
@@ -2101,16 +2115,27 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
         if supplier.price_channel_id is not None
     ]
     if not suppliers:
-        return None
+        return True, None
     notes: list[str] = []
     pulled = 0
+    loop = asyncio.get_running_loop()
+    budget_started = loop.time()
+    all_complete = True
     for supplier in suppliers:
+        remaining = _FULL_HISTORY_PULL_BUDGET - (loop.time() - budget_started)
+        if remaining <= 0:
+            all_complete = False
+            notes.append("истёк общий лимит ожидания парсера (900 с)")
+            break
         channel_id = int(supplier.price_channel_id)
         try:
             status = await parser_client.sync_channel_history(
-                channel_id, full_history=True, timeout=900.0
+                channel_id,
+                full_history=True,
+                timeout=remaining,
             )
         except parser_client.ParserClientError as exc:
+            all_complete = False
             notes.append(
                 f"{supplier.name}: парсер не принял забор "
                 f"({parser_client.classify_parser_error(exc)})"
@@ -2119,14 +2144,15 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
         if status == "processed":
             pulled += 1
         else:
+            all_complete = False
             notes.append(f"{supplier.name}: забор постов не завершён ({status})")
     if pulled and not notes:
-        return "Посты канала забраны."
+        return True, "Посты канала забраны."
     if pulled:
-        return f"Посты части каналов забраны. {' '.join(notes)}"
+        return all_complete, f"Посты части каналов забраны. {' '.join(notes)}"
     if notes:
-        return " ".join(notes)
-    return None
+        return all_complete, " ".join(notes)
+    return all_complete, None
 
 
 async def _finish_manual_morning_price(chat_id: int) -> None:
@@ -2142,7 +2168,13 @@ async def _finish_manual_morning_price(chat_id: int) -> None:
         async with factory() as session:
             try:
                 async def _pull_then_price(locked_session, telegram_client):  # noqa: ANN001
-                    note = await _pull_bound_channel_posts(locked_session)
+                    pull_ok, note = await _pull_bound_channel_posts(locked_session)
+                    if not pull_ok:
+                        return {
+                            "status": "error",
+                            "reason": ["backfill_incomplete"],
+                            "parser_pull": note,
+                        }
                     price = await jobs.run_morning_price(
                         locked_session, telegram_client, full_history=True
                     )
