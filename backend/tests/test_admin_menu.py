@@ -1871,7 +1871,7 @@ async def test_parser_run_does_not_start_job_twice(
     await _wait_manual_morning_price()
 
     assert calls == []
-    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
     assert "уже выполняется" in _last_text(mock_telegram)
 
 
@@ -1915,7 +1915,7 @@ async def test_parser_run_reports_result(
     await _wait_manual_morning_price()
 
     assert len(calls) == 1
-    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
     text = _last_text(mock_telegram)
     assert "позиций 3" in text
     assert "черновик #42" in text
@@ -1962,7 +1962,7 @@ async def test_parser_run_returns_before_job_finishes(
         timeout=3,
     )
     assert resp.json()["status"] == "ok"
-    assert "Запущено, результат придёт сообщением." in mock_telegram.edited[-1][2]
+    assert "Запущено. Сначала забираю посты канала, потом собираю прайс." in mock_telegram.edited[-1][2]
     assert not any("Готово:" in text for _chat, text, _markup in mock_telegram.sent)
 
     release.set()
@@ -2003,9 +2003,9 @@ async def test_manual_morning_price_uses_scheduler_session_and_timeout(
 
     real_wait = asyncio.wait_for
 
-    async def _wait(awaitable, limit):  # noqa: ANN001
-        seen["timeout"] = limit
-        return await real_wait(awaitable, limit)
+    async def _wait(awaitable, timeout):  # noqa: ANN001
+        seen["timeout"] = timeout
+        return await real_wait(awaitable, timeout)
 
     set_telegram_client(mock_telegram)
     monkeypatch.setattr("app.db.session.get_scheduler_session_factory", _factory)
@@ -2023,6 +2023,69 @@ async def test_manual_morning_price_uses_scheduler_session_and_timeout(
     assert seen["committed"] is True
     assert "позиций 2" in _last_text(mock_telegram)
     assert "черновик #7" in _last_text(mock_telegram)
+
+
+@pytest.mark.asyncio
+async def test_manual_morning_price_pulls_channel_before_draft(
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.handlers import admin_menu
+    from app.services import parser_client
+    from app.telegram.client import set_telegram_client
+
+    order: list[str] = []
+
+    class _Rows:
+        def scalars(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                all=lambda: [
+                    SimpleNamespace(name="лански", price_channel_id=-1001722834216)
+                ]
+            )
+
+    class _Session:
+        async def execute(self, _stmt: object) -> _Rows:
+            return _Rows()
+
+        async def commit(self) -> None:
+            return None
+
+    class _Scope:
+        async def __aenter__(self) -> _Session:
+            return _Session()
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    async def _sync(channel_id: int, **_kwargs: object) -> str:
+        order.append(f"sync:{channel_id}")
+        return "processed"
+
+    async def _price(_session: object, _telegram: object) -> dict:
+        order.append("price")
+        return {"status": "ok", "items": 1, "raw_prices_new": 1, "draft_id": 3}
+
+    async def _locked(session, _name, runner):  # noqa: ANN001
+        order.append("locked")
+        return await runner(session, mock_telegram)
+
+    set_telegram_client(mock_telegram)
+    monkeypatch.setattr("app.db.session.get_scheduler_session_factory", lambda: (lambda: _Scope()))
+    monkeypatch.setattr(parser_client, "sync_channel_history", _sync)
+    monkeypatch.setattr("app.jobs.run_morning_price", _price)
+    monkeypatch.setattr("app.telegram.jobs_router._run_locked", _locked)
+    try:
+        await admin_menu._finish_manual_morning_price(OWNER_TG_ID)
+    finally:
+        set_telegram_client(None)
+
+    assert order == ["locked", "sync:-1001722834216", "price"]
+    text = _last_text(mock_telegram)
+    assert "Посты канала забраны." in text
+    assert "черновик #3" in text
 
 
 @pytest.mark.asyncio

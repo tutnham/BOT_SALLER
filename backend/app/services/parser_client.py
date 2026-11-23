@@ -314,6 +314,69 @@ async def delete_channel(
     await _request("DELETE", f"/channels/{channel_id}", http_client=http_client)
 
 
+class ParserBackfill(BaseModel):
+    task_id: int
+    status: str
+    channel_id: int
+    error_text: str | None = None
+
+
+async def enqueue_channel_backfill(
+    channel_id: int,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> ParserBackfill:
+    """Ask tg-runtime to pull recent channel history. Does not run MTProto here."""
+    payload = await _request(
+        "POST",
+        "/channels/backfill",
+        json_body={"channel_id": channel_id},
+        http_client=http_client,
+    )
+    if not isinstance(payload, dict):
+        raise ParserClientError("parser_invalid_backfill_response")
+    try:
+        return ParserBackfill.model_validate(payload)
+    except ValidationError as exc:
+        raise ParserClientError(f"parser_invalid_backfill_response:{exc}") from exc
+
+
+async def fetch_channel_backfill(
+    task_id: int,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> ParserBackfill:
+    payload = await _request(
+        "GET",
+        f"/channels/backfill/{task_id}",
+        http_client=http_client,
+    )
+    if not isinstance(payload, dict):
+        raise ParserClientError("parser_invalid_backfill_response")
+    try:
+        return ParserBackfill.model_validate(payload)
+    except ValidationError as exc:
+        raise ParserClientError(f"parser_invalid_backfill_response:{exc}") from exc
+
+
+async def sync_channel_history(
+    channel_id: int,
+    *,
+    timeout: float = 90.0,
+    poll_seconds: float = 2.0,
+    http_client: httpx.AsyncClient | None = None,
+) -> str:
+    """Enqueue backfill and wait until the runtime finishes or the wait expires."""
+    started = asyncio.get_running_loop().time()
+    task = await enqueue_channel_backfill(channel_id, http_client=http_client)
+    while task.status in {"new", "processing"}:
+        if asyncio.get_running_loop().time() - started >= timeout:
+            return task.status
+        await asyncio.sleep(poll_seconds)
+        task = await fetch_channel_backfill(task.task_id, http_client=http_client)
+    return task.status
+
+
 async def fetch_parser_ready(
     *,
     http_client: httpx.AsyncClient | None = None,

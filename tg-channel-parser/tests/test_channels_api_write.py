@@ -50,6 +50,8 @@ def _make_fake_session():
                         task.error_text = "cancelled"
                 return _Result([])
             sql = str(stmt).lower()
+            if "parser_task" in sql:
+                return _Result(self.tasks)
             if "parser_channels" in sql or "parserchannel" in sql:
                 return _Result(self.channels)
             return _Result([])
@@ -68,9 +70,10 @@ def _make_fake_session():
             self.commit_calls += 1
 
         async def get(self, model, ident):
-            for ch in self.channels:
-                if ch.id == ident:
-                    return ch
+            rows = self.tasks if model is ParserTask else self.channels
+            for row in rows:
+                if row.id == ident:
+                    return row
             return None
 
         async def close(self) -> None:
@@ -353,5 +356,101 @@ async def test_delete_channel_cancels_resolve_task(
         assert response.status_code == 200
         assert session.tasks[0].status == ParserStatus.failed
         assert session.tasks[0].error_text == "cancelled"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {API_AUTH_TOKEN}"}
+
+
+@pytest.mark.asyncio
+async def test_backfill_enqueues_once_for_active_channel(
+    client: AsyncClient, fake_session: Any
+) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+    session.channels.append(
+        ParserChannel(
+            id=4,
+            channel_id=-1001722834216,
+            title="LINKTECH",
+            status=ParserChannelStatus.active,
+            is_active=True,
+        )
+    )
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        first = await client.post(
+            "/channels/backfill",
+            json={"channel_id": -1001722834216},
+            headers=_auth(),
+        )
+        second = await client.post(
+            "/channels/backfill",
+            json={"channel_id": -1001722834216},
+            headers=_auth(),
+        )
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert first.json()["task_id"] == second.json()["task_id"]
+        assert first.json()["status"] == "new"
+        backfills = [
+            task for task in session.tasks if task.task_type == ParserTaskType.backfill_channel
+        ]
+        assert len(backfills) == 1
+        assert backfills[0].channel_id == 4
+
+        status = await client.get(f"/channels/backfill/{first.json()['task_id']}", headers=_auth())
+        assert status.status_code == 200
+        assert status.json()["status"] == "new"
+        assert status.json()["channel_id"] == -1001722834216
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_backfill_rejects_unknown_and_pending(
+    client: AsyncClient, fake_session: Any
+) -> None:
+    from app.api.main import app
+    from app.db.session import get_db
+
+    session = fake_session()
+    session.channels.append(
+        ParserChannel(
+            id=5,
+            channel_id=-1001,
+            status=ParserChannelStatus.pending,
+            is_active=True,
+        )
+    )
+
+    async def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        missing = await client.post(
+            "/channels/backfill",
+            json={"channel_id": -1001722834216},
+            headers=_auth(),
+        )
+        pending = await client.post(
+            "/channels/backfill",
+            json={"channel_id": -1001},
+            headers=_auth(),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "channel_not_found"
+        assert pending.status_code == 409
+        assert pending.json()["detail"] == "channel_not_active"
+        assert session.tasks == []
     finally:
         app.dependency_overrides.clear()

@@ -2081,7 +2081,50 @@ def _morning_price_result_text(result: dict[str, Any]) -> str:
     reasons = result.get("reason") or []
     if reasons:
         notice = f"{notice} Причины: {', '.join(str(code) for code in reasons)}."
+    pull = result.get("parser_pull")
+    if pull:
+        notice = f"{pull} {notice}"
     return notice
+
+
+async def _pull_bound_channel_posts(session: AsyncSession) -> str | None:
+    """Ручной забор истории привязанных каналов. MTProto остаётся в парсере."""
+    result = await session.execute(
+        select(Supplier).where(
+            Supplier.active.is_(True),
+            Supplier.price_channel_id.is_not(None),
+        )
+    )
+    suppliers = [
+        supplier
+        for supplier in result.scalars().all()
+        if supplier.price_channel_id is not None
+    ]
+    if not suppliers:
+        return None
+    notes: list[str] = []
+    pulled = 0
+    for supplier in suppliers:
+        channel_id = int(supplier.price_channel_id)
+        try:
+            status = await parser_client.sync_channel_history(channel_id)
+        except parser_client.ParserClientError as exc:
+            notes.append(
+                f"{supplier.name}: парсер не принял забор "
+                f"({parser_client.classify_parser_error(exc)})"
+            )
+            continue
+        if status == "processed":
+            pulled += 1
+        else:
+            notes.append(f"{supplier.name}: забор постов не завершён ({status})")
+    if pulled and not notes:
+        return "Посты канала забраны."
+    if pulled:
+        return f"Посты части каналов забраны. {' '.join(notes)}"
+    if notes:
+        return " ".join(notes)
+    return None
 
 
 async def _finish_manual_morning_price(chat_id: int) -> None:
@@ -2096,8 +2139,15 @@ async def _finish_manual_morning_price(chat_id: int) -> None:
         factory = get_scheduler_session_factory()
         async with factory() as session:
             try:
+                async def _pull_then_price(locked_session, telegram_client):  # noqa: ANN001
+                    note = await _pull_bound_channel_posts(locked_session)
+                    price = await jobs.run_morning_price(locked_session, telegram_client)
+                    if note and isinstance(price, dict):
+                        return {**price, "parser_pull": note}
+                    return price
+
                 result = await asyncio.wait_for(
-                    _run_locked(session, "morning-price", jobs.run_morning_price),
+                    _run_locked(session, "morning-price", _pull_then_price),
                     timeout=_MANUAL_MORNING_PRICE_TIMEOUT,
                 )
             except TimeoutError:
@@ -2146,7 +2196,7 @@ async def _run_parser_morning_price(
         chat_id,
         tab=tab if tab in (0, 1) else 0,
         message_id=message_id,
-        notice="Запущено, результат придёт сообщением.",
+        notice="Запущено. Сначала забираю посты канала, потом собираю прайс.",
     )
     _schedule_manual_morning_price(chat_id)
 

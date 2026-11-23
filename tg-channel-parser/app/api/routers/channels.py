@@ -41,6 +41,17 @@ class ChannelCreate(BaseModel):
     purpose: ParserChannelPurpose = ParserChannelPurpose.supplier_price_source
 
 
+class ChannelBackfillIn(BaseModel):
+    channel_id: int = Field(..., description="Telegram channel id, including the -100 prefix")
+
+
+class ChannelBackfillOut(BaseModel):
+    task_id: int
+    status: str
+    channel_id: int
+    error_text: str | None = None
+
+
 def _channel_matches(
     channel: ParserChannel,
     *,
@@ -72,6 +83,18 @@ def _integrity_conflict_detail(exc: IntegrityError) -> str:
     if "channel_id" in message:
         return "channel_id_exists"
     return "pending_channel_username_exists"
+
+
+def _enqueue_backfill_task(db: AsyncSession, channel: ParserChannel) -> ParserTask:
+    task = ParserTask(
+        post_id=None,
+        channel_id=channel.id,
+        task_type=ParserTaskType.backfill_channel,
+        status=ParserStatus.new,
+        max_attempts=5,
+    )
+    db.add(task)
+    return task
 
 
 def _enqueue_resolve_task(db: AsyncSession, channel: ParserChannel) -> None:
@@ -180,6 +203,88 @@ async def create_channel(
     await db.commit()
 
     return channel
+
+
+@router.post(
+    "/backfill",
+    response_model=ChannelBackfillOut,
+    dependencies=[Depends(require_api_token)],
+    status_code=202,
+)
+async def enqueue_channel_backfill(
+    payload: ChannelBackfillIn,
+    db: AsyncSession = Depends(get_db),
+) -> ChannelBackfillOut:
+    """Поставить ручной забор истории. Забирает её процесс tg-runtime, не API."""
+    found = list(
+        (
+            await db.execute(
+                select(ParserChannel).where(ParserChannel.channel_id == payload.channel_id)
+            )
+        ).scalars().all()
+    )
+    channel = next((row for row in found if row.channel_id == payload.channel_id), None)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="channel_not_found")
+    if (
+        not channel.is_active
+        or channel.status != ParserChannelStatus.active
+        or channel.channel_id is None
+    ):
+        raise HTTPException(status_code=409, detail="channel_not_active")
+
+    open_tasks = list(
+        (
+            await db.execute(
+                select(ParserTask).where(
+                    ParserTask.channel_id == channel.id,
+                    ParserTask.task_type == ParserTaskType.backfill_channel,
+                    ParserTask.status.in_((ParserStatus.new, ParserStatus.processing)),
+                )
+            )
+        ).scalars().all()
+    )
+    task = next(
+        (
+            row
+            for row in open_tasks
+            if row.channel_id == channel.id
+            and row.task_type == ParserTaskType.backfill_channel
+            and row.status in (ParserStatus.new, ParserStatus.processing)
+        ),
+        None,
+    )
+    if task is None:
+        task = _enqueue_backfill_task(db, channel)
+        await db.flush()
+    await db.commit()
+    return ChannelBackfillOut(
+        task_id=task.id,
+        status=task.status.value if isinstance(task.status, ParserStatus) else str(task.status),
+        channel_id=channel.channel_id,
+        error_text=task.error_text,
+    )
+
+
+@router.get(
+    "/backfill/{task_id}",
+    response_model=ChannelBackfillOut,
+    dependencies=[Depends(require_api_token)],
+)
+async def get_channel_backfill(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> ChannelBackfillOut:
+    task = await db.get(ParserTask, task_id)
+    if task is None or task.task_type != ParserTaskType.backfill_channel:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    channel = await db.get(ParserChannel, task.channel_id) if task.channel_id is not None else None
+    return ChannelBackfillOut(
+        task_id=task.id,
+        status=task.status.value if isinstance(task.status, ParserStatus) else str(task.status),
+        channel_id=channel.channel_id if channel is not None and channel.channel_id is not None else 0,
+        error_text=task.error_text,
+    )
 
 
 @router.delete(
