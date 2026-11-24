@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     media_retry_backoff_base_seconds: float = 5.0
     task_stale_processing_minutes: int = 15
     max_media_bytes: int = 50 * 1024 * 1024
-    backfill_on_activate_limit: int = 200
+    backfill_on_activate_limit: int = 3
     ai_process_enabled: bool = False
 
     # API

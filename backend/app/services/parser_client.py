@@ -18,6 +18,7 @@ DEFAULT_POSTS_PAGE_SIZE = 100
 MAX_POSTS_PAGE_SIZE = 500
 # B3: предохранитель от бесконечной пагинации (зацикленный cursor / дефект парсера)
 MAX_POSTS_PAGES = 200
+MANUAL_CHANNEL_HISTORY_LIMIT = 3
 
 
 def get_parser_http_client() -> httpx.AsyncClient:
@@ -247,6 +248,25 @@ async def iter_posts(
         cursor = next_cursor
 
 
+async def get_latest_posts(
+    *,
+    channel_id: int,
+    latest: int = MANUAL_CHANNEL_HISTORY_LIMIT,
+    http_client: httpx.AsyncClient | None = None,
+) -> list[ParserPost]:
+    """Fetch the newest ``latest`` posts for a channel (all content types)."""
+    bounded = min(max(int(latest), 1), MAX_POSTS_PAGE_SIZE)
+    params = {"channel_id": str(channel_id), "latest": str(bounded)}
+    payload = await _request(
+        "GET",
+        "/posts",
+        params=params,
+        http_client=http_client,
+    )
+    raw_items, _ = _extract_posts_page(payload)
+    return _validate_posts(raw_items, channel_id=channel_id)
+
+
 async def get_posts(
     *,
     channel_id: int,
@@ -324,14 +344,16 @@ class ParserBackfill(BaseModel):
 async def enqueue_channel_backfill(
     channel_id: int,
     *,
+    history_limit: int | None = MANUAL_CHANNEL_HISTORY_LIMIT,
     full_history: bool = False,
     http_client: httpx.AsyncClient | None = None,
 ) -> ParserBackfill:
     """Ask tg-runtime to pull channel history. Does not run MTProto here."""
+    effective_limit = 0 if full_history else history_limit
     payload = await _request(
         "POST",
         "/channels/backfill",
-        json_body={"channel_id": channel_id, "full_history": full_history},
+        json_body={"channel_id": channel_id, "history_limit": effective_limit},
         http_client=http_client,
     )
     if not isinstance(payload, dict):
@@ -363,6 +385,7 @@ async def fetch_channel_backfill(
 async def sync_channel_history(
     channel_id: int,
     *,
+    history_limit: int | None = MANUAL_CHANNEL_HISTORY_LIMIT,
     full_history: bool = False,
     timeout: float = 90.0,
     poll_seconds: float = 2.0,
@@ -371,7 +394,10 @@ async def sync_channel_history(
     """Enqueue backfill and wait until the runtime finishes or the wait expires."""
     started = asyncio.get_running_loop().time()
     task = await enqueue_channel_backfill(
-        channel_id, full_history=full_history, http_client=http_client
+        channel_id,
+        history_limit=history_limit,
+        full_history=full_history,
+        http_client=http_client,
     )
     while task.status in {"new", "processing"}:
         if asyncio.get_running_loop().time() - started >= timeout:

@@ -71,7 +71,7 @@ async def test_backfill_default_keeps_limited_history(client: AsyncClient) -> No
             headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
         )
         assert response.status_code == 202
-        assert session.tasks[0].history_limit is None
+        assert session.tasks[0].history_limit == 3
     finally:
         app.dependency_overrides.clear()
 

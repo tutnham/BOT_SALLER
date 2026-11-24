@@ -1119,6 +1119,7 @@ async def _send_dlq_list(
     for item in data["outbox"]:
         lines.append(
             f"исход #{item['id']} {item['status']} {item['kind']} "
+            f"заявка {item.get('request_id') or '—'} "
             f"поставщик {item['supplier_id'] or '—'} {item['last_error'] or ''}".rstrip()
         )
         rows.append([menu_button(f"Исход #{item['id']}", "dlqout", int(str(item["id"])))])
@@ -2079,7 +2080,7 @@ def _morning_price_result_text(result: dict[str, Any]) -> str:
             pull = result.get("parser_pull")
             detail = f" {pull}" if pull else ""
             return (
-                "Полная история канала ещё не забрана парсером — черновик не создан."
+                "Последние сообщения канала ещё не забраны парсером — черновик не создан."
                 f"{detail}"
             )
     draft_id = result.get("draft_id")
@@ -2131,7 +2132,7 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> tuple[bool, str | 
         try:
             status = await parser_client.sync_channel_history(
                 channel_id,
-                full_history=True,
+                history_limit=parser_client.MANUAL_CHANNEL_HISTORY_LIMIT,
                 timeout=remaining,
             )
         except parser_client.ParserClientError as exc:
@@ -2147,7 +2148,7 @@ async def _pull_bound_channel_posts(session: AsyncSession) -> tuple[bool, str | 
             all_complete = False
             notes.append(f"{supplier.name}: забор постов не завершён ({status})")
     if pulled and not notes:
-        return True, "Посты канала забраны."
+        return True, "Последние сообщения канала забраны."
     if pulled:
         return all_complete, f"Посты части каналов забраны. {' '.join(notes)}"
     if notes:
@@ -2232,7 +2233,7 @@ async def _run_parser_morning_price(
         chat_id,
         tab=tab if tab in (0, 1) else 0,
         message_id=message_id,
-        notice="Запущено. Забираю полную историю канала, потом собираю прайс без наценки. Первый прогон может занять несколько минут.",
+        notice="Запущено. Забираю последние 3 сообщения канала, потом собираю прайс без наценки.",
     )
     _schedule_manual_morning_price(chat_id)
 

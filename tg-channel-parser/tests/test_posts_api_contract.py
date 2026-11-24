@@ -100,6 +100,35 @@ async def test_posts_pagination_returns_next_cursor(client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_posts_latest_returns_newest_first(client: AsyncClient) -> None:
+    client.posts_store.clear()  # type: ignore[attr-defined]
+    for idx in range(5):
+        client.posts_store.append(  # type: ignore[attr-defined]
+            SimpleNamespace(
+                id=idx + 1,
+                channel_id=-1001,
+                message_id=500 + idx,
+                post_date=datetime(2026, 7, 30, 6, idx, tzinfo=UTC),
+                content_type=ParserContentType.text if idx % 2 == 0 else ParserContentType.photo,
+                raw_text=f"price {idx}",
+                message_link=f"https://t.me/c/1/{500 + idx}",
+            )
+        )
+
+    resp = await client.get(
+        "/posts",
+        params={"channel_id": -1001, "latest": "3"},
+        headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["next_cursor"] is None
+    assert len(payload["items"]) == 3
+    ids = [item["id"] for item in payload["items"]]
+    assert ids == [5, 4, 3]
+
+
+@pytest.mark.asyncio
 async def test_posts_contract_rejects_broken_shape() -> None:
     with pytest.raises(ValidationError):
         ParserPost.model_validate({"raw_text": "no id/date"})

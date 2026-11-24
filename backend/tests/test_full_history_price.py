@@ -15,12 +15,14 @@ from app.db.models import PriceListDraft, RawPrice, Supplier
 from app.llm.client import set_llm_client
 from app.services.parser_client import ParserPost
 from app.services.price_service import (
+    aggregate_from_raw_price_ids,
     aggregate_latest,
     aggregate_today,
     build_full_history_draft_items,
     ingest_channel_prices,
     insert_raw_price,
     parse_pending_raw_prices,
+    parse_raw_prices_for_ids,
 )
 from tests.conftest import MockLLMClient
 
@@ -91,6 +93,44 @@ async def test_full_ingest_ignores_cursor_and_stores_post_date(
     with patch("app.services.price_service.iter_posts", new=_fake_iter_default):
         await ingest_channel_prices(db_session)
     assert captured["from_"] == cursor
+
+
+@pytest.mark.asyncio
+async def test_aggregate_from_raw_price_ids_ignores_older_raws(
+    db_session: AsyncSession,
+    seed_suppliers: list[Supplier],
+    mock_llm: MockLLMClient,
+) -> None:
+    set_llm_client(mock_llm)
+    mock_llm.price_result = _price_item(70000)
+    old_raw, _ = await insert_raw_price(
+        db_session,
+        supplier_id=seed_suppliers[0].id,
+        text="old: iPhone 15 256 Black 70000",
+        source="channel_post",
+        post_date=datetime(2026, 11, 1, tzinfo=UTC),
+    )
+    assert old_raw is not None
+    await parse_raw_prices_for_ids(db_session, [old_raw.id])
+
+    mock_llm.price_result = _price_item(72000)
+    new_raw, _ = await insert_raw_price(
+        db_session,
+        supplier_id=seed_suppliers[0].id,
+        text="new: iPhone 15 256 Black 72000",
+        source="channel_post",
+        post_date=datetime(2026, 11, 20, tzinfo=UTC),
+    )
+    assert new_raw is not None
+    await parse_raw_prices_for_ids(db_session, [new_raw.id])
+
+    scoped = await aggregate_from_raw_price_ids(db_session, [new_raw.id])
+    assert len(scoped) == 1
+    assert Decimal(str(scoped[0]["min_price"])) == Decimal("72000")
+
+    all_latest = await aggregate_latest(db_session)
+    assert Decimal(str(all_latest[0]["min_price"])) == Decimal("72000")
+    set_llm_client(None)
 
 
 @pytest.mark.asyncio
@@ -220,10 +260,10 @@ async def test_manual_full_history_job_draft_without_markup(
         )
     ]
 
-    async def _fake_iter_posts(**kwargs):
-        yield posts
+    async def _fake_latest_posts(**kwargs):
+        return posts
 
-    with patch("app.services.price_service.iter_posts", new=_fake_iter_posts):
+    with patch("app.services.price_service.get_latest_posts", new=_fake_latest_posts):
         result = await jobs.run_morning_price(
             db_session, mock_telegram, full_history=True
         )

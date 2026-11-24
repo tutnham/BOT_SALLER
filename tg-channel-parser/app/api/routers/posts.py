@@ -42,21 +42,45 @@ class PostsPageOut(BaseModel):
 @router.get("", response_model=PostsPageOut, dependencies=[Depends(require_api_token)])
 async def list_posts(
     channel_id: int = Query(...),
-    content_type: ParserContentType = Query(default=ParserContentType.text),
+    content_type: ParserContentType | None = Query(default=ParserContentType.text),
     from_: datetime | None = Query(default=None, alias="from"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor: str | None = Query(default=None),
+    latest: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Последние N сообщений канала (новые первыми), без курсора",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> PostsPageOut:
+    if latest is not None:
+        stmt = (
+            select(ParserPost)
+            .where(
+                ParserPost.channel_id == channel_id,
+                ParserPost.excluded.is_(False),
+            )
+            .order_by(ParserPost.post_date.desc(), ParserPost.id.desc())
+            .limit(latest)
+        )
+        result = await db.execute(stmt)
+        page_rows = list(result.scalars().all())
+        return PostsPageOut(
+            items=[PostOut.model_validate(row) for row in page_rows],
+            next_cursor=None,
+        )
+
     stmt = (
         select(ParserPost)
         .where(
             ParserPost.channel_id == channel_id,
-            ParserPost.content_type == content_type,
             ParserPost.excluded.is_(False),
         )
         .order_by(ParserPost.post_date.asc(), ParserPost.id.asc())
     )
+    if content_type is not None:
+        stmt = stmt.where(ParserPost.content_type == content_type)
     if from_ is not None:
         stmt = stmt.where(ParserPost.post_date >= from_)
     cursor_key: tuple[datetime, int] | None = None

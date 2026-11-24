@@ -34,7 +34,10 @@ async def backfill_channel_on_activate(
     scanned = 0
     limit = cfg.backfill_on_activate_limit if limit_override is None else limit_override
     factory = get_session_factory()
-    history = client.get_chat_history(chat_id=chat_id)
+    history_kwargs: dict[str, Any] = {"chat_id": chat_id}
+    if limit > 0:
+        history_kwargs["limit"] = limit
+    history = client.get_chat_history(**history_kwargs)
     if history is None:
         logger.warning("Backfill skipped: empty history channel={}", chat_id)
         return 0

@@ -46,3 +46,23 @@ async def test_telegram_client_raises_on_invalid_json_error_response() -> None:
         client = TelegramClient(bot_token="token", http_client=http_client)
         with pytest.raises(TelegramSendError):
             await client.send_message(100, "hello")
+
+
+@pytest.mark.asyncio
+async def test_answer_callback_query_ignores_stale_query() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=400,
+            json={
+                "ok": False,
+                "description": (
+                    "Bad Request: query is too old and response timeout expired "
+                    "or query ID is invalid"
+                ),
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = TelegramClient(bot_token="token", http_client=http_client)
+        await client.answer_callback_query("cb_stale")

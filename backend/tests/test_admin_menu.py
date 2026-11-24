@@ -2062,7 +2062,7 @@ async def test_manual_morning_price_pulls_channel_before_draft(
             return False
 
     async def _sync(channel_id: int, **kwargs: object) -> str:
-        assert kwargs.get("full_history") is True
+        assert kwargs.get("history_limit") == parser_client.MANUAL_CHANNEL_HISTORY_LIMIT
         order.append(f"sync:{channel_id}")
         return "processed"
 
@@ -2087,7 +2087,7 @@ async def test_manual_morning_price_pulls_channel_before_draft(
 
     assert order == ["locked", "sync:-1001722834216", "price"]
     text = _last_text(mock_telegram)
-    assert "Посты канала забраны." in text
+    assert "Последние сообщения канала забраны." in text
     assert "черновик #3" in text
 
 

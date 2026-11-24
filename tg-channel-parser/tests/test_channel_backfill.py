@@ -77,7 +77,7 @@ async def test_backfill_stops_on_scanned_limit_without_offset_id() -> None:
 
     assert inserted == 0
     assert scanned == [1, 2, 3]
-    assert seen_kwargs == {"chat_id": -100123}
+    assert seen_kwargs == {"chat_id": -100123, "limit": 3}
     assert "offset_id" not in seen_kwargs
 
 

@@ -200,12 +200,22 @@ class TelegramClient:
             payload["text"] = text
         if show_alert:
             payload["show_alert"] = True
-        await self._request(
-            "answerCallbackQuery",
-            payload,
-            throttle_chat_id=None,
-            return_result=False,
-        )
+        try:
+            await self._request(
+                "answerCallbackQuery",
+                payload,
+                throttle_chat_id=None,
+                return_result=False,
+            )
+        except TelegramSendError as exc:
+            if _is_stale_callback_error(exc):
+                logger.info(
+                    "Stale callback query ignored id={} detail={}",
+                    callback_query_id,
+                    exc.description,
+                )
+                return
+            raise
 
     async def edit_message_text(
         self,
@@ -246,6 +256,15 @@ class TelegramClient:
                 return None
             raise
         return result if isinstance(result, dict) else None
+
+
+def _is_stale_callback_error(exc: TelegramSendError) -> bool:
+    description = (exc.description or "").lower()
+    return (
+        "query is too old" in description
+        or "response timeout expired" in description
+        or "query id is invalid" in description
+    )
 
 
 def is_business_peer_missing(exc: TelegramSendError) -> bool:

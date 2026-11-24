@@ -43,7 +43,14 @@ class ChannelCreate(BaseModel):
 
 class ChannelBackfillIn(BaseModel):
     channel_id: int = Field(..., description="Telegram channel id, including the -100 prefix")
-    full_history: bool = Field(default=False, description="True = забрать всю историю канала без лимита")
+    history_limit: int | None = Field(
+        default=3,
+        description="Сколько последних сообщений забрать; 0 = без лимита (вся история)",
+    )
+    full_history: bool = Field(
+        default=False,
+        description="Устарело: True эквивалентно history_limit=0",
+    )
 
 
 class ChannelBackfillOut(BaseModel):
@@ -86,8 +93,17 @@ def _integrity_conflict_detail(exc: IntegrityError) -> str:
     return "pending_channel_username_exists"
 
 
+def _resolve_backfill_history_limit(payload: ChannelBackfillIn) -> int | None:
+    if payload.full_history:
+        return 0
+    return payload.history_limit
+
+
 def _enqueue_backfill_task(
-    db: AsyncSession, channel: ParserChannel, *, full_history: bool = False
+    db: AsyncSession,
+    channel: ParserChannel,
+    *,
+    history_limit: int | None = 3,
 ) -> ParserTask:
     task = ParserTask(
         post_id=None,
@@ -95,7 +111,7 @@ def _enqueue_backfill_task(
         task_type=ParserTaskType.backfill_channel,
         status=ParserStatus.new,
         max_attempts=5,
-        history_limit=0 if full_history else None,
+        history_limit=history_limit,
     )
     db.add(task)
     return task
@@ -258,11 +274,18 @@ async def enqueue_channel_backfill(
         ),
         None,
     )
+    requested_limit = _resolve_backfill_history_limit(payload)
     if task is None:
-        task = _enqueue_backfill_task(db, channel, full_history=payload.full_history)
+        task = _enqueue_backfill_task(db, channel, history_limit=requested_limit)
         await db.flush()
-    elif payload.full_history and task.history_limit != 0:
+    elif requested_limit == 0 and task.history_limit != 0:
         task.history_limit = 0
+    elif (
+        requested_limit is not None
+        and requested_limit > 0
+        and task.history_limit not in (0, requested_limit)
+    ):
+        task.history_limit = requested_limit
     await db.commit()
     return ChannelBackfillOut(
         task_id=task.id,

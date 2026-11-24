@@ -76,14 +76,16 @@ def _emulate_posts_select(stmt: Any, rows: list[Any]) -> list[Any]:
                 for row in result
                 if getattr(row, key, None) is not None and getattr(row, key) >= value
             ]
-    order_keys: list[str] = []
+    order_keys: list[tuple[str, bool]] = []
     for clause in getattr(stmt, "_order_by_clauses", ()) or ():
         element = getattr(clause, "element", clause)
         key = getattr(element, "key", None)
         if key:
-            order_keys.append(key)
-    if order_keys:
-        result.sort(key=lambda row: tuple(getattr(row, k, None) for k in order_keys))
+            modifier = getattr(clause, "modifier", None)
+            ascending = modifier is not operators.desc_op
+            order_keys.append((key, ascending))
+    for key, ascending in reversed(order_keys):
+        result.sort(key=lambda row, key=key: getattr(row, key, None), reverse=not ascending)
     limit_value = getattr(getattr(stmt, "_limit_clause", None), "value", None)
     if isinstance(limit_value, int):
         result = result[:limit_value]

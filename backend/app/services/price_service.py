@@ -41,8 +41,10 @@ from app.services.markup_service import (
 )
 from app.services.ops_status_service import llm_configuration_snapshot
 from app.services.parser_client import (
+    MANUAL_CHANNEL_HISTORY_LIMIT,
     ParserClientError,
     classify_parser_error,
+    get_latest_posts,
     iter_posts,
 )
 from app.services.parser_diagnostics import alert_morning_price, diagnose_morning_price
@@ -63,6 +65,14 @@ class IngestStats(NamedTuple):
     posts_seen: int = 0
     posts_without_text: int = 0
     faults: tuple[str, ...] = ()
+
+
+class LatestIngestResult(NamedTuple):
+    stats: IngestStats
+    raw_price_ids: tuple[int, ...]
+
+
+MANUAL_PRICE_LATEST_POSTS = MANUAL_CHANNEL_HISTORY_LIMIT
 
 
 def build_raw_price_content_hash(supplier_id: int, raw_text: str) -> str:
@@ -282,6 +292,86 @@ async def ingest_channel_prices(
     )
 
 
+async def ingest_latest_channel_prices(
+    session: AsyncSession,
+    *,
+    latest: int = MANUAL_PRICE_LATEST_POSTS,
+) -> LatestIngestResult:
+    """Загрузить только последние N постов канала (ручной прайс)."""
+    result = await session.execute(
+        select(Supplier).where(
+            Supplier.active.is_(True),
+            Supplier.price_channel_id.is_not(None),
+        )
+    )
+    suppliers = list(result.scalars().all())
+    raw_new = 0
+    posts_seen = 0
+    posts_without_text = 0
+    raw_price_ids: list[int] = []
+    faults: list[str] = []
+    degraded = 0
+
+    for supplier in suppliers:
+        channel_id = supplier.price_channel_id
+        if channel_id is None:
+            continue
+        try:
+            posts = await get_latest_posts(channel_id=int(channel_id), latest=latest)
+        except ParserClientError as exc:
+            degraded += 1
+            faults.append(classify_parser_error(exc))
+            logger.warning(
+                "Parser unavailable for supplier_id={} channel_id={}: {}",
+                supplier.id,
+                channel_id,
+                exc,
+            )
+            continue
+
+        max_post_date: datetime | None = None
+        for post in posts:
+            posts_seen += 1
+            text_body = (post.raw_text or "").strip()
+            if not text_body:
+                posts_without_text += 1
+                continue
+            post_date = _as_utc(post.post_date)
+            if max_post_date is None or post_date > max_post_date:
+                max_post_date = post_date
+            raw, is_new = await insert_raw_price(
+                session,
+                supplier_id=supplier.id,
+                text=text_body,
+                source="channel_post",
+                source_post_id=post.post_id,
+                source_message_link=post.message_link,
+                post_date=post_date,
+            )
+            if raw is not None:
+                raw_price_ids.append(int(raw.id))
+            if is_new and raw is not None:
+                raw_new += 1
+
+        if max_post_date is not None:
+            cursor = supplier.last_price_sync_at
+            if cursor is not None and cursor.tzinfo is None:
+                cursor = cursor.replace(tzinfo=UTC)
+            if cursor is None or max_post_date > cursor:
+                supplier.last_price_sync_at = max_post_date
+                await session.flush()
+
+    stats = IngestStats(
+        raw_new=raw_new,
+        degraded=degraded,
+        channels_checked=len(suppliers),
+        posts_seen=posts_seen,
+        posts_without_text=posts_without_text,
+        faults=tuple(faults),
+    )
+    return LatestIngestResult(stats=stats, raw_price_ids=tuple(raw_price_ids))
+
+
 async def _resolve_price_list(
     session: AsyncSession,
     raw_text: str,
@@ -429,6 +519,74 @@ async def parse_pending_raw_prices(
     return inserted
 
 
+async def parse_raw_prices_for_ids(
+    session: AsyncSession,
+    raw_price_ids: list[int] | tuple[int, ...],
+) -> int:
+    """Разобрать только указанные raw_prices (без сканирования всей истории)."""
+    if not raw_price_ids:
+        return 0
+    settings = get_settings()
+    threshold = settings.confidence_threshold
+    concurrency = max(1, int(settings.morning_price_llm_concurrency))
+    inserted = 0
+    result = await session.execute(
+        select(RawPrice)
+        .where(RawPrice.id.in_(tuple(raw_price_ids)))
+        .where(~RawPrice.parsed_items.any())
+        .options(selectinload(RawPrice.parsed_items))
+        .order_by(RawPrice.id.asc())
+    )
+    batch = list(result.scalars().all())
+    if not batch:
+        return 0
+
+    cached_pairs: list[tuple[RawPrice, ParsedPriceList]] = []
+    pending_llm: list[RawPrice] = []
+    for raw in batch:
+        cached = await get_cached(session, kind="price_list", raw_text=raw.text)
+        if cached is not None:
+            parsed = validate_price_list_payload(cached)
+            if parsed is not None:
+                cached_pairs.append((raw, parsed))
+            continue
+        pending_llm.append(raw)
+
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _parse_uncached(
+        raw: RawPrice, semaphore: asyncio.Semaphore = semaphore
+    ) -> tuple[RawPrice, ParsedPriceList | None]:
+        async with semaphore:
+            llm = get_llm_client()
+            try:
+                parsed = await llm.parse_price_list(raw.text)
+            except LLMProviderError as exc:
+                logger.warning("LLM parse_price_list failed: {}", exc)
+                return raw, None
+            return raw, parsed
+
+    llm_pairs = await asyncio.gather(*[_parse_uncached(raw) for raw in pending_llm])
+    for raw, llm_parsed in llm_pairs:
+        if llm_parsed is None:
+            continue
+        await set_cached(
+            session,
+            kind="price_list",
+            raw_text=raw.text,
+            result_json=llm_parsed.model_dump(mode="json"),
+            model_used=settings.llm_model or settings.llm_provider,
+        )
+        cached_pairs.append((raw, llm_parsed))
+
+    for raw, parsed in cached_pairs:
+        inserted += await _materialize_parsed_items(
+            session, raw, parsed, threshold=threshold
+        )
+    await session.commit()
+    return inserted
+
+
 async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
     """
     Min-price aggregation for today's parsed items (D2/D3).
@@ -506,6 +664,49 @@ async def aggregate_latest(session: AsyncSession) -> list[dict[str, Any]]:
         """
     )
     result = await session.execute(sql)
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def aggregate_from_raw_price_ids(
+    session: AsyncSession,
+    raw_price_ids: list[int] | tuple[int, ...],
+) -> list[dict[str, Any]]:
+    """Новейшая цена по sku только среди переданных raw_prices (ручной прайс)."""
+    if not raw_price_ids:
+        return []
+    sql = text(
+        """
+        WITH scoped_items AS (
+            SELECT
+                pi.id,
+                pi.sku_key,
+                pi.model,
+                pi.storage,
+                pi.color,
+                pi.region,
+                pi.sim,
+                pi.price,
+                pi.currency,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pi.sku_key, pi.currency
+                    ORDER BY rp.post_date DESC NULLS LAST, rp.id DESC, pi.id DESC
+                ) AS rn
+            FROM parsed_items pi
+            JOIN raw_prices rp ON rp.id = pi.raw_price_id
+            WHERE rp.id = ANY(:raw_price_ids)
+              AND pi.currency = 'RUB'
+              AND COALESCE(pi.condition, '') NOT LIKE 'low_confidence:%'
+        )
+        SELECT sku_key, model, storage, color, region, sim, price AS min_price, currency
+        FROM scoped_items
+        WHERE rn = 1
+        ORDER BY sku_key
+        """
+    )
+    result = await session.execute(
+        sql,
+        {"raw_price_ids": list(raw_price_ids)},
+    )
     return [dict(row) for row in result.mappings().all()]
 
 
@@ -856,11 +1057,12 @@ async def build_full_history_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
 ) -> dict[str, Any]:
-    """Manual button: full channel history, newest price per sku, no markup."""
+    """Manual button: last N channel posts, newest price per sku among them, no markup."""
     settings = get_settings()
-    stats = await ingest_channel_prices(session, full_history=True)
-    await parse_pending_raw_prices(session, include_history=True)
-    aggregated = await aggregate_latest(session)
+    ingest = await ingest_latest_channel_prices(session, latest=MANUAL_PRICE_LATEST_POSTS)
+    stats = ingest.stats
+    await parse_raw_prices_for_ids(session, ingest.raw_price_ids)
+    aggregated = await aggregate_from_raw_price_ids(session, ingest.raw_price_ids)
     draft_items = build_full_history_draft_items(aggregated)
 
     result: dict[str, Any] = {
