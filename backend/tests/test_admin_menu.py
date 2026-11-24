@@ -679,19 +679,15 @@ async def test_price_channels_list_shows_real_statuses(
     assert any(label.startswith("✅") and "Active" in label for label in labels)
     assert any(label.startswith("⏳") and "Pending" in label for label in labels)
     assert any(label.startswith("❌") and "Failed" in label for label in labels)
-    # мягко удалённый канал видим с пометкой и кнопкой восстановления
-    assert any(
-        label.startswith("🗑") and "Deleted" in label and "(удалён)" in label
-        for label in labels
-    )
+    assert not any("Deleted" in label or "удалён" in label for label in labels)
     assert labels.count("Удалить") == 3
-    assert labels.count("Восстановить") == 1
+    assert "Восстановить" not in labels
     list_text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
     assert "Active" in list_text
     assert "Pending" in list_text
     assert "Failed" in list_text
-    assert "Deleted" in list_text
-    assert "(удалён)" in list_text
+    assert "Deleted" not in list_text
+    assert "(удалён)" not in list_text
 
 
 @pytest.mark.asyncio
@@ -1779,6 +1775,15 @@ async def test_parser_channels_tab_shows_status_and_binding(
                 is_active=True,
                 error_text="channel not accessible",
             ),
+            parser_client.ParserChannel(
+                id=3,
+                channel_id=-100444,
+                username="@deleted",
+                title="Deleted",
+                status="failed",
+                is_active=False,
+                error_text="deleted_by_admin",
+            ),
         ]
 
     async def _ready(**_kwargs):
@@ -1802,6 +1807,8 @@ async def test_parser_channels_tab_shows_status_and_binding(
     assert "Парсер — Каналы и статус" in text
     assert "✅ Channel Prices" in text
     assert "❌ Other (channel not accessible" in text
+    assert "Deleted" not in text
+    assert "deleted_by_admin" not in text
     assert "не привязан" in text
     assert "Парсер НЕ готов" in text
     assert "Причины: no_listener" in text

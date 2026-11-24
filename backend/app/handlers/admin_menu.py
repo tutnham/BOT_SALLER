@@ -1788,8 +1788,8 @@ async def _send_bind_supplier_list(
 
 
 def _is_listed_price_channel(ch: parser_client.ParserChannel) -> bool:
-    """Admin «Каналы прайсов» shows live rows plus soft-deleted/failed ones for restore."""
-    return bool(ch.is_active) or ch.status == "failed"
+    """Списки каналов показывают только живые строки. Удалённая из БД не возвращается."""
+    return bool(ch.is_active)
 
 
 def _price_channel_label(ch: parser_client.ParserChannel) -> str:
@@ -1991,7 +1991,11 @@ async def _parser_channels_block(session: AsyncSession) -> tuple[list[str], list
     meta = [f"Парсер {ready_line} · каналов {len(lines)}, привязано {bound_count}."]
     if not ready:
         meta.append(f"Причины: {_ready_reasons_text(ready_body.get('reasons'))}.")
-    failed = [ch for ch in channels if ch.status == "failed" and ch.error_text]
+    failed = [
+        ch
+        for ch in channels
+        if ch.is_active and ch.status == "failed" and ch.error_text
+    ]
     for ch in failed[:3]:
         meta.append(f"Ошибка {ch.title or ch.username or ch.id}: {(ch.error_text or '')[:60]}")
     return lines, meta

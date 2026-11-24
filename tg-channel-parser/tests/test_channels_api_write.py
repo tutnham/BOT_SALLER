@@ -36,18 +36,17 @@ def _make_fake_session():
         def __init__(self) -> None:
             self.channels: list[ParserChannel] = []
             self.tasks: list[ParserTask] = []
+            self.posts: list[Any] = []
             self.commit_calls = 0
             self._next_id = 1
 
         async def execute(self, stmt: Any) -> _Result:
-            if getattr(stmt, "is_update", False) or type(stmt).__name__ == "Update":
-                for task in self.tasks:
-                    if task.task_type == ParserTaskType.resolve_channel and task.status in (
-                        ParserStatus.new,
-                        ParserStatus.processing,
-                    ):
-                        task.status = ParserStatus.failed
-                        task.error_text = "cancelled"
+            if type(stmt).__name__ == "Delete":
+                sql = str(stmt).lower()
+                if "parser_posts" in sql or "parserpost" in sql:
+                    self.posts.clear()
+                elif "parser_tasks" in sql or "parser_task" in sql:
+                    self.tasks.clear()
                 return _Result([])
             sql = str(stmt).lower()
             if "parser_task" in sql:
@@ -181,7 +180,7 @@ async def test_create_channel_rejects_garbage_handle(client: AsyncClient, fake_s
 
 
 @pytest.mark.asyncio
-async def test_delete_channel_deactivates(client: AsyncClient, fake_session: Any) -> None:
+async def test_delete_channel_removes_row(client: AsyncClient, fake_session: Any) -> None:
     from app.api.main import app
     from app.db.session import get_db
 
@@ -206,8 +205,7 @@ async def test_delete_channel_deactivates(client: AsyncClient, fake_session: Any
             headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
         )
         assert response.status_code == 200
-        assert session.channels[0].is_active is False
-        assert session.channels[0].status == ParserChannelStatus.failed
+        assert session.channels == []
     finally:
         app.dependency_overrides.clear()
 
@@ -317,7 +315,7 @@ async def test_create_duplicate_active_channel_returns_409(
 
 
 @pytest.mark.asyncio
-async def test_delete_channel_cancels_resolve_task(
+async def test_delete_channel_removes_tasks_and_posts(
     client: AsyncClient, fake_session: Any
 ) -> None:
     from app.api.main import app
@@ -327,12 +325,13 @@ async def test_delete_channel_cancels_resolve_task(
     session.channels.append(
         ParserChannel(
             id=1,
-            channel_id=None,
+            channel_id=-1001,
             username="supplier_prices",
             status=ParserChannelStatus.pending,
             is_active=True,
         )
     )
+    session.posts.append(SimpleNamespace(channel_id=-1001))
     session.tasks.append(
         ParserTask(
             id=11,
@@ -354,8 +353,9 @@ async def test_delete_channel_cancels_resolve_task(
             headers={"Authorization": f"Bearer {API_AUTH_TOKEN}"},
         )
         assert response.status_code == 200
-        assert session.tasks[0].status == ParserStatus.failed
-        assert session.tasks[0].error_text == "cancelled"
+        assert session.channels == []
+        assert session.posts == []
+        assert session.tasks == []
     finally:
         app.dependency_overrides.clear()
 

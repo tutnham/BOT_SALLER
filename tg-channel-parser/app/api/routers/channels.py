@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.db.models import (
     ParserChannel,
     ParserChannelPurpose,
     ParserChannelStatus,
+    ParserPost,
     ParserStatus,
     ParserTask,
     ParserTaskType,
@@ -327,17 +328,9 @@ async def delete_channel(
     channel = await db.get(ParserChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="channel_not_found")
-    channel.is_active = False
-    channel.status = ParserChannelStatus.failed
-    channel.error_text = "deleted_by_admin"
-    await db.execute(
-        update(ParserTask)
-        .where(
-            ParserTask.channel_id == channel.id,
-            ParserTask.task_type == ParserTaskType.resolve_channel,
-            ParserTask.status.in_((ParserStatus.new, ParserStatus.processing)),
-        )
-        .values(status=ParserStatus.failed, error_text="cancelled")
-    )
+    if channel.channel_id is not None:
+        await db.execute(delete(ParserPost).where(ParserPost.channel_id == channel.channel_id))
+    await db.execute(delete(ParserTask).where(ParserTask.channel_id == channel.id))
+    await db.delete(channel)
     await db.flush()
     return {"status": "ok"}
