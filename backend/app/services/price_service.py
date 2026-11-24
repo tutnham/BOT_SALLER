@@ -43,6 +43,7 @@ from app.services.ops_status_service import llm_configuration_snapshot
 from app.services.parser_client import (
     MANUAL_CHANNEL_HISTORY_LIMIT,
     ParserClientError,
+    ParserPost,
     classify_parser_error,
     get_latest_posts,
     iter_posts,
@@ -73,6 +74,34 @@ class LatestIngestResult(NamedTuple):
 
 
 MANUAL_PRICE_LATEST_POSTS = MANUAL_CHANNEL_HISTORY_LIMIT
+_LAST_MESSAGES_JOIN = "\n\n---\n\n"
+
+
+def combine_latest_post_texts(
+    posts: list[ParserPost],
+) -> tuple[str, datetime | None, int | None, str | None]:
+    """Склеить тексты последних постов канала (от старых к новым) для одного вызова LLM."""
+    ordered = sorted(
+        posts,
+        key=lambda p: (_as_utc(p.post_date), int(p.post_id)),
+    )
+    blocks: list[str] = []
+    newest_date: datetime | None = None
+    newest_post_id: int | None = None
+    newest_link: str | None = None
+    for post in ordered:
+        text_body = (post.raw_text or "").strip()
+        if not text_body:
+            continue
+        blocks.append(text_body)
+        post_date = _as_utc(post.post_date)
+        if newest_date is None or post_date >= newest_date:
+            newest_date = post_date
+            newest_post_id = int(post.post_id)
+            newest_link = post.message_link
+    if not blocks:
+        return "", None, None, None
+    return _LAST_MESSAGES_JOIN.join(blocks), newest_date, newest_post_id, newest_link
 
 
 def build_raw_price_content_hash(supplier_id: int, raw_text: str) -> str:
@@ -297,7 +326,7 @@ async def ingest_latest_channel_prices(
     *,
     latest: int = MANUAL_PRICE_LATEST_POSTS,
 ) -> LatestIngestResult:
-    """Загрузить только последние N постов канала (ручной прайс)."""
+    """Последние N постов канала: тексты склеиваются, один raw на поставщика для LLM."""
     result = await session.execute(
         select(Supplier).where(
             Supplier.active.is_(True),
@@ -329,36 +358,36 @@ async def ingest_latest_channel_prices(
             )
             continue
 
-        max_post_date: datetime | None = None
-        for post in posts:
-            posts_seen += 1
-            text_body = (post.raw_text or "").strip()
-            if not text_body:
-                posts_without_text += 1
-                continue
-            post_date = _as_utc(post.post_date)
-            if max_post_date is None or post_date > max_post_date:
-                max_post_date = post_date
-            raw, is_new = await insert_raw_price(
-                session,
-                supplier_id=supplier.id,
-                text=text_body,
-                source="channel_post",
-                source_post_id=post.post_id,
-                source_message_link=post.message_link,
-                post_date=post_date,
-            )
-            if raw is not None:
-                raw_price_ids.append(int(raw.id))
-            if is_new and raw is not None:
-                raw_new += 1
+        posts_seen += len(posts)
+        combined, post_date, source_post_id, message_link = combine_latest_post_texts(
+            posts
+        )
+        if not combined:
+            posts_without_text += len(posts)
+            continue
+        posts_without_text += sum(
+            1 for post in posts if not (post.raw_text or "").strip()
+        )
+        raw, is_new = await insert_raw_price(
+            session,
+            supplier_id=supplier.id,
+            text=combined,
+            source="channel_last_messages",
+            source_post_id=source_post_id,
+            source_message_link=message_link,
+            post_date=post_date,
+        )
+        if raw is not None:
+            raw_price_ids.append(int(raw.id))
+        if is_new and raw is not None:
+            raw_new += 1
 
-        if max_post_date is not None:
+        if post_date is not None:
             cursor = supplier.last_price_sync_at
             if cursor is not None and cursor.tzinfo is None:
                 cursor = cursor.replace(tzinfo=UTC)
-            if cursor is None or max_post_date > cursor:
-                supplier.last_price_sync_at = max_post_date
+            if cursor is None or post_date > cursor:
+                supplier.last_price_sync_at = post_date
                 await session.flush()
 
     stats = IngestStats(

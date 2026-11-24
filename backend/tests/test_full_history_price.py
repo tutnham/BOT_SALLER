@@ -19,6 +19,7 @@ from app.services.price_service import (
     aggregate_latest,
     aggregate_today,
     build_full_history_draft_items,
+    combine_latest_post_texts,
     ingest_channel_prices,
     insert_raw_price,
     parse_pending_raw_prices,
@@ -43,6 +44,29 @@ def _price_item(price: int) -> dict:
             }
         ]
     }
+
+
+def test_combine_latest_post_texts_joins_oldest_to_newest() -> None:
+    posts = [
+        ParserPost(
+            post_id=2,
+            message_id=2,
+            post_date=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+            raw_text="шапка",
+            message_link=None,
+        ),
+        ParserPost(
+            post_id=3,
+            message_id=3,
+            post_date=datetime(2026, 7, 30, 9, 0, tzinfo=UTC),
+            raw_text="MacBook 70000",
+            message_link=None,
+        ),
+    ]
+    combined, post_date, post_id, _link = combine_latest_post_texts(posts)
+    assert combined == "шапка\n\n---\n\nMacBook 70000"
+    assert post_id == 3
+    assert post_date == datetime(2026, 7, 30, 9, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
