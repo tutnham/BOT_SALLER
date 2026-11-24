@@ -63,8 +63,41 @@ async def test_upsert_idempotent_conflict_returns_none() -> None:
     msg = make_message(text="dup")
     result = await upsert_post(session, msg)
     assert result is None
-    # only channel select + post insert — no task inserts
-    assert calls["n"] == 2
+    # channel select + insert + select пустого текста
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_upsert_fills_blank_raw_text() -> None:
+    channel = SimpleNamespace(
+        channel_id=-100123,
+        purpose=ParserChannelPurpose.supplier_price_source,
+    )
+    existing = SimpleNamespace(
+        raw_text="  ",
+        raw_metadata={},
+        content_type=ParserContentType.other,
+    )
+    calls = {"n": 0}
+
+    async def execute(stmt: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _ReturningResult(channel)
+        if calls["n"] == 2:
+            return _ReturningResult(None)
+        return _ReturningResult(existing)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute)
+    session.flush = AsyncMock()
+
+    text = "MacBook Air 13 M2 — 615 у.е."
+    result = await upsert_post(session, make_message(text=text, media=None))
+    assert result is None
+    assert existing.raw_text == text
+    assert existing.content_type == ParserContentType.text
+    session.flush.assert_awaited()
 
 
 @pytest.mark.asyncio

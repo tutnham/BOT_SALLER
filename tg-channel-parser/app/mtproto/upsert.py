@@ -120,7 +120,7 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
     result = await session.execute(stmt)
     post = result.scalar_one_or_none()
     if post is None:
-        # conflict — already exists
+        await _fill_blank_raw_text(session, fields)
         return None
 
     # Прайс-канал: боту нужен только текст/подпись. Файлы не качаем.
@@ -179,6 +179,26 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value
+
+
+async def _fill_blank_raw_text(session: AsyncSession, fields: dict[str, Any]) -> None:
+    """Повторный забор дописывает текст, если пост уже лежит с пустым raw_text."""
+    text = fields["raw_text"]
+    if not isinstance(text, str) or not text.strip():
+        return
+    result = await session.execute(
+        select(ParserPost).where(
+            ParserPost.channel_id == fields["channel_id"],
+            ParserPost.message_id == fields["message_id"],
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing is None or (existing.raw_text or "").strip():
+        return
+    existing.raw_text = text
+    existing.raw_metadata = fields["raw_metadata"]
+    existing.content_type = fields["content_type"]
+    await session.flush()
 
 
 async def apply_post_edit(session: AsyncSession, message: Any) -> ParserPost | None:

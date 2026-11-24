@@ -7,6 +7,7 @@ from typing import Any
 from pyrogram import Client
 
 from app.config import Settings, get_settings
+from app.mtproto.blockquote_compat import install_blockquote_compat
 
 
 def create_client(
@@ -17,6 +18,7 @@ def create_client(
     in_memory: bool = True,
 ) -> Client:
     """Build Pyrogram Client. Uses TELEGRAM_SESSION_STRING when provided."""
+    install_blockquote_compat()
     cfg = settings or get_settings()
     api_id = cfg.telegram_api_id
     api_hash = cfg.telegram_api_hash

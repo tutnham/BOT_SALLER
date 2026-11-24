@@ -210,7 +210,7 @@ API / меню: POST /channels {"handle":"@x"|"-100…","purpose":"supplier_pric
 
 Перезагрузка контейнера на шаге 4 CLI — **не обязательна**: listener перечитывает `parser_channels` каждые ~30s (`listener_reload_interval_seconds`) и обновляет Pyrogram filter без restart.
 
-**Реактивация удалённого канала.** Удаление через бот (`DELETE /channels/{id}`) — мягкое: `is_active=false, status='failed', error_text='deleted_by_admin'`. CLI `add_channel` через `upsert_channel` восстанавливает `is_active=true` и (по умолчанию) `status=active` сразу, с известным `channel_id`. Повторный `POST /channels` / кнопка «Восстановить» восстанавливает `is_active=true`, но ставит `status=pending` и новую задачу `resolve_channel`. В меню канал виден сразу; в realtime-фильтр он попадает только после успешного resolve (`status=active` и `channel_id IS NOT NULL`). Ранее `upsert_channel` не обновлял `is_active`, из-за чего повторно добавленный канал «исчезал» из списка.
+**Удаление канала.** `DELETE /channels/{id}` стирает строку `parser_channels`, её посты (`parser_posts.channel_id` = Telegram id) и задачи (`parser_tasks.channel_id` = PK). Меню бота и вкладка «Парсер» показывают только `is_active=true`, кнопки «Восстановить» нет. Повторное добавление того же handle — новая строка `pending`. Если в базе ещё осталась старая мягко удалённая строка (`is_active=false`), `POST /channels` и CLI `upsert_channel` по-прежнему реактивируют её, а не создают вторую.
 
 `ChannelCreate.purpose` и `parser_client.add_channel` по умолчанию `supplier_price_source`. Реактивация через API и кнопка «Восстановить» перезаписывают `purpose` этим значением: канал `monitoring` меняет назначение (OPS-013).
 
@@ -218,7 +218,7 @@ API / меню: POST /channels {"handle":"@x"|"-100…","purpose":"supplier_pric
 
 **Дубликаты.** Один канал, добавленный и по `@username`, и по числовому ID, создаёт две pending-строки. При resolve второй строки воркер находит существующую строку с тем же `channel_id`, ставит ей `is_active=true` и `status=active`, а дубликат помечает `status='failed', error_text='duplicate_of_channel:<pk>'` — UNIQUE `channel_id` не нарушается. Merge не ставит `backfill_channel` и не отменяет соседние `resolve_channel` дубликата (OPS-016).
 
-**Забор истории по API (из backend).** `POST /channels/backfill` с телом `{"channel_id": -100…, "full_history": false|true}`. Ставит задачу `backfill_channel` в `parser_tasks`. `full_history=true` — без лимита страниц (для кнопки «▶ Запустить прайс» в меню бота); `false` — инкремент с курсора `last_synced_message_id`. Ответ: `{task_id, status, channel_id, error_text?}`. Backend: `parser_client.sync_channel_history`.
+**Забор истории по API (из backend).** `POST /channels/backfill` с телом `{"channel_id": -100…, "history_limit": 3}` (по умолчанию **3**; `0` — вся история, устаревший флаг `full_history: true` эквивалентен `history_limit=0`). Ставит задачу `backfill_channel`; MTProto — `get_chat_history(..., limit=N)` при `N>0`. Кнопка «▶ Запустить прайс» в backend вызывает `sync_channel_history(..., history_limit=3)`. Ответ: `{task_id, status, channel_id, error_text?}`. Env `BACKFILL_ON_ACTIVATE_LIMIT` (дефолт **3**) — лимит при первом backfill после activate, если в задаче `history_limit` = NULL.
 
 ### 6.1 Backfill (первичная загрузка истории)
 
@@ -268,7 +268,7 @@ python -m app.mtproto.realtime   # long-running процесс, автопере
 
 ### 6.3 Идемпотентность между режимами
 
-Backfill и realtime могут обработать один и тот же `message_id`, если временные окна пересекаются (например, backfill запущен повторно после сбоя, пока realtime уже видел новое сообщение). Уникальный индекс `(channel_id, message_id)` в `parser_posts` (раздел 9) гарантирует, что вставка выполняется через `INSERT ... ON CONFLICT (channel_id, message_id) DO NOTHING` — пост не обрабатывается дважды.
+Backfill и realtime могут обработать один и тот же `message_id`, если временные окна пересекаются (например, backfill запущен повторно после сбоя, пока realtime уже видел новое сообщение). Уникальный индекс `(channel_id, message_id)` в `parser_posts` (раздел 9) гарантирует, что вставка выполняется через `INSERT ... ON CONFLICT (channel_id, message_id) DO NOTHING` — задачи на пост не ставятся повторно. Если строка уже есть, а `raw_text` пустой, повторный забор дописывает текст (`_fill_blank_raw_text`).
 
 ---
 
@@ -281,7 +281,7 @@ Backfill и realtime могут обработать один и тот же `me
 | `channel_id` | `message.chat.id` |
 | `message_id` | `message.id` |
 | `date` | `message.date` |
-| `text_or_caption` | `message.text or message.caption` |
+| `text_or_caption` | `message.text or message.caption`. Стиль «Цитата» — entity поверх той же строки, в `raw_text` пишется сам текст. Pyrogram 2.0.106 знает constructor `messageEntityBlockquote#20df5d0`; актуальный `#f1ccaaac` (флаг `collapsed`) регистрирует `app/mtproto/blockquote_compat.py` при создании клиента. Без этого разбор сообщения обрывается и `raw_text` остаётся пустым |
 | `message_link` | `message.link` (Pyrogram формирует `t.me/username/id` или `t.me/c/internal_id/id` автоматически) |
 | `content_type` | классификация по `message.media` (см. 7.3) |
 | `grouped_id` | `message.media_group_id` (`None`, если пост не альбом) |
@@ -310,15 +310,17 @@ Backfill и realtime могут обработать один и тот же `me
 
 ```
 ЕСЛИ вставка не была no-op (пост действительно новый):
-  ЕСЛИ post.content_type in ('photo','video','document','audio','voice','media_group'):
-      INSERT parser_tasks (post_id, task_type='download_media')   -- всегда, независимо от purpose
-  ЕСЛИ channel.purpose == 'monitoring':
-      INSERT parser_tasks (post_id, task_type='ai_process')
   ЕСЛИ channel.purpose == 'supplier_price_source':
-      -- ai_process НЕ создаётся: разбор прайса делает бот закупок через свой llm.parse_price_list
-      -- (см. TECHNICAL_DOCUMENTATION.md, 9.5.1), пост уже доступен через GET /posts
-      pass
+      -- только raw_text (текст или подпись к фото). parser_media_files и download_media НЕ создаются
+      -- разбор прайса делает бот закупок через llm.parse_price_list
+  ИНАЧЕ ЕСЛИ есть медиа (photo/video/document/audio/voice/media_group):
+      INSERT parser_media_files
+      INSERT parser_tasks (post_id, task_type='download_media')
+  ЕСЛИ channel.purpose == 'monitoring':
+      INSERT parser_tasks (post_id, task_type='ai_process')   -- в проде флаг выключен, задача не пишется
 ```
+
+Уже стоящие `download_media` прайс-канала воркер при каждом опросе помечает `failed` / `error_text=price_channel_text_only` и файл не качает. В логе `tg-runtime`: `Skipped N price-channel media downloads`.
 
 Это правило исключает двойную обработку и рассинхронизацию схем: один и тот же код `tg-listener`/`tg-worker` обслуживает оба типа каналов, разница — только в том, какая задача ставится в очередь.
 
@@ -463,7 +465,7 @@ CREATE INDEX idx_parser_ai_results_post ON parser_ai_results (post_id, is_curren
 Ключевые гарантии схемы:
 
 - Уникальность поста — `UNIQUE (channel_id, message_id)` в `parser_posts`; повторная вставка при перезапуске/повторном backfill/дублирующемся realtime-событии обрабатывается через `INSERT ... ON CONFLICT DO NOTHING`.
-- Оригинал (`raw_text`, `raw_metadata`) физически отделён от результата ИИ (`parser_ai_results.cleaned_text`, `summary` и т.д.) — разные таблицы, `raw_text` в `parser_posts` никогда не перезаписывается модулем ИИ. Единственный источник перезаписи оригинала — редактирование поста в канале (`apply_post_edit`, метка `edited_at`).
+- Оригинал (`raw_text`, `raw_metadata`) физически отделён от результата ИИ (`parser_ai_results.cleaned_text`, `summary` и т.д.) — разные таблицы, модуль ИИ `raw_text` не меняет. Текст поста обновляет `apply_post_edit` (редактирование в канале, метка `edited_at`) и `_fill_blank_raw_text` (повторный забор, только если сохранённый `raw_text` пустой).
 - Статусная модель `new → downloaded → processing → processed / failed` реализована как в `parser_posts.status` (общий статус пайплайна поста), так и в `parser_tasks.status` (статус конкретной задачи: скачивание или ИИ-обработка) — с `error_text` и `last_attempt_at` на обоих уровнях.
 - Исключение поста из обработки — `parser_posts.excluded=true`; воркер обязан пропускать такие посты при выборке новых задач (`WHERE excluded=false`).
 
@@ -547,9 +549,11 @@ else:
 |---|---|---|
 | `GET` | `/channels` | все строки, включая `is_active=false` (JSON-массив) |
 | `GET` | `/channels?purpose=` | фильтр `monitoring` / `supplier_price_source` |
-| `POST` | `/channels` | `{"handle":"@x","purpose":"supplier_price_source"}` → 202, `status: pending` + задача `resolve_channel`. Повтор мягко удалённой строки — тоже 202 (реактивация). Уже `pending`/`active` и активная — 409. Коллизия `uq_parser_channels_pending_username` — 409, не 500 |
-| `DELETE` | `/channels/{id}` | мягкое удаление: `is_active=false`, `status=failed`, `error_text=deleted_by_admin`; открытые `resolve_channel` — `failed`/`cancelled` (`id` = PK `parser_channels.id`) |
+| `POST` | `/channels` | `{"handle":"@x","purpose":"supplier_price_source"}` → 202, `status: pending` + задача `resolve_channel`. Если строка уже стёрта — новая. Если осталась старая `is_active=false` — реактивация в `pending`. Уже `pending`/`active` и активная — 409. Коллизия `uq_parser_channels_pending_username` — 409, не 500 |
+| `DELETE` | `/channels/{id}` | удаление строки, её постов и задач (`id` = PK `parser_channels.id`, не Telegram id) |
 | `GET` | `/posts?channel_id=&content_type=&from=&limit=&cursor=` | paginated: `{"items":[...],"next_cursor":...}`; `from` по `post_date` |
+| `GET` | `/posts?channel_id=&latest=N` | последние N постов канала (все `content_type`, сортировка `post_date` desc); без курсора; backend — ручной прайс |
+| `POST` | `/channels/backfill` | `{"channel_id", "history_limit"?: 3}` → задача `backfill_channel` |
 | `GET` | `/posts/{id}` | один пост |
 | `GET` | `/health` | без auth: `{"status":"ok","db":"ok\|error"}` |
 
