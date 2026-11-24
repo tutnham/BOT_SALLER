@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from datetime import UTC, datetime
+from enum import Enum
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +29,17 @@ def _install_pyrogram_stub() -> None:
 
 
 _install_pyrogram_stub()
+
+
+class ChatType(Enum):
+    CHANNEL = "channel"
+    USER = "user"
+
+
+if not hasattr(sys.modules["pyrogram"], "enums"):
+    enums = ModuleType("pyrogram.enums")
+    enums.ChatType = ChatType
+    sys.modules["pyrogram.enums"] = enums
 
 from pyrogram.errors import PeerIdInvalid  # noqa: E402
 
@@ -700,6 +712,209 @@ async def test_resolve_non_peer_error_does_not_try_canonical() -> None:
     assert task.error_text is not None
     assert task.error_text.startswith("resolve_error:RuntimeError")
     assert channel.status == ParserChannelStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_resolve_negative_channel_uses_dialog_fallback_for_value_error() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="-1002215626453",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+    get_chat_refs: list[object] = []
+    dialogs_called = False
+
+    class _Chat:
+        id = -1002215626453
+        username = None
+        title = "Private price channel"
+        type = ChatType.CHANNEL
+
+    class _Dialog:
+        chat = _Chat()
+
+    class _Client:
+        async def get_chat(self, ref: object):
+            get_chat_refs.append(ref)
+            raise ValueError(f"Peer id invalid: {ref}")
+
+        async def get_dialogs(self):
+            nonlocal dialogs_called
+            dialogs_called = True
+            yield _Dialog()
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def execute(self, stmt):
+            return _EmptyResult()
+
+        async def flush(self) -> None:
+            return None
+
+    with patch.object(task_worker, "backfill_channel_on_activate", AsyncMock()):
+        await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert get_chat_refs == [-1002215626453]
+    assert dialogs_called is True
+    assert channel.channel_id == -1002215626453
+    assert channel.status == ParserChannelStatus.active
+    assert channel.is_active is True
+    assert channel.error_text is None
+    assert task.status == ParserStatus.processed
+
+
+@pytest.mark.asyncio
+async def test_resolve_negative_channel_reports_missing_dialog_peer() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="-1002215626453",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+
+    class _Dialog:
+        chat = SimpleNamespace(id=-1009999999999, type=ChatType.CHANNEL)
+
+    class _Client:
+        async def get_chat(self, ref: object):
+            raise ValueError(f"Peer id invalid: {ref}")
+
+        async def get_dialogs(self):
+            yield _Dialog()
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert channel.status == ParserChannelStatus.pending
+    assert task.status == ParserStatus.new
+    assert task.error_text is not None
+    assert "dialog_fallback:channel_not_in_dialogs" in task.error_text
+
+
+@pytest.mark.asyncio
+async def test_resolve_negative_channel_rejects_non_channel_dialog_peer() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="-1002215626453",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+
+    class _Dialog:
+        chat = SimpleNamespace(id=-1002215626453, type=ChatType.USER)
+
+    class _Client:
+        async def get_chat(self, ref: object):
+            raise ValueError(f"Peer id invalid: {ref}")
+
+        async def get_dialogs(self):
+            yield _Dialog()
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert channel.channel_id is None
+    assert channel.status == ParserChannelStatus.pending
+    assert task.status == ParserStatus.new
+    assert task.error_text is not None
+    assert "dialog_fallback:peer_not_channel" in task.error_text
+
+
+@pytest.mark.asyncio
+async def test_resolve_negative_channel_does_not_scan_dialogs_for_unrelated_error() -> None:
+    channel = ParserChannel(
+        id=1,
+        channel_id=None,
+        username=None,
+        title="-1002215626453",
+        purpose=ParserChannelPurpose.supplier_price_source,
+        status=ParserChannelStatus.pending,
+        is_active=True,
+    )
+    task = ParserTask(
+        id=9,
+        post_id=None,
+        channel_id=1,
+        task_type=ParserTaskType.resolve_channel,
+        status=ParserStatus.processing,
+        attempts=1,
+        max_attempts=5,
+    )
+    dialogs_called = False
+
+    class _Client:
+        async def get_chat(self, ref: object):
+            raise RuntimeError("network down")
+
+        async def get_dialogs(self):
+            nonlocal dialogs_called
+            dialogs_called = True
+            yield None
+
+    class _Session:
+        async def get(self, model, ident):
+            return channel
+
+        async def flush(self) -> None:
+            return None
+
+    await task_worker.process_resolve_channel(_Session(), task, _Client())  # type: ignore[arg-type]
+
+    assert dialogs_called is False
+    assert task.status == ParserStatus.new
+    assert task.error_text is not None
+    assert task.error_text.startswith("resolve_error:RuntimeError")
 
 
 @pytest.mark.asyncio

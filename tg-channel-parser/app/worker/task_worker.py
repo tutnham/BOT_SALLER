@@ -158,6 +158,30 @@ async def _fail_or_retry(
         )
 
 
+async def _resolve_channel_via_dialogs(
+    client: Any,
+    target: int,
+) -> tuple[Any | None, str | None]:
+    from pyrogram.enums import ChatType
+
+    dialogs = client.get_dialogs()
+    try:
+        async for dialog in dialogs:
+            chat = dialog.chat
+            if chat.id != target:
+                continue
+            if chat.type != ChatType.CHANNEL:
+                return None, "peer_not_channel"
+            return chat, None
+    except Exception as exc:
+        return None, f"dialog_discovery_error:{type(exc).__name__}"
+    finally:
+        aclose = getattr(dialogs, "aclose", None)
+        if aclose is not None:
+            await aclose()
+    return None, "channel_not_in_dialogs"
+
+
 async def process_resolve_channel(
     session: AsyncSession,
     task: ParserTask,
@@ -194,6 +218,26 @@ async def process_resolve_channel(
                 chat = await with_flood_wait(lambda: client.get_chat(canonical))
             except Exception:
                 chat = None
+        if chat is None:
+            # Pyrogram 2.x отклоняет oversized -100 ID до MTProto при холодном cache.
+            # Dialogs прогревает peer cache и доказывает точный доступ к каналу.
+            if (
+                isinstance(target, int)
+                and target < -100_000_000_000
+                and isinstance(exc, ValueError | PeerIdInvalid)
+            ):
+                chat, dialog_error = await _resolve_channel_via_dialogs(client, target)
+                if chat is None:
+                    await _fail_or_retry(
+                        session,
+                        task,
+                        None,
+                        f"resolve_error:{type(exc).__name__}:{exc};dialog_fallback:{dialog_error}",
+                    )
+                    if task.status == ParserStatus.failed:
+                        channel.status = ParserChannelStatus.failed
+                        channel.error_text = task.error_text
+                    return
         if chat is None:
             await _fail_or_retry(
                 session,
