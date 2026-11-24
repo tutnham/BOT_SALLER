@@ -123,28 +123,31 @@ async def upsert_post(session: AsyncSession, message: Any) -> ParserPost | None:
         # conflict — already exists
         return None
 
-    # Media descriptors
+    # Прайс-канал: боту нужен только текст/подпись. Файлы не качаем.
+    price_text_only = channel.purpose == ParserChannelPurpose.supplier_price_source
     backend = ParserStorageBackend.local
-    for desc in extract_media_descriptors(message):
-        media_stmt = (
-            insert(ParserMediaFile)
-            .values(
-                post_id=post.id,
-                media_type=desc["media_type"],
-                file_unique_id=desc["file_unique_id"],
-                file_id=desc.get("file_id"),
-                storage_backend=backend,
-                file_size=desc.get("file_size"),
-                mime_type=desc.get("mime_type"),
-                download_status=ParserStatus.new,
+    if not price_text_only:
+        for desc in extract_media_descriptors(message):
+            media_stmt = (
+                insert(ParserMediaFile)
+                .values(
+                    post_id=post.id,
+                    media_type=desc["media_type"],
+                    file_unique_id=desc["file_unique_id"],
+                    file_id=desc.get("file_id"),
+                    storage_backend=backend,
+                    file_size=desc.get("file_size"),
+                    mime_type=desc.get("mime_type"),
+                    download_status=ParserStatus.new,
+                )
+                .on_conflict_do_nothing(index_elements=["post_id", "file_unique_id"])
             )
-            .on_conflict_do_nothing(index_elements=["post_id", "file_unique_id"])
-        )
-        await session.execute(media_stmt)
+            await session.execute(media_stmt)
 
     # Tasks per purpose (§7.4)
     content_type: ParserContentType = fields["content_type"]
-    if content_type in MEDIA_CONTENT_TYPES or extract_media_descriptors(message):
+    has_media = content_type in MEDIA_CONTENT_TYPES or bool(extract_media_descriptors(message))
+    if has_media and not price_text_only:
         await session.execute(
             insert(ParserTask).values(
                 post_id=post.id,

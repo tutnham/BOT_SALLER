@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.db.models import (
     ParserChannel,
+    ParserChannelPurpose,
     ParserChannelStatus,
     ParserPost,
     ParserStatus,
@@ -307,6 +308,25 @@ async def process_backfill_channel(
     task.error_text = None
 
 
+async def skip_supplier_price_media_downloads(session: AsyncSession) -> int:
+    """Снять скачивание файлов у прайс-каналов: боту нужен только текст поста."""
+    price_posts = (
+        select(ParserPost.id)
+        .join(ParserChannel, ParserChannel.channel_id == ParserPost.channel_id)
+        .where(ParserChannel.purpose == ParserChannelPurpose.supplier_price_source)
+    )
+    result = await session.execute(
+        update(ParserTask)
+        .where(
+            ParserTask.task_type == ParserTaskType.download_media,
+            ParserTask.status.in_((ParserStatus.new, ParserStatus.processing)),
+            ParserTask.post_id.in_(price_posts),
+        )
+        .values(status=ParserStatus.failed, error_text="price_channel_text_only")
+    )
+    return int(result.rowcount or 0)
+
+
 async def process_download_media(
     session: AsyncSession,
     task: ParserTask,
@@ -318,6 +338,11 @@ async def process_download_media(
         .where(ParserPost.id == task.post_id)
     )
     post = result.scalar_one()
+    channel = await get_channel_by_tg_id(session, post.channel_id)
+    if channel is not None and channel.purpose == ParserChannelPurpose.supplier_price_source:
+        task.status = ParserStatus.failed
+        task.error_text = "price_channel_text_only"
+        return
     if post.excluded:
         task.status = ParserStatus.processed
         task.error_text = "excluded"
@@ -455,6 +480,9 @@ async def run_task_poll_loop(client: Any) -> None:
             reclaimed = await reclaim_stale_processing(session)
             if reclaimed:
                 logger.warning("Reclaimed {} stale processing tasks", reclaimed)
+            skipped = await skip_supplier_price_media_downloads(session)
+            if skipped:
+                logger.info("Skipped {} price-channel media downloads", skipped)
             await session.commit()
         task_id = await _claim_next_task_id()
         if task_id is None:

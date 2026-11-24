@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from datetime import UTC, datetime
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -839,6 +839,7 @@ async def test_poll_loop_survives_processor_crash() -> None:
     with (
         patch.object(task_worker, "get_session_factory", return_value=FakeFactory()),
         patch.object(task_worker, "reclaim_stale_processing", AsyncMock(return_value=0)),
+        patch.object(task_worker, "skip_supplier_price_media_downloads", AsyncMock(return_value=0)),
         patch.object(task_worker, "_claim_next_task_id", claim_mock),
         patch.object(task_worker, "_process_claimed_task", process_mock),
         patch.object(task_worker, "_recover_crashed_task", recover_mock),
@@ -853,3 +854,22 @@ async def test_poll_loop_survives_processor_crash() -> None:
     assert "processor_crash:RuntimeError" in recover_args[1]
     # цикл дошёл до второй итерации (повторный claim), а не умер на первой
     assert claim_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_process_download_media_skips_price_channel() -> None:
+    post = SimpleNamespace(id=1, channel_id=-1001722834216, excluded=False, media_files=[object()])
+    task = SimpleNamespace(post_id=1, status=ParserStatus.processing, error_text=None)
+
+    class _Session:
+        async def execute(self, stmt):
+            return SimpleNamespace(scalar_one=lambda: post)
+
+    channel = SimpleNamespace(purpose=ParserChannelPurpose.supplier_price_source)
+    client = SimpleNamespace(get_messages=AsyncMock(side_effect=AssertionError("download")))
+    with patch.object(task_worker, "get_channel_by_tg_id", AsyncMock(return_value=channel)):
+        await task_worker.process_download_media(_Session(), task, client)
+
+    assert task.status == ParserStatus.failed
+    assert task.error_text == "price_channel_text_only"
+    client.get_messages.assert_not_called()

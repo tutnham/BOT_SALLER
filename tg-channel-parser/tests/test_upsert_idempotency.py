@@ -149,6 +149,44 @@ async def test_upsert_monitoring_does_not_queue_ai_process(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_upsert_supplier_photo_does_not_queue_download() -> None:
+    channel = SimpleNamespace(
+        channel_id=-100123,
+        purpose=ParserChannelPurpose.supplier_price_source,
+    )
+    new_post = SimpleNamespace(
+        id=102,
+        channel_id=-100123,
+        message_id=4,
+        content_type=ParserContentType.photo,
+        error_text=None,
+        status=ParserStatus.new,
+    )
+    tables: list[str] = []
+
+    async def execute(stmt: Any) -> Any:
+        table = getattr(getattr(stmt, "table", None), "name", None)
+        if table:
+            tables.append(table)
+        if table == "parser_posts":
+            return _ReturningResult(new_post)
+        return _ReturningResult(channel)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute)
+    session.flush = AsyncMock()
+    photo = SimpleNamespace(file_unique_id="pic-1", file_id="file-1", file_size=20)
+
+    result = await upsert_post(
+        session,
+        make_message(text=None, caption="iPhone 70000", photo=photo),
+    )
+    assert result is new_post
+    assert "parser_media_files" not in tables
+    assert "parser_tasks" not in tables
+
+
+@pytest.mark.asyncio
 async def test_upsert_other_marks_post_failed() -> None:
     channel = SimpleNamespace(
         channel_id=-100123,
