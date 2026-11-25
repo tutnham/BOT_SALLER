@@ -97,6 +97,16 @@ def test_brandless_18_pro_uses_family_markup() -> None:
     assert result.is_fallback is False
 
 
+def test_iphone_13_air_is_not_family_markup() -> None:
+    rules = seed_markup_rule_rows()
+    air_13 = get_markup("iPhone 13 Air 256GB", rules)
+    assert air_13.is_fallback is True
+    assert air_13.rule_key is None
+    assert get_markup("iPhone 15 128GB", rules).rule_key == "iphone_13_16"
+    assert get_markup("iPhone 16 Pro", rules).rule_key == "iphone_13_16"
+    assert get_markup("iPhone 17 Air 256GB", rules).rule_key == "iphone_17_air"
+
+
 def test_markup_buttons_group_models_and_hide_custom_duplicate() -> None:
     from app.services.markup_service import (
         markup_rule_label,
@@ -127,7 +137,23 @@ def test_markup_buttons_group_models_and_hide_custom_duplicate() -> None:
         priority=60,
         active=True,
     )
-    reps = representative_rules([*rules, duo, duplicate])
+    legacy_priced = MarkupRule(
+        id=52,
+        category="custom_iphone_16_256gb",
+        rule_key="custom_iphone_16_256gb",
+        brand="*",
+        model_pattern=r"iphone\ 16\ 256gb",
+        markup_fixed=Decimal("700"),
+        priority=60,
+        active=True,
+    )
+    all_rules = sorted(
+        [*rules, duo, duplicate, legacy_priced],
+        key=lambda rule: -(rule.priority or 0),
+    )
+    reps = representative_rules(all_rules)
+    rule_ids = [int(rule.id) for rule in reps]
+    assert len(rule_ids) == len(set(rule_ids))
     iphone = sorted(
         (rule for rule in reps if (rule.rule_key or "").startswith(("iphone_", "custom_iphone"))),
         key=model_sort_key,
@@ -137,6 +163,8 @@ def test_markup_buttons_group_models_and_hide_custom_duplicate() -> None:
     assert labels[-1] == "iPhone 13–16"
     assert labels.count("iPhone 18 Pro") == 1
     assert "custom" not in " ".join(labels)
+    family = get_markup("iPhone 16 256GB", all_rules)
+    assert family.rule_key == "iphone_13_16"
 
 
 @pytest.mark.asyncio

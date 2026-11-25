@@ -33,7 +33,8 @@ CUSTOMER_MARKUP_RULES: tuple[tuple[str, str, str, str, int], ...] = (
     (
         "iphone_13_16",
         "apple",
-        r"iphone\s+(?:1[3-6])(?:\s|$|\s+(?:pro|max|plus|mini|se|e)\b)",
+        # No iPhone 13–16 Air exists; «air» after 13–16 is a MacBook/iPad line.
+        r"iphone\s+(?:1[3-6])(?:\s+(?!air\b)|$)",
         "500",
         90,
     ),
@@ -431,7 +432,7 @@ def model_sort_key(rule: MarkupRule) -> tuple:
 def representative_rules(rules: list[MarkupRule]) -> list[MarkupRule]:
     """One button per model. A family rule hides storage-specific custom rows."""
     by_id = {int(rule.id): rule for rule in rules if rule.id is not None}
-    chosen: dict[str, MarkupRule] = {}
+    chosen: dict[int, MarkupRule] = {}
     for rule in rules:
         if not rule.active:
             continue
@@ -440,7 +441,9 @@ def representative_rules(rules: list[MarkupRule]) -> list[MarkupRule]:
         winner = by_id.get(int(result.rule_id)) if result.rule_id is not None else None
         if winner is None or not winner.active:
             winner = rule
-        chosen[label.casefold()] = winner
+        if winner.id is None:
+            continue
+        chosen.setdefault(int(winner.id), winner)
     return list(chosen.values())
 
 

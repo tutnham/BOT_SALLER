@@ -71,8 +71,10 @@ _REGION_RE = re.compile(
     re.IGNORECASE,
 )
 _ROSTEST_RE = re.compile(r"\b(?:ростест|рст)\b", re.IGNORECASE)
+_DUO_MODEL_RE = re.compile(r"\bduo\b(?!\s*sim\b)", re.IGNORECASE)
 _SIM_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\besim\b", re.IGNORECASE), "eSIM"),
+    (re.compile(r"\bduo[-\s]?sim\b", re.IGNORECASE), "Dual SIM"),
     (re.compile(r"dual\s*sim|2\s*sim|две\s*sim", re.IGNORECASE), "Dual SIM"),
     (re.compile(r"nano[-\s]?sim", re.IGNORECASE), "nano-SIM"),
     (re.compile(r"\b1\s*sim\b", re.IGNORECASE), "1 SIM"),
@@ -257,7 +259,7 @@ def _parse_variant(tail: str, brand: str) -> tuple[str | None, str | None, str |
 
     if brand == "iPhone":
         family = "iphone"
-        if re.search(r"\bduo\b", tail, re.IGNORECASE):
+        if _DUO_MODEL_RE.search(tail):
             return family, None, "duo"
     elif brand == "iPad":
         family = "ipad"
@@ -327,7 +329,7 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
     if sku_match:
         family = "samsung"
         brand = "Samsung"
-    if re.search(r"\bduo\b", text, re.IGNORECASE) and brand is None:
+    if _DUO_MODEL_RE.search(text) and brand is None:
         return "iPhone", "iphone", None, "duo"
     samsung_num = _SAMSUNG_MODEL_RE.search(text)
     if samsung_num:
@@ -369,6 +371,10 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
         "e",
         "base",
     }:
+        # iPhone Air exists only from the 17 line on; brandless «air 13 …»
+        # is a MacBook/iPad Air without the brand word.
+        if parsed_variant == "air" and int(number) < 17:
+            return None, family, number, parsed_variant
         return "iPhone", "iphone", number, parsed_variant
     return None, family, number, parsed_variant
 
@@ -417,7 +423,9 @@ def canonicalize_catalog_fields(
     if not raw_model and not raw_storage:
         return None, None
     attrs = extract_product_attrs(" ".join(part for part in (raw_model, raw_storage) if part))
-    if not attrs.model:
+    # Only iPhone names are rebuilt brand-first; Samsung/Watch/AirPods display
+    # models lose their numbers through the Brand Number Variant template.
+    if attrs.brand != "iPhone" or not attrs.model:
         return (raw_model or None), (raw_storage or None)
     return attrs.model, (raw_storage or attrs.storage or None)
 

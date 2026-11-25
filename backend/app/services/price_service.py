@@ -130,6 +130,31 @@ def build_sku_key(item: ParsedPriceItem | dict[str, Any]) -> str:
     return f"{model}|{storage}|{color}|{region}|{sim}"
 
 
+def canonical_sku_key(
+    *,
+    model: str | None,
+    storage: str | None,
+    color: str | None,
+    region: str | None,
+    sim: str | None,
+) -> str:
+    """sku_key with the canonical iPhone name, same as new parsed_items rows.
+
+    Rows materialized before canonicalization keep raw-model keys; recomputing
+    with this helper merges them with post-deploy rows of the same product.
+    """
+    canonical_model, canonical_storage = canonicalize_catalog_fields(model, storage)
+    return build_sku_key(
+        {
+            "model": canonical_model,
+            "storage": canonical_storage,
+            "color": color,
+            "region": region,
+            "sim": sim,
+        }
+    )
+
+
 def format_sku_title(
     *,
     model: str | None,
@@ -476,14 +501,12 @@ async def _materialize_parsed_items(
         session.add(
             ParsedItem(
                 raw_price_id=raw.id,
-                sku_key=build_sku_key(
-                    {
-                        "model": model,
-                        "storage": storage,
-                        "color": item.color,
-                        "region": item.region,
-                        "sim": item.sim,
-                    }
+                sku_key=canonical_sku_key(
+                    model=model,
+                    storage=storage,
+                    color=item.color,
+                    region=item.region,
+                    sim=item.sim,
                 ),
                 model=model,
                 storage=storage,

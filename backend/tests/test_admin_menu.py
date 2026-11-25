@@ -2282,3 +2282,99 @@ async def test_parser_screen_clips_long_title_and_ready_reasons(
     assert len(reason_line) <= len("Причины: ") + _PARSER_READY_REASON_LIMIT + 1
 
 
+
+
+@pytest.mark.asyncio
+async def test_add_rule_for_family_covered_model_opens_existing_rule(
+    db_session: AsyncSession,
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    seed_owner: Owner,
+    seed_markup_rules: list,
+    mock_telegram,
+) -> None:
+    from app.db.models import MarkupRule
+    from app.services.markup_service import invalidate_markup_rules_cache
+
+    invalidate_markup_rules_cache()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_mk_add_covered",
+            CallbackData(namespace="admin", action="mk_add"),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=901, text="iPhone 16"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_owner_text_payload(OWNER_TG_ID, update_id=902, text="1500"),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    created = await db_session.scalar(
+        select(MarkupRule).where(MarkupRule.rule_key == "custom_iphone_16")
+    )
+    assert created is None
+
+    dialog = await db_session.get(AdminDialog, OWNER_TG_ID)
+    assert dialog is None
+
+    texts = " ".join(str(item[1]) for item in mock_telegram.sent)
+    assert "наценка уже выбрана" in texts
+    assert "iPhone 13–16 — 500 ₽" in texts
+
+
+@pytest.mark.asyncio
+async def test_send_or_edit_not_modified_keeps_message_in_place() -> None:
+    from app.handlers.admin_menu import _send_or_edit
+    from app.telegram.client import TelegramSendError
+    from tests.conftest import MockTelegramClient
+
+    class NotModifiedClient(MockTelegramClient):
+        async def edit_message_text(
+            self,
+            chat_id: int,
+            message_id: int,
+            text: str,
+            *,
+            parse_mode: str | None = None,
+            reply_markup: dict | None = None,
+        ) -> None:
+            raise TelegramSendError("Bad Request: message is not modified")
+
+    telegram = NotModifiedClient()
+    await _send_or_edit(
+        telegram, chat_id=1, text="тот же текст", message_id=55, markup=None
+    )
+    assert telegram.sent == []
+    assert telegram.edited == []
+
+    class EditMissingClient(MockTelegramClient):
+        async def edit_message_text(
+            self,
+            chat_id: int,
+            message_id: int,
+            text: str,
+            *,
+            parse_mode: str | None = None,
+            reply_markup: dict | None = None,
+        ) -> None:
+            raise TelegramSendError("Bad Request: message to edit not found")
+
+    fallback = EditMissingClient()
+    await _send_or_edit(
+        fallback, chat_id=1, text="новый текст", message_id=55, markup=None
+    )
+    assert len(fallback.sent) == 1

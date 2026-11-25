@@ -30,7 +30,11 @@ from app.services.deal_service import (
     cancel_request,
 )
 from app.services.request_card_service import render_admin_request_detail
-from app.telegram.client import TelegramClientProtocol, get_telegram_client
+from app.telegram.client import (
+    TelegramClientProtocol,
+    TelegramSendError,
+    get_telegram_client,
+)
 from app.telegram.home_buttons import EMP_PENDING_REPLIES, OWNER_MENU
 from app.telegram.keyboards import (
     CallbackData,
@@ -89,6 +93,11 @@ async def _send_or_edit(
                 chat_id, message_id, text, reply_markup=markup
             )
             return
+        except TelegramSendError as exc:
+            # Repeated tap of the same amount renders identical content;
+            # editing is done, sending again would duplicate the message.
+            if "message is not modified" in (exc.description or "").lower():
+                return
         except Exception:
             pass
     await telegram.send_message(chat_id, text, reply_markup=markup)
@@ -2289,7 +2298,13 @@ async def _handle_dialog_text(
     if state == "await_markup_rule_amount":
         from decimal import Decimal, InvalidOperation
 
-        from app.services.markup_service import create_markup_rule
+        from app.handlers.owner_commands import send_markup_edit
+        from app.services.markup_service import (
+            create_markup_rule,
+            get_markup,
+            list_active_rules,
+            markup_rule_label,
+        )
 
         phrase = str(payload.get("phrase") or "").strip()
         if not phrase:
@@ -2305,6 +2320,20 @@ async def _handle_dialog_text(
         if amount < 0:
             await telegram.send_message(chat_id, "Сумма не может быть отрицательной")
             return "ok"
+        covered = get_markup(phrase, await list_active_rules(session))
+        if not covered.is_fallback and covered.rule_id is not None:
+            await admin_service.clear_dialog(session, owner_id)
+            await telegram.send_message(
+                chat_id,
+                render_template("markup_product_already_priced", rule_label=phrase),
+            )
+            await send_markup_edit(
+                session,
+                chat_id=chat_id,
+                rule_id=int(covered.rule_id),
+                telegram=telegram,
+            )
+            return "ok"
         try:
             rule = await create_markup_rule(
                 session, phrase=phrase, markup_rub=amount
@@ -2315,7 +2344,7 @@ async def _handle_dialog_text(
             )
             return "ok"
         await admin_service.clear_dialog(session, owner_id)
-        label = (rule.rule_key or phrase).replace("_", " ")
+        label = markup_rule_label(rule)
         await telegram.send_message(
             chat_id,
             render_template(
