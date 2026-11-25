@@ -12,7 +12,16 @@ from sqlalchemy.orm import selectinload
 from app.db.models import MarkupRule, ProductCategory, Supplier, SupplierCategory
 from app.handlers.supplier_messages import manual_bind_message
 from app.services.markup_service import (
+    MARKUP_CATEGORIES,
+    get_markup,
     list_active_rules,
+    markup_category_arg,
+    markup_category_code,
+    markup_category_label,
+    markup_rule_label,
+    model_sort_key,
+    representative_rules,
+    retire_shadowed_custom_rules,
     update_rule_markup,
     update_rule_markup_by_id,
 )
@@ -170,8 +179,30 @@ async def _handle_markup_list(
     return "ok"
 
 
-def _markup_label(rule: MarkupRule) -> str:
-    return (rule.rule_key or rule.category or "правило").replace("_", " ")
+def _amount_text(rule: MarkupRule) -> str:
+    if rule.markup_fixed is None:
+        return "не задана"
+    return f"{int(rule.markup_fixed)} ₽"
+
+
+async def _show_markup(
+    telegram: TelegramClientProtocol,
+    *,
+    chat_id: int,
+    text: str,
+    rows: list[list[dict]],
+    message_id: int | None,
+) -> None:
+    from app.handlers.admin_menu import _send_or_edit
+    from app.telegram.keyboards import inline_keyboard as keyboard
+
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=text,
+        message_id=message_id,
+        markup=keyboard(rows),
+    )
 
 
 async def send_markup_list(
@@ -179,36 +210,106 @@ async def send_markup_list(
     *,
     chat_id: int,
     telegram: TelegramClientProtocol,
+    message_id: int | None = None,
 ) -> None:
+    await retire_shadowed_custom_rules(session)
     rules = await list_active_rules(session)
-    if not rules:
-        await telegram.send_message(
-            chat_id,
-            render_template("markup_rules_list", rules_block="—"),
-            reply_markup=inline_keyboard(
-                [
-                    [menu_button("Добавить правило", "mk_add")],
-                    [menu_button("В меню", "main_menu")],
-                ]
-            ),
-        )
-        return
-    lines: list[str] = []
+    reps = representative_rules(rules)
+    present = {markup_category_code(rule) for rule in reps}
     rows: list[list[dict]] = []
-    for rule in rules:
-        label = _markup_label(rule)
-        amount = int(rule.markup_fixed or 0)
-        lines.append(f"{label}: {amount} ₽")
-        rows.append(
-            [menu_button(f"{label} · {amount} ₽"[:40], "mk_open", int(rule.id))]
-        )
+    for arg, label, code in MARKUP_CATEGORIES:
+        if code not in present:
+            continue
+        rows.append([menu_button(label, "mk_cat", arg)])
     rows.append([menu_button("Добавить правило", "mk_add")])
     rows.append([menu_button("В меню", "main_menu")])
-    await telegram.send_message(
-        chat_id,
-        render_template("markup_rules_list", rules_block="\n".join(lines)),
-        reply_markup=inline_keyboard(rows),
+    text = (
+        render_template("markup_rules_list")
+        if reps
+        else "Наценок пока нет."
     )
+    await _show_markup(
+        telegram, chat_id=chat_id, text=text, rows=rows, message_id=message_id
+    )
+
+
+async def send_markup_category(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    telegram: TelegramClientProtocol,
+    category_arg: int,
+    page: int = 0,
+    message_id: int | None = None,
+) -> None:
+    rules = await list_active_rules(session)
+    code = "other"
+    for arg, _label, stored in MARKUP_CATEGORIES:
+        if arg == category_arg:
+            code = stored
+            break
+    models = sorted(
+        (rule for rule in representative_rules(rules) if markup_category_code(rule) == code),
+        key=model_sort_key,
+    )
+    page_size = 8
+    page = max(page, 0)
+    visible = models[page * page_size : (page + 1) * page_size]
+    rows: list[list[dict]] = []
+    for rule in visible:
+        amount = "—" if rule.markup_fixed is None else f"{int(rule.markup_fixed)} ₽"
+        label = f"{markup_rule_label(rule)} · {amount}"
+        rows.append([menu_button(label[:60], "mk_open", int(rule.id))])
+    nav: list[dict] = []
+    if page > 0:
+        nav.append(menu_button("◀ Назад", "mk_cat", category_arg, page=page - 1))
+    if (page + 1) * page_size < len(models):
+        nav.append(menu_button("Вперед ▶", "mk_cat", category_arg, page=page + 1))
+    if nav:
+        rows.append(nav)
+    rows.append([menu_button("Добавить правило", "mk_add")])
+    rows.append(
+        [
+            menu_button("К наценкам", "markup_list"),
+            menu_button("В меню", "main_menu"),
+        ]
+    )
+    await _show_markup(
+        telegram,
+        chat_id=chat_id,
+        text=render_template("markup_category", category=markup_category_label(category_arg)),
+        rows=rows,
+        message_id=message_id,
+    )
+
+
+async def _today_variant_lines(
+    session: AsyncSession,
+    rule: MarkupRule,
+    rules: list[MarkupRule],
+) -> str:
+    from app.parsers.product_normalizer import canonicalize_catalog_fields
+    from app.services.price_service import aggregate_today, format_rub_amount
+
+    lines: list[str] = []
+    for row in await aggregate_today(session):
+        product = {"model": row.get("model"), "storage": row.get("storage")}
+        if get_markup(product, rules).rule_id != rule.id:
+            continue
+        _model, storage = canonicalize_catalog_fields(row.get("model"), row.get("storage"))
+        parts = [
+            part
+            for part in (storage, row.get("color"), row.get("region"), row.get("sim"))
+            if part
+        ]
+        title = " ".join(str(part) for part in parts) or "—"
+        lines.append(f"{title} — {format_rub_amount(row['min_price'])}")
+    if not lines:
+        return "Сегодня цен нет."
+    if len(lines) > 20:
+        hidden = len(lines) - 20
+        lines = [*lines[:20], f"… и ещё {hidden}"]
+    return "\n".join(lines)
 
 
 async def send_markup_edit(
@@ -217,13 +318,20 @@ async def send_markup_edit(
     chat_id: int,
     rule_id: int,
     telegram: TelegramClientProtocol,
+    message_id: int | None = None,
 ) -> None:
     rule = await session.get(MarkupRule, rule_id)
     if rule is None:
-        await telegram.send_message(chat_id, render_template("markup_rule_not_found", rule_key=rule_id))
+        await _show_markup(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("markup_rule_not_found", rule_key=rule_id),
+            rows=[[menu_button("К наценкам", "markup_list")]],
+            message_id=message_id,
+        )
         return
-    label = _markup_label(rule)
-    amount = int(rule.markup_fixed or 0)
+    rules = await list_active_rules(session)
+    prices = await _today_variant_lines(session, rule, rules)
     amount_row = [
         menu_button(f"{preset}", "mk_set", rule_id, page=preset)
         for preset in (500, 800, 1000)
@@ -232,14 +340,21 @@ async def send_markup_edit(
         amount_row,
         [menu_button("Своя сумма", "mk_custom", rule_id)],
         [
-            menu_button("К списку", "markup_list"),
+            menu_button("К моделям", "mk_cat", markup_category_arg(markup_category_code(rule))),
             menu_button("В меню", "main_menu"),
         ],
     ]
-    await telegram.send_message(
-        chat_id,
-        render_template("markup_edit_prompt", rule_label=label, amount=amount),
-        reply_markup=inline_keyboard(rows),
+    await _show_markup(
+        telegram,
+        chat_id=chat_id,
+        text=render_template(
+            "markup_edit_prompt",
+            rule_label=markup_rule_label(rule),
+            amount=_amount_text(rule),
+            prices_block=prices,
+        ),
+        rows=rows,
+        message_id=message_id,
     )
 
 
@@ -254,7 +369,7 @@ async def decline_markup_prompt(
 
     outcome = await decline_unpriced_markup_rule(session, rule_id)
     rule = await session.get(MarkupRule, rule_id)
-    label = _markup_label(rule) if rule is not None else str(rule_id)
+    label = markup_rule_label(rule) if rule is not None else str(rule_id)
     if outcome == "missing":
         text = render_template("markup_rule_not_found", rule_key=rule_id)
     elif outcome == "already_priced":
@@ -271,6 +386,7 @@ async def apply_markup_choice(
     rule_id: int,
     amount: Decimal,
     telegram: TelegramClientProtocol,
+    message_id: int | None = None,
 ) -> None:
     updated = await update_rule_markup_by_id(session, rule_id, amount)
     if updated is None:
@@ -279,11 +395,20 @@ async def apply_markup_choice(
             render_template("markup_rule_not_found", rule_key=rule_id),
         )
         return
+    if message_id is not None:
+        await send_markup_edit(
+            session,
+            chat_id=chat_id,
+            rule_id=rule_id,
+            telegram=telegram,
+            message_id=message_id,
+        )
+        return
     await telegram.send_message(
         chat_id,
         render_template(
             "markup_rule_updated",
-            rule_key=_markup_label(updated),
+            rule_key=markup_rule_label(updated),
             amount=amount,
         ),
         reply_markup=inline_keyboard(

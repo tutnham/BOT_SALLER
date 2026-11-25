@@ -14,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import MarkupRule
-from app.parsers.product_normalizer import normalize_product_text
+from app.parsers.product_normalizer import (
+    canonicalize_catalog_fields,
+    normalize_product_text,
+)
 
 CUSTOMER_MARKUP_RULES: tuple[tuple[str, str, str, str, int], ...] = (
     ("iphone_18_pro_max", "apple", r"iphone\s+18\s+pro\s+max", "800", 105),
@@ -106,10 +109,13 @@ def _product_search_text(product_name_or_attrs: str | dict | None) -> str:
     if product_name_or_attrs is None:
         return ""
     if isinstance(product_name_or_attrs, dict):
-        model = product_name_or_attrs.get("model") or ""
-        storage = product_name_or_attrs.get("storage") or ""
-        return normalize_product_text(f"{model} {storage}".strip())
-    return normalize_product_text(str(product_name_or_attrs))
+        model = str(product_name_or_attrs.get("model") or "")
+        storage = str(product_name_or_attrs.get("storage") or "")
+    else:
+        model = str(product_name_or_attrs)
+        storage = ""
+    canonical, parsed_storage = canonicalize_catalog_fields(model, storage or None)
+    return normalize_product_text(f"{canonical or ''} {parsed_storage or ''}".strip())
 
 
 def get_markup(
@@ -223,8 +229,8 @@ async def list_active_rules(session: AsyncSession) -> list[MarkupRule]:
 
 
 def phrase_to_model_pattern(phrase: str) -> str:
-    """Build a regex for normalized product text from a human phrase."""
-    text = _product_search_text(phrase)
+    """Build a regex for the model identity, without storage or color."""
+    text = _markup_identity_text(phrase)
     if not text:
         raise ValueError("empty_phrase")
     tokens = text.split()
@@ -232,11 +238,16 @@ def phrase_to_model_pattern(phrase: str) -> str:
 
 
 def slug_rule_key(phrase: str) -> str:
-    text = _product_search_text(phrase).replace(" ", "_")
+    text = _markup_identity_text(phrase).replace(" ", "_")
     if not text:
         raise ValueError("empty_phrase")
     key = f"custom_{text}"
     return key[:120]
+
+
+def _markup_identity_text(phrase: str) -> str:
+    model, _storage = canonicalize_catalog_fields(phrase, None)
+    return normalize_product_text(model or phrase)
 
 
 async def ensure_markup_rule_for_product(
@@ -312,3 +323,143 @@ async def create_markup_rule(
     invalidate_markup_rules_cache()
     await session.flush()
     return rule
+
+
+MARKUP_CATEGORIES: tuple[tuple[int, str, str], ...] = (
+    (1, "iPhone", "iphone"),
+    (2, "iPad", "ipad"),
+    (3, "Apple Watch", "apple_watch"),
+    (4, "AirPods", "airpods"),
+    (5, "MacBook", "macbook"),
+    (6, "Samsung", "samsung"),
+    (7, "Прочее", "other"),
+)
+
+_RULE_LABELS = {
+    "iphone_13_16": "iPhone 13–16",
+    "iphone_18_base": "iPhone 18",
+    "iphone_17_base": "iPhone 17",
+    "apple_watch": "Apple Watch",
+    "airpods": "AirPods",
+    "ipad": "iPad",
+    "macbook": "MacBook",
+    "samsung": "Samsung",
+}
+
+_VARIANT_RANK = {
+    "duo": 0,
+    "pro max": 1,
+    "pro": 2,
+    "plus": 3,
+    "air": 4,
+    "e": 5,
+    "base": 6,
+}
+
+
+def markup_rule_label(rule: MarkupRule) -> str:
+    """Human name without the internal custom_ prefix."""
+    key = rule.rule_key or ""
+    if key in _RULE_LABELS:
+        return _RULE_LABELS[key]
+    source = key.removeprefix("custom_").replace("_", " ").strip()
+    model, _storage = canonicalize_catalog_fields(source or rule.category, None)
+    if model and model.casefold() != (source or "").casefold():
+        return model
+    if model and model.casefold().startswith(
+        ("iphone", "ipad", "macbook", "airpods", "apple watch", "samsung")
+    ):
+        return model
+    return source or "правило"
+
+
+def markup_category_code(rule: MarkupRule) -> str:
+    key = rule.rule_key or ""
+    if key == "iphone_13_16" or key.startswith("iphone_"):
+        return "iphone"
+    if key in {"ipad", "apple_watch", "airpods", "macbook", "samsung"}:
+        return key
+    label = markup_rule_label(rule)
+    from app.parsers.product_normalizer import extract_product_attrs
+
+    attrs = extract_product_attrs(label)
+    if attrs.family == "iphone" or attrs.brand == "iPhone":
+        return "iphone"
+    if attrs.family == "ipad" or attrs.brand == "iPad":
+        return "ipad"
+    if attrs.family == "apple_watch" or attrs.brand == "Apple Watch":
+        return "apple_watch"
+    if attrs.family == "airpods" or attrs.brand == "AirPods":
+        return "airpods"
+    if attrs.family == "macbook" or attrs.brand == "MacBook":
+        return "macbook"
+    if attrs.family == "samsung" or attrs.brand == "Samsung" or rule.brand == "samsung":
+        return "samsung"
+    return "other"
+
+
+def markup_category_arg(code: str) -> int:
+    for arg, _label, stored in MARKUP_CATEGORIES:
+        if stored == code:
+            return arg
+    return 7
+
+
+def markup_category_label(arg: int) -> str:
+    for stored_arg, label, _code in MARKUP_CATEGORIES:
+        if stored_arg == arg:
+            return label
+    return "Прочее"
+
+
+def model_sort_key(rule: MarkupRule) -> tuple:
+    label = markup_rule_label(rule)
+    if rule.rule_key == "iphone_13_16":
+        return (2, 0, 0, label.casefold())
+    from app.parsers.product_normalizer import extract_product_attrs
+
+    attrs = extract_product_attrs(label)
+    if attrs.variant == "duo" or "duo" in label.casefold():
+        return (0, 0, 0, label.casefold())
+    if markup_category_code(rule) == "iphone":
+        number = int(attrs.number) if attrs.number and attrs.number.isdigit() else -1
+        rank = _VARIANT_RANK.get(attrs.variant or "", 9)
+        return (1, -number, rank, label.casefold())
+    return (1, 0, 0, label.casefold())
+
+
+def representative_rules(rules: list[MarkupRule]) -> list[MarkupRule]:
+    """One button per model. A family rule hides storage-specific custom rows."""
+    by_id = {int(rule.id): rule for rule in rules if rule.id is not None}
+    chosen: dict[str, MarkupRule] = {}
+    for rule in rules:
+        if not rule.active:
+            continue
+        label = markup_rule_label(rule)
+        result = get_markup(label, rules)
+        winner = by_id.get(int(result.rule_id)) if result.rule_id is not None else None
+        if winner is None or not winner.active:
+            winner = rule
+        chosen[label.casefold()] = winner
+    return list(chosen.values())
+
+
+async def retire_shadowed_custom_rules(session: AsyncSession) -> int:
+    """Deactivate empty custom rules already covered by a family markup."""
+    invalidate_markup_rules_cache()
+    rules = await load_rules(session)
+    retired = 0
+    for rule in rules:
+        key = rule.rule_key or ""
+        if not key.startswith("custom_") or rule.markup_fixed is not None:
+            continue
+        result = get_markup(markup_rule_label(rule), rules)
+        if result.is_fallback or result.rule_id is None or result.rule_id == rule.id:
+            continue
+        rule.active = False
+        rule.updated_at = datetime.now(UTC)
+        retired += 1
+    if retired:
+        invalidate_markup_rules_cache()
+        await session.flush()
+    return retired

@@ -1688,7 +1688,8 @@ async def test_parser_prices_tab_explains_empty_state(
     text = _last_text(mock_telegram)
     assert "Парсер — Цены" in text
     assert "Пусто." in text
-    assert "Черновика прайса ещё не было." in text
+    assert "Черновика прайса ещё не было." not in text
+    assert "Почему прайс пуст" not in text
     labels = _button_labels(_last_markup(mock_telegram))
     assert "Каналы и статус" in labels
     assert "▶ Запустить прайс" in labels
@@ -1743,8 +1744,9 @@ async def test_parser_prices_tab_shows_collected_prices(
     assert resp.json()["status"] == "ok"
 
     text = _last_text(mock_telegram)
-    assert "iPhone 16 256 — 80000.00 RUB" in text
-    assert "Черновик #" in text
+    assert "iPhone 16 256 — 80 000 ₽" in text
+    assert "Черновик #" not in text
+    assert "Почему прайс пуст" not in text
 
 
 @pytest.mark.asyncio
@@ -2160,7 +2162,7 @@ async def test_manual_morning_price_skips_draft_when_backfill_incomplete(
 
 
 @pytest.mark.asyncio
-async def test_parser_prices_tab_keeps_reasons_beside_old_draft(
+async def test_parser_prices_tab_hides_draft_and_empty_reasons(
     webhook_client: AsyncClient,
     webhook_headers: dict[str, str],
     db_session: AsyncSession,
@@ -2196,9 +2198,10 @@ async def test_parser_prices_tab_keeps_reasons_beside_old_draft(
     assert resp.json()["status"] == "ok"
 
     text = _last_text(mock_telegram)
-    assert "Сегодня черновика нет." in text
+    assert "Сегодня черновика нет." not in text
     assert "Черновик #" not in text
-    assert "парсер не отдал ни одного поста" in text
+    assert "Почему прайс пуст" not in text
+    assert "парсер не отдал ни одного поста" not in text
 
 
 @pytest.mark.asyncio
@@ -2249,7 +2252,7 @@ async def test_parser_screen_clips_long_title_and_ready_reasons(
     text = _last_text(mock_telegram)
     assert "M" * (_PARSER_LINE_LIMIT + 1) not in text
     assert "…" in text
-    assert "100.00 RUB" in text
+    assert "100 ₽" in text
 
     long_reasons = [f"reason-{index}-" + ("R" * 80) for index in range(5)]
 

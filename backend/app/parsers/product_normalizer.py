@@ -257,6 +257,8 @@ def _parse_variant(tail: str, brand: str) -> tuple[str | None, str | None, str |
 
     if brand == "iPhone":
         family = "iphone"
+        if re.search(r"\bduo\b", tail, re.IGNORECASE):
+            return family, None, "duo"
     elif brand == "iPad":
         family = "ipad"
     elif brand == "MacBook":
@@ -307,11 +309,17 @@ def _parse_variant(tail: str, brand: str) -> tuple[str | None, str | None, str |
     return family, number, variant
 
 
+def _is_iphone_generation(number: str) -> bool:
+    """Bare 13–19 in a price line is an iPhone, not a new product family."""
+    return number.isdigit() and 13 <= int(number) <= 19
+
+
 def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Parse number/variant without brand (e.g. 18 Pro Max).
 
-    Does not assign family globally; family stays None unless Samsung SKU/S-series.
+    Generations 13–19 with Pro/Max/Plus/Air/E, or a bare «14 128GB», are iPhone.
+    Samsung SKU/S-series stays Samsung. Ultra without a brand is not an iPhone.
     """
     family: str | None = None
     brand: str | None = None
@@ -319,6 +327,8 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
     if sku_match:
         family = "samsung"
         brand = "Samsung"
+    if re.search(r"\bduo\b", text, re.IGNORECASE) and brand is None:
+        return "iPhone", "iphone", None, "duo"
     samsung_num = _SAMSUNG_MODEL_RE.search(text)
     if samsung_num:
         family = "samsung"
@@ -341,13 +351,25 @@ def _parse_brandless_apple_like(text: str) -> tuple[str | None, str | None, str 
         number_match = _MODEL_NUMBER_RE.search(text[: storage_match.start()])
         if number_match is None:
             return None, None, None, None
-        return None, "iphone", number_match.group(1), "base"
+        number = number_match.group(1)
+        if _is_iphone_generation(number):
+            return "iPhone", "iphone", number, "base"
+        return None, "iphone", number, "base"
 
     number_match = _MODEL_NUMBER_RE.search(text)
     if not number_match:
         return None, None, None, None
     number = number_match.group(1)
     _, _, parsed_variant = _parse_variant(text, "iPhone")
+    if _is_iphone_generation(number) and parsed_variant in {
+        "pro max",
+        "pro",
+        "plus",
+        "air",
+        "e",
+        "base",
+    }:
+        return "iPhone", "iphone", number, parsed_variant
     return None, family, number, parsed_variant
 
 
@@ -374,9 +396,30 @@ def _build_display_model(brand: str | None, number: str | None, variant: str | N
             parts.append("mini")
         elif variant == "se":
             parts.append("SE")
+        elif variant == "duo":
+            parts.append("Duo")
     elif variant == "e" and number:
         parts[-1] = f"{number}e"
     return " ".join(parts).strip() or None
+
+
+def canonicalize_catalog_fields(
+    model: str | None,
+    storage: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Return a brand-qualified model and storage.
+
+    «18 pro 512gb» becomes («iPhone 18 Pro», «512GB»). Text that is not a
+    known device is returned unchanged.
+    """
+    raw_model = (model or "").strip()
+    raw_storage = (storage or "").strip()
+    if not raw_model and not raw_storage:
+        return None, None
+    attrs = extract_product_attrs(" ".join(part for part in (raw_model, raw_storage) if part))
+    if not attrs.model:
+        return (raw_model or None), (raw_storage or None)
+    return attrs.model, (raw_storage or attrs.storage or None)
 
 
 def extract_product_attrs(source_text: str) -> ProductAttrs:

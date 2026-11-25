@@ -32,12 +32,15 @@ from app.llm.schemas import (
     validate_price_list_payload,
 )
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
+from app.parsers.product_normalizer import canonicalize_catalog_fields
 from app.services.audit_service import record_audit
 from app.services.markup_service import (
     ensure_markup_rule_for_product,
     get_markup,
     invalidate_markup_rules_cache,
     load_rules,
+    markup_rule_label,
+    retire_shadowed_custom_rules,
 )
 from app.services.ops_status_service import llm_configuration_snapshot
 from app.services.parser_client import (
@@ -137,6 +140,34 @@ def format_sku_title(
 ) -> str:
     parts = [p for p in (model, storage, color, region, sim) if p]
     return " ".join(parts).strip() or "—"
+
+
+def format_rub_amount(amount: Decimal | str | int) -> str:
+    """47000.00 -> «47 000 ₽»."""
+    value = Decimal(str(amount))
+    if value == value.to_integral_value():
+        body = f"{int(value):,}".replace(",", " ")
+    else:
+        body = f"{value.quantize(Decimal('0.01')):,.2f}".replace(",", " ")
+    return f"{body} ₽"
+
+
+def present_parser_title(
+    *,
+    model: str | None,
+    storage: str | None,
+    color: str | None,
+    region: str | None,
+    sim: str | None,
+) -> str:
+    canonical, parsed_storage = canonicalize_catalog_fields(model, storage)
+    return format_sku_title(
+        model=canonical or model,
+        storage=storage or parsed_storage,
+        color=color,
+        region=region,
+        sim=sim,
+    )
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -441,12 +472,21 @@ async def _materialize_parsed_items(
         if not _item_passes_confidence(item, threshold):
             tag = f"low_confidence:{item.confidence}"
             condition = f"{tag}|{condition}" if condition else tag
+        model, storage = canonicalize_catalog_fields(item.model, item.storage)
         session.add(
             ParsedItem(
                 raw_price_id=raw.id,
-                sku_key=build_sku_key(item),
-                model=item.model,
-                storage=item.storage,
+                sku_key=build_sku_key(
+                    {
+                        "model": model,
+                        "storage": storage,
+                        "color": item.color,
+                        "region": item.region,
+                        "sim": item.sim,
+                    }
+                ),
+                model=model,
+                storage=storage,
                 color=item.color,
                 region=item.region,
                 sim=item.sim,
@@ -869,6 +909,10 @@ async def collect_unknown_markup_products(
     rules: list[MarkupRule],
 ) -> list[MarkupRule]:
     """Create markup rules for parsed products that have no fixed markup yet."""
+    await retire_shadowed_custom_rules(session)
+    fresh = await load_rules(session)
+    if fresh:
+        rules = fresh
     settings = get_settings()
     day_start = _today_start_utc(settings.tz)
     now = datetime.now(UTC)
@@ -1005,9 +1049,7 @@ async def notify_unknown_markup_rules(
 ) -> None:
     """Ask owners in bot DM which markup to use for newly parsed products."""
     for rule in rules:
-        label = (rule.rule_key or rule.category or "товар").replace("_", " ")
-        if label.startswith("custom "):
-            label = label[len("custom ") :]
+        label = markup_rule_label(rule)
         message = render_template("markup_new_product_prompt", rule_label=label)
         markup = _new_product_markup_keyboard(int(rule.id))
         for chat_id in chat_ids:

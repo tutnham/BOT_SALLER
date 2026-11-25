@@ -7,7 +7,7 @@ Telegram UI and callback data.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -19,7 +19,6 @@ from app.config import get_settings
 from app.db.models import (
     Employee,
     PendingChat,
-    PriceListDraft,
     ProductCategory,
     RequestStatus,
     Supplier,
@@ -313,7 +312,22 @@ async def _dispatch_callback(
     if action == "markup_list":
         from app.handlers.owner_commands import send_markup_list
 
-        await send_markup_list(session, chat_id=chat_id, telegram=telegram)
+        await send_markup_list(
+            session, chat_id=chat_id, telegram=telegram, message_id=message_id
+        )
+        return
+
+    if action == "mk_cat":
+        from app.handlers.owner_commands import send_markup_category
+
+        await send_markup_category(
+            session,
+            chat_id=chat_id,
+            telegram=telegram,
+            category_arg=cd.arg,
+            page=cd.page,
+            message_id=message_id,
+        )
         return
 
     if action == "mk_add":
@@ -333,7 +347,11 @@ async def _dispatch_callback(
         from app.handlers.owner_commands import send_markup_edit
 
         await send_markup_edit(
-            session, chat_id=chat_id, rule_id=cd.arg, telegram=telegram
+            session,
+            chat_id=chat_id,
+            rule_id=cd.arg,
+            telegram=telegram,
+            message_id=message_id,
         )
         return
 
@@ -359,6 +377,7 @@ async def _dispatch_callback(
             rule_id=cd.arg,
             amount=Decimal(cd.page),
             telegram=telegram,
+            message_id=message_id,
         )
         return
 
@@ -370,9 +389,10 @@ async def _dispatch_callback(
             payload={"rule_id": cd.arg},
         )
         from app.db.models import MarkupRule
+        from app.services.markup_service import markup_rule_label
 
         rule = await session.get(MarkupRule, cd.arg)
-        label = (rule.rule_key if rule and rule.rule_key else "правило").replace("_", " ")
+        label = markup_rule_label(rule) if rule is not None else "правило"
         await telegram.send_message(
             chat_id,
             render_template("markup_enter_amount", rule_label=label),
@@ -1895,15 +1915,6 @@ def _ready_reasons_text(reasons: object) -> str:
     return _clip(", ".join(parts[:_PARSER_READY_REASON_COUNT]), _PARSER_READY_REASON_LIMIT)
 
 
-def _parser_is_today(value: datetime | None) -> bool:
-    if value is None:
-        return False
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    tz = ZoneInfo(get_settings().tz)
-    return value.astimezone(tz).date() == datetime.now(tz).date()
-
-
 def _parser_short_dt(value: datetime | None) -> str:
     if value is None:
         return "—"
@@ -1911,16 +1922,16 @@ def _parser_short_dt(value: datetime | None) -> str:
 
 
 async def _parser_prices_block(session: AsyncSession) -> tuple[list[str], list[str]]:
-    """Цены, которые парсер достал из каналов за сегодня, + состояние черновика."""
+    """Цены, которые парсер достал из каналов за сегодня."""
     from decimal import Decimal
 
-    from app.services import parser_diagnostics, price_service
+    from app.services import price_service
 
     aggregated = await price_service.aggregate_today(session)
     lines = [
-        "{} — {} {}".format(
+        "{} — {}".format(
             _clip(
-                price_service.format_sku_title(
+                price_service.present_parser_title(
                     model=row.get("model"),
                     storage=row.get("storage"),
                     color=row.get("color"),
@@ -1929,34 +1940,11 @@ async def _parser_prices_block(session: AsyncSession) -> tuple[list[str], list[s
                 ),
                 _PARSER_LINE_LIMIT,
             ),
-            Decimal(str(row["min_price"])).quantize(Decimal("0.01")),
-            row.get("currency") or "RUB",
+            price_service.format_rub_amount(Decimal(str(row["min_price"]))),
         )
         for row in aggregated
     ]
-
-    draft = (
-        await session.execute(
-            select(PriceListDraft).order_by(PriceListDraft.id.desc()).limit(1)
-        )
-    ).scalar_one_or_none()
-    meta: list[str] = []
-    if draft is None:
-        meta.append("Черновика прайса ещё не было.")
-    elif _parser_is_today(draft.generated_at):
-        items_count = len(draft.items) if isinstance(draft.items, list) else 0
-        meta.append(
-            f"Черновик #{draft.id}: статус {draft.status}, позиций {items_count}, "
-            f"создан {_parser_short_dt(draft.generated_at)}"
-        )
-    else:
-        meta.append("Сегодня черновика нет.")
-    alert_lines = parser_diagnostics.format_last_alert_lines(
-        await parser_diagnostics.last_alert_codes(session)
-    )
-    if alert_lines:
-        meta.append(f"Почему прайс пуст:\n{alert_lines}")
-    return lines, meta
+    return lines, []
 
 
 async def _parser_channels_block(session: AsyncSession) -> tuple[list[str], list[str]]:
