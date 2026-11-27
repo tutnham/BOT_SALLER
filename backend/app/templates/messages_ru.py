@@ -178,6 +178,12 @@ TEMPLATES: dict[str, str] = {
         "Обновление по заявке #{request_id}\n"
         "Новая цена: {price_text}"
     ),
+    "channel_price_offer": (
+        "Заявка #{request_id} · цена из прайс-канала\n"
+        "Позиция: {sku_text}\n"
+        "Цена для клиента: {price_text}\n"
+        "Отправить эту цену клиенту?"
+    ),
     "better_late_price_employee": (
         "Заявка #{request_id}: появилась цена ниже уже отправленной клиенту.\n"
         "Расчётная цена для клиента: {client_price} ₽"
@@ -270,8 +276,16 @@ TEMPLATES: dict[str, str] = {
         "/approve_price {draft_id}\n"
         "/reject_price {draft_id}"
     ),
-    "price_list_published": "Прайс:\n{items_block}",
+    "price_draft_review": (
+        "Происхождение цен #{draft_id}\n\n"
+        "{items_block}\n\n"
+        "Сообщение для проверки: закупы каналов не пересылайте."
+    ),
+    "price_list_published_html": "📋 <b>Прайс {date}</b>\n\n{groups_block}",
     "price_approved": "Прайс #{draft_id} утверждён и опубликован",
+    "price_approved_queued": (
+        "Прайс #{draft_id} утверждён, сообщение поставлено в очередь отправки"
+    ),
     "price_rejected": "Прайс #{draft_id} отклонён",
     "price_draft_not_found": "Черновик прайса #{draft_id} не найден",
     "price_draft_already_processed": (
@@ -441,8 +455,20 @@ TEMPLATES: dict[str, str] = {
     "admin_bind_supplier": "Выберите поставщика для этой беседы:",
     "admin_price_channels": "Каналы прайсов поставщиков:\n{channels_block}",
     "admin_price_channels_error": "Не удалось загрузить каналы: {detail}",
+    "admin_price_channels_unbound_hint": (
+        "⚠️ Непривязанных каналов: {count}. Их цены не участвуют в прайсе — "
+        "нажмите «Привязать»."
+    ),
+    "admin_price_channel_bind": (
+        "Выберите поставщика для канала прайса:\n"
+        "Привязка = обнуляет курсор синхронизации, канал заберётся заново."
+    ),
     "admin_parser_screen": (
         "🔍 Парсер — {tab_title}\n\n{body_block}\n\n{meta_block}"
+    ),
+    "admin_parser_run_started": (
+        "Запущено. Забираю {posts} последних сообщения каждого канала, "
+        "потом собираю {how}."
     ),
     "admin_parser_error": (
         "🔍 Парсер недоступен: {detail}\n"
@@ -472,6 +498,18 @@ TEMPLATES: dict[str, str] = {
     "admin_price_channel_delete_error": (
         "Не удалось удалить канал. Проверьте доступность сервиса парсера."
     ),
+    "admin_publish_channels": (
+        "Каналы публикации прайса (✅ — прайс уходит туда):\n{channels_block}"
+    ),
+    "admin_await_publish_channel": (
+        "Введите числовой ID канала для публикации прайса:\n"
+        "Пример: -1001234567890\n"
+        "Бот должен быть администратором канала с правом публикации."
+    ),
+    "admin_publish_channel_added": "Канал {label} добавлен в публикацию.",
+    "admin_publish_channel_error": "Не удалось добавить канал: {detail}",
+    "admin_publish_channel_removed": "Канал {label} удалён из публикации.",
+    "admin_publish_channel_missing": "Такого канала в списке уже нет.",
     "admin_price_channel_restored": (
         "Канал {label} восстанавливается. Дождитесь статуса ✅ в списке каналов."
     ),
@@ -617,12 +655,20 @@ def render_template(name: str, **kwargs: Any) -> str:
     if name == "client_price_updated":
         kwargs.setdefault("price_text", _format_price(kwargs.pop("price", None)))
 
+    if name == "channel_price_offer":
+        kwargs.setdefault("price_text", _format_price(kwargs.pop("price", None)))
+        kwargs.setdefault("sku_text", "—")
+
     if name == "status_summary":
         kwargs.setdefault("quotes_block", kwargs.get("quotes_block") or "—")
         kwargs.setdefault("deal_block", kwargs.get("deal_block") or "")
 
-    if name in {"price_draft", "price_list_published"}:
+    if name == "price_draft":
         kwargs.setdefault("items_block", kwargs.get("items_block") or "—")
+
+    if name == "price_list_published_html":
+        kwargs["groups_block"] = kwargs.get("groups_block") or "—"
+        kwargs.setdefault("date", "—")
 
     if name == "supplier_delivery_failed":
         kwargs.setdefault("failed_block", kwargs.get("failed_block") or "—")
@@ -633,6 +679,9 @@ def render_template(name: str, **kwargs: Any) -> str:
         kwargs.setdefault("suppliers_block", kwargs.get("suppliers_block") or "нет")
 
     if name == "admin_price_channels":
+        kwargs.setdefault("channels_block", "Список пуст.")
+
+    if name == "admin_publish_channels":
         kwargs.setdefault("channels_block", "Список пуст.")
 
     if name == "admin_parser_screen":

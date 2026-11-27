@@ -136,14 +136,20 @@ async def publish_batch_to_client(
             select(RequestPriceSelection)
             .where(
                 RequestPriceSelection.request_id == request.id,
-                RequestPriceSelection.status == PriceSelectionStatus.final.value,
+                RequestPriceSelection.status.in_(
+                    (
+                        PriceSelectionStatus.final.value,
+                        PriceSelectionStatus.published.value,
+                    )
+                ),
             )
             .order_by(RequestPriceSelection.selection_version.desc())
             .limit(1)
         )
         lines.append(_client_price_line(request, selection))
         if selection is not None:
-            selection.status = PriceSelectionStatus.published.value
+            if selection.status != PriceSelectionStatus.published.value:
+                selection.status = PriceSelectionStatus.published.value
             request.price_state = RequestPriceState.published
 
     max_len = settings.max_message_text_len

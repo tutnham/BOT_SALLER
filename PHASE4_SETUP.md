@@ -15,7 +15,16 @@ PRICE_APPROVAL_CHAT_IDS=
 PRICE_APPROVAL_CHAT_ID=
 
 # Куда публиковать прайс после /approve_price (несколько chat_id через запятую)
+# Fallback: при первом обращении эти ID переносятся в таблицу price_publish_channels,
+# дальше список живёт в боте (меню → «Публикация прайса») без рестарта.
 PRICE_PUBLISH_CHAT_IDS=
+
+# Флаги прайс-каналов (по умолчанию выключены, кроме ручной наценки)
+MANUAL_PRICE_USE_MARKUP=true
+CHANNEL_SKU_PRICE_PROJECTION_ENABLED=false
+CHANNEL_PRICE_OFFER_ENABLED=false
+CHANNEL_PRICE_MAX_AGE_MINUTES=1440
+PRICE_PUBLISH_VIA_OUTBOX=false
 
 # Наценка по умолчанию (₽), если у правила нет markup_fixed
 DEFAULT_MARKUP=500
@@ -44,7 +53,12 @@ LLM_API_KEY=
 |---|---|
 | `PRICE_APPROVAL_CHAT_IDS` | CSV chat_id, куда бот шлёт черновик (`/approve_price`, `/reject_price`) |
 | `PRICE_APPROVAL_CHAT_ID` | Legacy: один chat_id, если CSV пустой |
-| `PRICE_PUBLISH_CHAT_IDS` | Список chat_id (CSV), куда публикуется утверждённый прайс. Пример: `-100111,-100222` |
+| `PRICE_PUBLISH_CHAT_IDS` | Список chat_id (CSV), куда публикуется утверждённый прайс. Пример: `-100111,-100222`. Канонический список — таблица `price_publish_channels` (меню → «Публикация прайса»); env переносится в неё один раз и служит fallback |
+| `MANUAL_PRICE_USE_MARKUP` | `true` — ручная кнопка «▶ Запустить прайс» берёт минимум между каналами и применяет наценку, как утренний cron. `false` — прежний вид (новейший пост, цена без наценки) |
+| `CHANNEL_SKU_PRICE_PROJECTION_ENABLED` | `true` — после сборки прайса наполняется проекция `channel_sku_prices` (цены каналов в канонических ключах заявок) |
+| `CHANNEL_PRICE_OFFER_ENABLED` | `true` — по входящей заявке сотруднику уходит карточка «цена из прайс-канала». Клиенту сообщение ставится только после «Отправить клиенту» |
+| `CHANNEL_PRICE_MAX_AGE_MINUTES` | Срок жизни цены от даты поста канала (`source_post_date`), не от момента сборки. После него снимок не предлагается и не подтверждается (по умолчанию 1440) |
+| `PRICE_PUBLISH_VIA_OUTBOX` | `true` — утверждённый прайс публикуется через `telegram_outbox` (`kind='price_publish'`): ретраи, DLQ, экран очередей. `false` — прямая отправка в момент нажатия |
 | `DEFAULT_MARKUP` | Базовая наценка в рублях, если в `markup_rules` нет `markup_fixed` |
 | `PARSER_TIMEOUT_SECONDS` | Сколько ждать ответ парсера каналов |
 | `PARSER_API_URL` | `http://tg-parser-api:8000` в сети `zakupki-internal`. Не менять после redeploy parser |
@@ -165,12 +179,12 @@ Telegram webhook теперь ведёт прямо в backend: `POST /telegram/
 - [ ] В `.env` заполнены `PRICE_APPROVAL_CHAT_IDS` (или legacy `PRICE_APPROVAL_CHAT_ID`) и `PRICE_PUBLISH_CHAT_IDS`
 - [ ] LLM: `openai_compatible` + `LLM_BASE_URL` провайдера + Restart backend после правки Coolify
 - [ ] Задан `PARSER_API_TOKEN` (если нужны каналы) и `PARSER_API_URL` на порту **8000**
-- [ ] Проверка без логов: `/menu` → **Парсер** → «▶ Запустить прайс». Либо черновик, либо `[ALERT] Утренний прайс не собран` с причиной — тишины быть не может
+- [ ] Проверка без логов: `/menu` → **Парсер** → «▶ Запустить прайс» (прайс-пост среди **3 последних** в канале). По умолчанию черновик с минимумом между каналами и наценкой (`MANUAL_PRICE_USE_MARKUP=true`), либо `[ALERT]` / текст причины — тишины быть не может
 - [ ] В БД есть активные `markup_rules` (хотя бы `*`)
 - [ ] У нужных поставщиков заполнен `price_channel_id` **или** они шлют `прайс` в ЛС
 - [ ] Парсер развёрнут и подписан на каналы (для channel_post)
 - [ ] APScheduler job на morning-price активна
-- [ ] Бот добавлен в чаты approve и publish
+- [ ] Бот добавлен в чаты approve и в канал публикации: `/menu` → «Публикация прайса» (добавление отклоняется, если бот канала не видит)
 
 ---
 
@@ -199,6 +213,7 @@ MVP: `supplier_price_source`, worker = resolve + download_media. Ollama/AI — �
 
 1. В 11:00 МСК APScheduler запускает `morning_price` (после окна публикации в каналах 08:00–11:00).
 2. Черновик приходит в `PRICE_APPROVAL_CHAT_IDS` и в ЛС владельцев с `dm_ok`.
-3. Сотрудник пишет:
-   - `/approve_price {id}` — публикация в `PRICE_PUBLISH_CHAT_IDS`
+3. Сотрудник пишет (или жмёт ✅/❌ в карточке черновика):
+   - `/approve_price {id}` — публикация прайса в активные каналы из `price_publish_channels` (список: `/menu` → «Публикация прайса»; `PRICE_PUBLISH_CHAT_IDS` — fallback)
    - `/reject_price {id}` — отклонение
+4. По входящей заявке (`/ask`) при включённых `CHANNEL_SKU_PRICE_PROJECTION_ENABLED` + `CHANNEL_PRICE_OFFER_ENABLED` сотруднику приходит карточка «цена из прайс-канала»: клиенту она уходит только после кнопки «Отправить клиенту» (`docs/PRICE_PUBLICATION_RUNBOOK.md`).

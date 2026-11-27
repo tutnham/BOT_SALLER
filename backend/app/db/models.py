@@ -68,6 +68,7 @@ class RequestPriceState(str, enum.Enum):
 
 class PriceSelectionStatus(str, enum.Enum):
     provisional = "provisional"
+    proposed = "proposed"
     final = "final"
     published = "published"
     superseded = "superseded"
@@ -926,6 +927,61 @@ class DailySkuPrice(Base):
     supplier: Mapped[Supplier] = relationship()
 
 
+class ChannelSkuPrice(Base):
+    """Минимум из прайс-каналов в каноническом ключе заявок (пересобираемая проекция)."""
+
+    __tablename__ = "channel_sku_prices"
+    __table_args__ = (
+        UniqueConstraint(
+            "business_date",
+            "canonical_sku_key",
+            "currency",
+            name="uq_channel_sku_prices_date_key_currency",
+        ),
+        CheckConstraint(
+            "purchase_unit_price >= 0 AND client_unit_price >= 0 AND markup_rub >= 0",
+            name="ck_channel_sku_prices_nonneg",
+        ),
+        Index("ix_channel_sku_prices_canonical_sku_key", "canonical_sku_key"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    business_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_sku_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sku_key: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(Text)
+    storage: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(Text)
+    region: Mapped[str | None] = mapped_column(Text)
+    sim: Mapped[str | None] = mapped_column(Text)
+    purchase_unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    client_unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    markup_rub: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    markup_rule_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("markup_rules.id", ondelete="SET NULL")
+    )
+    currency: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa_text("'RUB'")
+    )
+    supplier_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("suppliers.id"), nullable=False)
+    # id канала в базе парсера: кросс-сервисный указатель, без FK.
+    channel_id: Mapped[int | None] = mapped_column(BigInteger)
+    parsed_item_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("parsed_items.id", ondelete="SET NULL")
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    normalizer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    selection_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa_text("1")
+    )
+
+    supplier: Mapped[Supplier] = relationship()
+
+
 class RawPrice(Base):
     __tablename__ = "raw_prices"
     __table_args__ = (Index("ix_raw_prices_supplier_id", "supplier_id"),)
@@ -1006,6 +1062,7 @@ class PriceListDraft(Base):
     )
     # list[dict], not dict|list: SQLAlchemy 2 + py3.11 ForwardRef crash (Coolify image)
     items: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    review_sources: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=sa_text("'pending'")
     )
@@ -1014,6 +1071,33 @@ class PriceListDraft(Base):
     )
     approved_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PricePublishChannel(Base):
+    """Канал публикации утверждённого прайса (реестр вместо только env)."""
+
+    __tablename__ = "price_publish_channels"
+    __table_args__ = (
+        UniqueConstraint("chat_id", name="uq_price_publish_channels_chat_id"),
+        Index("ix_price_publish_channels_active", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa_text("'manual'")
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("true")
+    )
+    created_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ParseCache(Base):

@@ -18,8 +18,8 @@ from app.db.models import (
 from app.services.audit_service import record_admin_mutation
 from app.services.best_quote_service import select_best_quote_for_request
 from app.services.first_price_publication_service import (
-    _enqueue_client_message,
     _next_selection_version,
+    enqueue_client_message,
 )
 from app.templates.messages_ru import render_template
 
@@ -72,7 +72,7 @@ async def notify_better_late_price(
     )
     key = f"request:{request_id}:better-late:q{result.selected_quote_id}"
     for chat_id in await list_operator_destinations(session):
-        await _enqueue_client_message(
+        await enqueue_client_message(
             session,
             dedupe_key=f"{key}:{chat_id}",
             chat_id=chat_id,
@@ -131,7 +131,7 @@ async def confirm_reprice(
     await session.flush()
     published.superseded_by_id = new_row.id
 
-    await _enqueue_client_message(
+    await enqueue_client_message(
         session,
         dedupe_key=reprice_dedupe_key(request_id, version),
         chat_id=request.group_chat_id,

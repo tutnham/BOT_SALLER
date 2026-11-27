@@ -305,6 +305,13 @@ async def _route_callback(
             session, callback_query, telegram=telegram
         )
 
+    if cd.namespace == "chanprice":
+        from app.handlers.channel_price_callbacks import handle_channel_price_callback
+
+        return await handle_channel_price_callback(
+            session, callback_query, telegram=telegram
+        )
+
     if cd.namespace == "reqstatus":
         from app.handlers.request_status_callbacks import handle_request_status_callback
 

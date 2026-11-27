@@ -29,6 +29,7 @@ from app.parsers.canonical_sku import (
     build_canonical_sku_key,
     parse_batch_line,
 )
+from app.services.channel_sku_price_service import offer_channel_price_safe
 from app.services.product_classifier import classify_product_deterministic
 
 _NORMALIZE_KIND = "normalize_batch_line"
@@ -264,6 +265,15 @@ async def confirm_batch(
     batch.version += 1
     batch.updated_at = datetime.now(UTC)
     await session.flush()
+
+    # B4: у заявки сразу есть кандидат из прайс-канала; рассылка поставщикам не отменяется.
+    for request in batch.requests:
+        pending = request.price_state in (
+            RequestPriceState.collecting,
+            RequestPriceState.collecting.value,
+        )
+        if pending:
+            await offer_channel_price_safe(session, request, telegram=telegram)
 
     from app.services.supplier_rfq_batch_service import send_grouped_rfq_for_batch
 

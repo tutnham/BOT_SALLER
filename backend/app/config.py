@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     price_approval_chat_ids: str | None = None
     price_publish_chat_ids: str | None = None
     default_markup: Decimal = Decimal("500")
+    # Ручная кнопка «▶ Запустить прайс»: минимум между каналами + наценка, как в кроне.
+    # false = прежний вид (новейший пост, цена без наценки).
+    manual_price_use_markup: bool = True
+    # Цены прайс-каналов в канонических ключах (channel_sku_prices) и оффер по заявке.
+    channel_sku_price_projection_enabled: bool = False
+    channel_price_offer_enabled: bool = False
+    channel_price_max_age_minutes: int = 1440
+    # Публикация утверждённого прайса через telegram_outbox (ретраи, DLQ, экран)
+    # вместо прямой отправки в момент нажатия. false = прежний send_message.
+    price_publish_via_outbox: bool = False
 
     # LLM (optional until Phase 3)
     llm_api_key: str | None = None

@@ -170,9 +170,10 @@ async def upsert_quote(
                     publish_first_valid_price,
                 )
 
-                published_now = await publish_first_valid_price(
-                    session, request_id=request.id, trigger="first_quote"
-                )
+                async with session.begin_nested():
+                    published_now = await publish_first_valid_price(
+                        session, request_id=request.id, trigger="first_quote"
+                    )
             except Exception:
                 logger.exception(
                     "client price publication failed request_id={} quote_id={}",

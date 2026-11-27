@@ -264,7 +264,7 @@ async def test_insert_raw_price_backfills_missing_post_date_on_conflict(
 
 
 @pytest.mark.asyncio
-async def test_manual_full_history_job_draft_without_markup(
+async def test_manual_full_history_job_draft_with_markup(
     db_session: AsyncSession,
     mock_telegram,
     mock_llm: MockLLMClient,
@@ -299,10 +299,65 @@ async def test_manual_full_history_job_draft_without_markup(
     draft = await db_session.get(PriceListDraft, result["draft_id"])
     assert draft is not None
     assert draft.status == "pending"
-    assert draft.items[0]["our_price"] == "70000.00"
+    assert draft.items[0]["our_price"] == "70500.00"
+    assert set(draft.items[0]) == {"sku_key", "title", "our_price", "currency"}
+    assert draft.review_sources[0]["purchase"] == "70000.00"
+    assert draft.review_sources[0]["markup"] == "500.00"
 
     approval_msgs = [
         text for _chat_id, text, _markup in mock_telegram.sent if "/approve_price" in text
     ]
     assert len(approval_msgs) == 1
+    # Карточка на одобрение по-прежнему без закупов: происхождение — вторым сообщением.
+    assert "закуп" not in approval_msgs[0]
+    review_msgs = [
+        text
+        for _chat_id, text, _markup in mock_telegram.sent
+        if "Происхождение цен" in text
+    ]
+    assert len(review_msgs) == 1
+    assert "@channel_prices: закуп 70 000 ₽" in review_msgs[0]
     set_llm_client(None)
+
+
+@pytest.mark.asyncio
+async def test_manual_full_history_flag_off_keeps_price_without_markup(
+    db_session: AsyncSession,
+    mock_telegram,
+    mock_llm: MockLLMClient,
+    seed_channel_supplier: Supplier,
+    seed_markup_rules,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MANUAL_PRICE_USE_MARKUP=false — прежняя ручная кнопка (аварийный откат)."""
+    from app.config import get_settings
+
+    monkeypatch.setenv("MANUAL_PRICE_USE_MARKUP", "false")
+    get_settings.cache_clear()
+    try:
+        set_llm_client(mock_llm)
+        mock_llm.price_result = _price_item(70000)
+
+        async def _fake_latest_posts(**kwargs):
+            return [
+                ParserPost(
+                    post_id=102,
+                    message_id=102,
+                    post_date=datetime(2026, 7, 30, 7, 0, tzinfo=UTC),
+                    raw_text="iPhone 15 256GB Black 70000",
+                    message_link="https://t.me/c/1/102",
+                )
+            ]
+
+        with patch("app.services.price_service.get_latest_posts", new=_fake_latest_posts):
+            result = await jobs.run_morning_price(
+                db_session, mock_telegram, full_history=True
+            )
+
+        draft = await db_session.get(PriceListDraft, result["draft_id"])
+        assert draft is not None
+        assert draft.items[0]["our_price"] == "70000.00"
+        assert not draft.review_sources
+        set_llm_client(None)
+    finally:
+        get_settings.cache_clear()

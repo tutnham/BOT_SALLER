@@ -60,6 +60,8 @@ async def publish_first_valid_price(
     request = await session.get(Request, request_id)
     if request is None or request.status in (RequestStatus.closed, RequestStatus.cancelled):
         return False
+    if request.price_state == RequestPriceState.published:
+        return False
 
     result = await select_best_quote_for_request(
         session, request_id, now=moment, mode="first_eligible"
@@ -103,7 +105,7 @@ async def publish_first_valid_price(
         record_duplicate_publication_prevented()
         return False
 
-    outbox_id = await _enqueue_client_message(
+    outbox_id = await enqueue_client_message(
         session, dedupe_key=key, chat_id=request.group_chat_id, text=text, request_id=request_id
     )
     selection = await session.get(RequestPriceSelection, inserted_id)
@@ -119,7 +121,7 @@ async def publish_first_valid_price(
     return True
 
 
-async def _enqueue_client_message(
+async def enqueue_client_message(
     session: AsyncSession,
     *,
     dedupe_key: str,
@@ -177,8 +179,16 @@ async def _insert_published_selection(
     moment: datetime,
     selection_reason: str,
 ) -> int | None:
-    """Insert the published row; return its id, or None when the key already exists."""
+    """Insert the published row; return its id, or None when a price is already published."""
     version = await _next_selection_version(session, request.id)
+    already = await session.scalar(
+        select(RequestPriceSelection.id).where(
+            RequestPriceSelection.request_id == request.id,
+            RequestPriceSelection.status == PriceSelectionStatus.published.value,
+        )
+    )
+    if already is not None:
+        return None
     stmt = (
         pg_insert(RequestPriceSelection)
         .values(
@@ -209,15 +219,18 @@ async def _insert_published_selection(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _next_selection_version(session: AsyncSession, request_id: int) -> int:
-    # C5: advisory lock на заявку — параллельные публикации в разных транзакциях
-    # получают строго возрастающие версии (lock снимается при commit/rollback).
+async def lock_price_selection(session: AsyncSession, request_id: int) -> None:
+    """Один писатель публикации на заявку до конца транзакции."""
     # hashtext → int4, а pg_advisory_xact_lock(int) неоднозначен (bigint | int,int).
     # CAST, не :: — SQLAlchemy читает «:» как начало bind-параметра.
     await session.execute(
         text("SELECT pg_advisory_xact_lock(CAST(hashtext(:lock_key) AS bigint))"),
         {"lock_key": f"price_selection_version:{request_id}"},
     )
+
+
+async def _next_selection_version(session: AsyncSession, request_id: int) -> int:
+    await lock_price_selection(session, request_id)
     current = await session.scalar(
         select(RequestPriceSelection.selection_version)
         .where(RequestPriceSelection.request_id == request_id)

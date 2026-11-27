@@ -8,7 +8,16 @@ from loguru import logger
 from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Employee, Owner, Quote, Request, Supplier
+from app.db.models import (
+    Employee,
+    Owner,
+    PriceSelectionStatus,
+    Quote,
+    Request,
+    RequestPriceSelection,
+    RequestPriceState,
+    Supplier,
+)
 from app.services.quote_service import display_price_for_group
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.templates.messages_ru import render_template
@@ -59,6 +68,19 @@ async def other_suppliers_have_priced_quote(
     )
 
 
+async def _client_price_already_public(session: AsyncSession, request: Request) -> bool:
+    """Канальная цена уже ушла клиенту: ответ поставщика остаётся только у сотрудников."""
+    if request.price_state == RequestPriceState.published:
+        return True
+    published = await session.scalar(
+        select(RequestPriceSelection.id).where(
+            RequestPriceSelection.request_id == request.id,
+            RequestPriceSelection.status == PriceSelectionStatus.published.value,
+        )
+    )
+    return published is not None
+
+
 def should_use_public_first_quote_card(
     existing_quote: Quote | None,
     other_suppliers_priced: bool,
@@ -80,6 +102,7 @@ async def notify_staff_ephemeral_in_group(
     group_chat_id: int,
     text: str,
     request_id: int,
+    reply_markup: dict[str, object] | None = None,
 ) -> int:
     """Fan-out ephemeral copies to each staff member. Returns successful sends."""
     recipients = await list_staff_ephemeral_recipient_ids(session)
@@ -95,6 +118,7 @@ async def notify_staff_ephemeral_in_group(
             await telegram.send_message(
                 group_chat_id,
                 text,
+                reply_markup=reply_markup,
                 ephemeral_message_parameters={
                     "receiver_user_id": receiver_user_id,
                 },
@@ -125,7 +149,7 @@ async def deliver_request_group_price_notice(
     force_staff_ephemeral: bool = False,
 ) -> None:
     """Public first client card, or ephemeral staff-only for later supplier prices."""
-    if force_staff_ephemeral:
+    if force_staff_ephemeral or await _client_price_already_public(session, request):
         await notify_staff_ephemeral_in_group(
             session,
             telegram,

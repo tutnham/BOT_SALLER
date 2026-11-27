@@ -51,6 +51,24 @@ def supplier_single_candidate_auto_bind(monkeypatch: pytest.MonkeyPatch) -> None
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def channel_price_flags_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Проекция ``channel_sku_prices`` и оффер по заявке — только в opted-in тестах."""
+    monkeypatch.setenv("CHANNEL_SKU_PRICE_PROJECTION_ENABLED", "true")
+    monkeypatch.setenv("CHANNEL_PRICE_OFFER_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache() -> Generator[None, None, None]:
+    """monkeypatch.setenv + cache_clear в одном тесте не должен жить в следующем."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _reset_jev_breaker() -> Generator[None, None, None]:
     """Breaker state is per-process; keep tests independent of each other."""

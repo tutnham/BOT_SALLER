@@ -691,6 +691,134 @@ async def test_price_channels_list_shows_real_statuses(
 
 
 @pytest.mark.asyncio
+async def test_price_channels_list_marks_unbound_channel(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    seed_suppliers: list[Supplier],
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Непривязанный канал выглядит добавленным, но в прайс не попадает (A4)."""
+
+    async def _list() -> list[_FakeParserChannel]:
+        return [
+            _FakeParserChannel(1, -100111, "@bound", "Bound", True, status="active"),
+            _FakeParserChannel(2, -100222, "@loose", "Loose", True, status="active"),
+            _FakeParserChannel(3, None, "@warming", "Warming", True, status="pending"),
+        ]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    seed_suppliers[0].price_channel_id = -100111
+    await db_session.flush()
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID, "cb_unbound", CallbackData(namespace="admin", action="price_channels")
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+
+    markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    labels = _button_labels(markup)
+    text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+
+    assert any("Bound" in label and "не привязан" not in label for label in labels)
+    assert any("Loose" in label and "⚠️ не привязан" in label for label in labels)
+    assert labels.count("Привязать") == 1
+    # Готовность ещё не привязка: канал без Telegram id остаётся без кнопки.
+    assert not any("Warming" in label and "⚠️" in label for label in labels)
+    assert "Непривязанных каналов: 1" in text
+
+
+@pytest.mark.asyncio
+async def test_price_channel_bind_from_channels_screen(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    seed_suppliers: list[Supplier],
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[_FakeParserChannel]:
+        return [_FakeParserChannel(9, -100999, "@loose", "Loose", True, status="active")]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    target = seed_suppliers[1]
+    target.price_channel_id = None
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind_open",
+            CallbackData(namespace="admin", action="price_channel_bind", arg=9),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    markup = mock_telegram.sent[-1][2] if mock_telegram.sent else mock_telegram.edited[-1][3]
+    assert target.name in _button_labels(markup)
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind_pick",
+            CallbackData(
+                namespace="admin", action="price_channel_bind_pick", arg=9, page=int(target.id)
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(target)
+    assert target.price_channel_id == -100999
+    assert target.price_channel_username == "@loose"
+    text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    assert "привязан к поставщику" in text
+
+
+@pytest.mark.asyncio
+async def test_price_channel_bind_rejects_unready_channel(
+    webhook_client: AsyncClient,
+    webhook_headers: dict[str, str],
+    db_session: AsyncSession,
+    seed_owner: Owner,
+    seed_suppliers: list[Supplier],
+    mock_telegram,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list() -> list[_FakeParserChannel]:
+        return [_FakeParserChannel(9, None, "@warming", "Warming", True, status="pending")]
+
+    monkeypatch.setattr(parser_client, "list_channels", _list)
+    target = seed_suppliers[1]
+    target.price_channel_id = None
+
+    resp = await webhook_client.post(
+        "/telegram/webhook",
+        json=_callback_payload(
+            OWNER_TG_ID,
+            "cb_bind_pending",
+            CallbackData(
+                namespace="admin", action="price_channel_bind_pick", arg=9, page=int(target.id)
+            ),
+        ),
+        headers=webhook_headers,
+    )
+    assert resp.json()["status"] == "ok"
+    await db_session.refresh(target)
+    assert target.price_channel_id is None
+    text = mock_telegram.sent[-1][1] if mock_telegram.sent else mock_telegram.edited[-1][2]
+    assert "ещё не готов" in text
+
+
+@pytest.mark.asyncio
 async def test_price_channel_restore_callback(
     webhook_client: AsyncClient,
     webhook_headers: dict[str, str],
@@ -1883,7 +2011,8 @@ async def test_parser_run_does_not_start_job_twice(
     await _wait_manual_morning_price()
 
     assert calls == []
-    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю 3 последних сообщения" in mock_telegram.edited[-1][2]
+    assert "минимум между каналами" in mock_telegram.edited[-1][2]
     assert "уже выполняется" in _last_text(mock_telegram)
 
 
@@ -1926,7 +2055,8 @@ async def test_parser_run_reports_result(
     await _wait_manual_morning_price()
 
     assert len(calls) == 1
-    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю 3 последних сообщения" in mock_telegram.edited[-1][2]
+    assert "минимум между каналами" in mock_telegram.edited[-1][2]
     text = _last_text(mock_telegram)
     assert "позиций 3" in text
     assert "черновик #42" in text
@@ -1972,7 +2102,8 @@ async def test_parser_run_returns_before_job_finishes(
         timeout=3,
     )
     assert resp.json()["status"] == "ok"
-    assert "Запущено. Забираю полную историю канала, потом собираю прайс без наценки." in mock_telegram.edited[-1][2]
+    assert "Запущено. Забираю 3 последних сообщения" in mock_telegram.edited[-1][2]
+    assert "минимум между каналами" in mock_telegram.edited[-1][2]
     assert not any("Готово:" in text for _chat, text, _markup in mock_telegram.sent)
 
     release.set()

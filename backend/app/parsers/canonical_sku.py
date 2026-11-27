@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from app.parsers.product_normalizer import normalize_product_text
+from app.parsers.product_normalizer import normalize_product_text, storage_to_gb
 
 NORMALIZER_VERSION = "v1"
 
@@ -50,6 +50,12 @@ _VARIANT_TOKENS = (
 )
 _MODEL_16E_RE = re.compile(r"\b16\s*e\b", re.IGNORECASE)
 _LEADING_MODEL_RE = re.compile(r"^(\d{1,2})\b")
+_IPHONE_PREFIX_RE = re.compile(r"^(?:apple\s+)?iphone\s+")
+_NON_IPHONE_RE = re.compile(
+    r"\b(?:ultra|samsung|galaxy|xiaomi|redmi|poco|pixel|macbook|ipad|watch|airpods)\b"
+)
+_IPHONE_GEN_MIN = 13
+_IPHONE_GEN_MAX = 19
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,11 @@ def _parse_iphone_batch_line(source_text: str) -> CanonicalSkuAttrs:
     model_segment: str | None = None
     variant: str | None = None
 
+    if _NON_IPHONE_RE.search(work):
+        work = ""
+    else:
+        work = _IPHONE_PREFIX_RE.sub("", work).strip()
+
     if _MODEL_16E_RE.search(work):
         model_segment = "16"
         variant = "e"
@@ -161,6 +172,12 @@ def _parse_iphone_batch_line(source_text: str) -> CanonicalSkuAttrs:
                 variant = slug
                 work = re.sub(rf"\b{re.escape(token)}\b", " ", work).strip()
                 break
+        if model_segment is not None:
+            generation = int(model_segment)
+            air_too_old = variant == "air" and generation < 17
+            if generation < _IPHONE_GEN_MIN or generation > _IPHONE_GEN_MAX or air_too_old:
+                model_segment = None
+                variant = None
 
     storage_raw = None
     storage_match = _STORAGE_RE.search(raw) or _STORAGE_RE.search(work)
@@ -218,6 +235,39 @@ def parse_batch_line(source_text: str) -> CanonicalSkuAttrs:
     return _parse_iphone_batch_line(source_text)
 
 
+_CHANNEL_FAMILY_RE = re.compile(r"^(?:apple\s+)?(?:iphone\s+)+", re.IGNORECASE)
+
+
+def bridge_parsed_to_canonical(
+    *,
+    model: str | None,
+    storage: str | None = None,
+    color: str | None = None,
+    region: str | None = None,
+    sim: str | None = None,
+) -> str | None:
+    """Строка прайс-канала (parsed_items) → ключ того же формата, что у заявки.
+
+    Собирает батч-строку и отдаёт её тому же ``_parse_iphone_batch_line``, из
+    которого рождается ``requests.canonical_sku_key``, — пространства ключей
+    сходятся by construction, а не совпадением строк. Вне iPhone ключ ``None``:
+    бренд по тексту цены угадывать нельзя, иначе заявке на Samsung предложили бы
+    чужую цену.
+    """
+    text = normalize_product_text(model or "")
+    if not _CHANNEL_FAMILY_RE.match(text):
+        return None
+    tail = _CHANNEL_FAMILY_RE.sub("", text).strip()
+    if not _LEADING_MODEL_RE.match(tail):
+        return None
+    gb = storage_to_gb(storage) or storage_to_gb(text)
+    line = " ".join(part for part in (tail, f"{gb}GB" if gb else "", color or "") if part)
+    attrs = _parse_iphone_batch_line(line)
+    if not attrs.model_segment:
+        return None
+    return build_canonical_sku_key(replace(attrs, region=region, sim=sim))
+
+
 def attrs_to_normalized_json(attrs: CanonicalSkuAttrs) -> dict[str, Any]:
     storage_display = None
     if attrs.storage_gb:
@@ -238,20 +288,3 @@ def attrs_to_normalized_json(attrs: CanonicalSkuAttrs) -> dict[str, Any]:
         "ambiguities": list(attrs.ambiguities),
     }
 
-
-def sku_keys_compatible(request_key: str, candidate_key: str) -> bool:
-    """Exact match only; wildcards in keys do not broaden reuse."""
-    return request_key == candidate_key
-
-
-def daily_price_compatible_with_request(
-    request_key: str,
-    projection_key: str,
-    *,
-    request_color: str | None,
-) -> bool:
-    if request_key == projection_key:
-        return True
-    if request_color:
-        return False
-    return False

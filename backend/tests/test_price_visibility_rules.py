@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MarkupRule, PriceListDraft, Supplier
-from app.services.price_service import insert_raw_price
+from app.services.price_service import format_published_price_html, insert_raw_price
 from app.templates.messages_ru import render_template
 from tests.conftest import PRICE_APPROVAL_CHAT_ID, MockLLMClient
 
@@ -137,11 +137,22 @@ async def test_draft_also_notifies_dm_ok_owners(
     assert approval_chats == {PRICE_APPROVAL_CHAT_ID, seed_owner.telegram_id}
 
 
-def test_published_template_has_no_internals() -> None:
-    text = render_template(
-        "price_list_published",
-        items_block="iPhone 15 256GB Black — 70700.00 ₽",
+def test_published_price_hides_internals_and_escapes_titles() -> None:
+    html = format_published_price_html(
+        [
+            {"title": "iPhone 15 256GB Black", "our_price": "70700.00"},
+            {"title": "Samsung Galaxy S26 <duo>", "our_price": 59999},
+        ]
     )
-    assert "70700" in text
+    assert "<b>iPhone</b>" in html
+    assert "<b>Samsung</b>" in html
+    assert "70 700 ₽" in html
+    assert "59 999 ₽" in html
     for fragment in ("markup", "min_price", "supplier", "наценк"):
-        assert fragment not in text.lower()
+        assert fragment not in html.lower()
+    assert "&lt;duo&gt;" in html and "<duo>" not in html
+
+
+def test_published_price_empty_items() -> None:
+    assert format_published_price_html([]) == ""
+    assert "—" in render_template("price_list_published_html", date="26.11.2026")

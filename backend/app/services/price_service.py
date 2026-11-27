@@ -11,7 +11,7 @@ from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,6 +24,8 @@ from app.db.models import (
     PriceListDraft,
     RawPrice,
     Supplier,
+    TelegramOutbox,
+    TelegramOutboxStatus,
 )
 from app.llm.client import LLMProviderError, get_llm_client
 from app.llm.schemas import (
@@ -32,9 +34,14 @@ from app.llm.schemas import (
     validate_price_list_payload,
 )
 from app.parsers.cache import get_cached, normalize_input_text, set_cached
-from app.parsers.product_normalizer import canonicalize_catalog_fields
+from app.parsers.product_normalizer import (
+    canonicalize_catalog_fields,
+    extract_product_attrs,
+    sku_key_fields_strict,
+)
 from app.services.audit_service import record_audit
 from app.services.markup_service import (
+    MARKUP_CATEGORIES,
     ensure_markup_rule_for_product,
     get_markup,
     invalidate_markup_rules_cache,
@@ -50,11 +57,14 @@ from app.services.parser_client import (
     classify_parser_error,
     get_latest_posts,
     iter_posts,
+    list_channels,
 )
 from app.services.parser_diagnostics import alert_morning_price, diagnose_morning_price
+from app.services.publish_channel_service import resolve_publish_targets
 from app.telegram.client import TelegramClientProtocol, TelegramSendError
 from app.telegram.keyboards import CallbackData, button, inline_keyboard, menu_button
 from app.templates.messages_ru import render_template
+from app.utils.html import TELEGRAM_HTML_PARSE_MODE, sanitize_telegram_html
 
 CHANNEL_PRICE_CONTENT_TYPES = ("text", "photo", "document", "media_group")
 RAW_PRICE_PARSE_BATCH = 200
@@ -137,12 +147,21 @@ def canonical_sku_key(
     color: str | None,
     region: str | None,
     sim: str | None,
+    strict: bool = False,
 ) -> str:
-    """sku_key with the canonical iPhone name, same as new parsed_items rows.
+    """sku_key with the canonical product name, same as new parsed_items rows.
 
     Rows materialized before canonicalization keep raw-model keys; recomputing
     with this helper merges them with post-deploy rows of the same product.
+    ``strict`` additionally normalizes the key tail for every brand, so one
+    Samsung position from two channels collapses into one sku_key.
     """
+    if strict:
+        return build_sku_key(
+            sku_key_fields_strict(
+                model=model, storage=storage, color=color, region=region, sim=sim
+            )
+        )
     canonical_model, canonical_storage = canonicalize_catalog_fields(model, storage)
     return build_sku_key(
         {
@@ -253,6 +272,20 @@ async def insert_raw_price(
     result = await session.execute(stmt)
     new_id = result.scalar_one_or_none()
     if new_id is not None:
+        if source_post_id is not None:
+            await session.execute(
+                update(ParsedItem)
+                .where(
+                    ParsedItem.raw_price_id.in_(
+                        select(RawPrice.id).where(
+                            RawPrice.supplier_id == supplier_id,
+                            RawPrice.source_post_id == source_post_id,
+                            RawPrice.id != new_id,
+                        )
+                    )
+                )
+                .values(condition="superseded:post_edit")
+            )
         raw = await session.get(RawPrice, new_id)
         return raw, True
 
@@ -457,33 +490,6 @@ async def ingest_latest_channel_prices(
     return LatestIngestResult(stats=stats, raw_price_ids=tuple(raw_price_ids))
 
 
-async def _resolve_price_list(
-    session: AsyncSession,
-    raw_text: str,
-) -> ParsedPriceList | None:
-    kind = "price_list"
-    cached = await get_cached(session, kind=kind, raw_text=raw_text)
-    if cached is not None:
-        return validate_price_list_payload(cached)
-
-    llm = get_llm_client()
-    try:
-        parsed = await llm.parse_price_list(raw_text)
-    except LLMProviderError as exc:
-        logger.warning("LLM parse_price_list failed: {}", exc)
-        return None
-
-    settings = get_settings()
-    await set_cached(
-        session,
-        kind=kind,
-        raw_text=raw_text,
-        result_json=parsed.model_dump(mode="json"),
-        model_used=settings.llm_model or settings.llm_provider,
-    )
-    return parsed
-
-
 async def _materialize_parsed_items(
     session: AsyncSession,
     raw: RawPrice,
@@ -507,6 +513,7 @@ async def _materialize_parsed_items(
                     color=item.color,
                     region=item.region,
                     sim=item.sim,
+                    strict=True,
                 ),
                 model=model,
                 storage=storage,
@@ -679,18 +686,22 @@ async def parse_raw_prices_for_ids(
     return inserted
 
 
-async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
-    """
-    Min-price aggregation for today's parsed items (D2/D3).
+_AGGREGATE_ORDERS = {
+    "cheapest": "pi.price ASC, pi.id ASC",
+    "newest": "rp.post_date DESC NULLS LAST, rp.id DESC, pi.id DESC",
+}
 
-    Groups by ``(sku_key, currency)``; draft path uses RUB only.
-    """
-    settings = get_settings()
-    day_start = _today_start_utc(settings.tz)
 
-    sql = text(
-        """
-        WITH today_items AS (
+def _aggregate_rows_sql(*, scope_sql: str, mode: str) -> str:
+    """Один sku_key — одна строка: победитель и второе предложение.
+
+    Побеждает минимальная цена (заказчик: «100 против 110 → берём 100») либо
+    самый свежий пост, где нужна история по дате. Канал победителя и альтернатива
+    возвращаются, чтобы владелец видел, из какого прайса взята цена.
+    """
+    order_sql = _AGGREGATE_ORDERS[mode]
+    return f"""
+        WITH ranked_items AS (
             SELECT
                 pi.id,
                 pi.sku_key,
@@ -701,22 +712,59 @@ async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
                 pi.sim,
                 pi.price,
                 pi.currency,
+                rp.id AS raw_price_id,
+                rp.supplier_id,
+                rp.post_date AS source_post_date,
+                rp.source_message_link,
+                s.name AS supplier_name,
+                s.price_channel_username,
                 ROW_NUMBER() OVER (
                     PARTITION BY pi.sku_key, pi.currency
-                    ORDER BY pi.price ASC, pi.id ASC
+                    ORDER BY {order_sql}
                 ) AS rn
             FROM parsed_items pi
             JOIN raw_prices rp ON rp.id = pi.raw_price_id
-            WHERE rp.received_at >= :day_start
-              AND pi.currency = 'RUB'
+            JOIN suppliers s ON s.id = rp.supplier_id
+            WHERE pi.currency = 'RUB'
               AND COALESCE(pi.condition, '') NOT LIKE 'low_confidence:%'
+              AND COALESCE(pi.condition, '') NOT LIKE 'superseded:%'
+              AND {scope_sql}
         )
-        SELECT sku_key, model, storage, color, region, sim, price AS min_price, currency
-        FROM today_items
-        WHERE rn = 1
-        ORDER BY sku_key
-        """
-    )
+        SELECT
+            w.sku_key,
+            w.id AS parsed_item_id,
+            w.model,
+            w.storage,
+            w.color,
+            w.region,
+            w.sim,
+            w.price AS min_price,
+            w.currency,
+            w.raw_price_id,
+            w.supplier_id,
+            w.supplier_name,
+            w.price_channel_username,
+            w.source_post_date,
+            w.source_message_link,
+            alt.price AS alt_price,
+            alt.supplier_name AS alt_supplier_name,
+            alt.price_channel_username AS alt_price_channel_username
+        FROM ranked_items w
+        LEFT JOIN ranked_items alt
+            ON alt.sku_key = w.sku_key AND alt.currency = w.currency AND alt.rn = 2
+        WHERE w.rn = 1
+        ORDER BY w.sku_key
+    """
+
+
+async def aggregate_today(session: AsyncSession) -> list[dict[str, Any]]:
+    """
+    Min-price aggregation for today's parsed items (D2/D3).
+
+    Groups by ``(sku_key, currency)``; draft path uses RUB only.
+    """
+    day_start = _today_start_utc(get_settings().tz)
+    sql = text(_aggregate_rows_sql(scope_sql="rp.received_at >= :day_start", mode="cheapest"))
     result = await session.execute(sql, {"day_start": day_start})
     return [dict(row) for row in result.mappings().all()]
 
@@ -727,34 +775,7 @@ async def aggregate_latest(session: AsyncSession) -> list[dict[str, Any]]:
 
     Same row shape as ``aggregate_today`` (``price AS min_price``); RUB only.
     """
-    sql = text(
-        """
-        WITH latest_items AS (
-            SELECT
-                pi.id,
-                pi.sku_key,
-                pi.model,
-                pi.storage,
-                pi.color,
-                pi.region,
-                pi.sim,
-                pi.price,
-                pi.currency,
-                ROW_NUMBER() OVER (
-                    PARTITION BY pi.sku_key, pi.currency
-                    ORDER BY rp.post_date DESC NULLS LAST, rp.id DESC, pi.id DESC
-                ) AS rn
-            FROM parsed_items pi
-            JOIN raw_prices rp ON rp.id = pi.raw_price_id
-            WHERE pi.currency = 'RUB'
-              AND COALESCE(pi.condition, '') NOT LIKE 'low_confidence:%'
-        )
-        SELECT sku_key, model, storage, color, region, sim, price AS min_price, currency
-        FROM latest_items
-        WHERE rn = 1
-        ORDER BY sku_key
-        """
-    )
+    sql = text(_aggregate_rows_sql(scope_sql="TRUE", mode="newest"))
     result = await session.execute(sql)
     return [dict(row) for row in result.mappings().all()]
 
@@ -762,38 +783,18 @@ async def aggregate_latest(session: AsyncSession) -> list[dict[str, Any]]:
 async def aggregate_from_raw_price_ids(
     session: AsyncSession,
     raw_price_ids: list[int] | tuple[int, ...],
+    *,
+    mode: str = "newest",
 ) -> list[dict[str, Any]]:
-    """Новейшая цена по sku только среди переданных raw_prices (ручной прайс)."""
+    """Цена по sku только среди переданных raw_prices (ручной прайс).
+
+    ``cheapest`` отдаёт минимум набора — то же, что видит утренний прогон и чего
+    просит заказчик; ``newest`` оставляет поведение «канал поправил цену».
+    """
     if not raw_price_ids:
         return []
     sql = text(
-        """
-        WITH scoped_items AS (
-            SELECT
-                pi.id,
-                pi.sku_key,
-                pi.model,
-                pi.storage,
-                pi.color,
-                pi.region,
-                pi.sim,
-                pi.price,
-                pi.currency,
-                ROW_NUMBER() OVER (
-                    PARTITION BY pi.sku_key, pi.currency
-                    ORDER BY rp.post_date DESC NULLS LAST, rp.id DESC, pi.id DESC
-                ) AS rn
-            FROM parsed_items pi
-            JOIN raw_prices rp ON rp.id = pi.raw_price_id
-            WHERE rp.id = ANY(:raw_price_ids)
-              AND pi.currency = 'RUB'
-              AND COALESCE(pi.condition, '') NOT LIKE 'low_confidence:%'
-        )
-        SELECT sku_key, model, storage, color, region, sim, price AS min_price, currency
-        FROM scoped_items
-        WHERE rn = 1
-        ORDER BY sku_key
-        """
+        _aggregate_rows_sql(scope_sql="rp.id = ANY(:raw_price_ids)", mode=mode)
     )
     result = await session.execute(
         sql,
@@ -802,23 +803,31 @@ async def aggregate_from_raw_price_ids(
     return [dict(row) for row in result.mappings().all()]
 
 
+def _row_channel_label(
+    row: dict[str, Any],
+    *,
+    name_key: str,
+    username_key: str,
+) -> str | None:
+    """Название канала-источника цены: @username, без него — имя поставщика."""
+    handle = str(row.get(username_key) or "").strip()
+    if handle and not handle.startswith("@"):
+        handle = f"@{handle}"
+    return handle or str(row.get(name_key) or "").strip() or None
+
+
 def build_draft_items(
     aggregated: list[dict[str, Any]],
     rules: list[MarkupRule],
     default_markup: Decimal,
 ) -> list[dict[str, Any]]:
-    """Build public-safe draft items with markup applied."""
+    """Build public-safe draft items with markup applied.
+
+    Только публичные поля: закуп, канал и наценку владелец видит из
+    ``review_sources`` (см. ``build_review_sources``).
+    """
     draft_items: list[dict[str, Any]] = []
     for row in aggregated:
-        currency = row.get("currency") or "RUB"
-        if currency != "RUB":
-            logger.warning(
-                "Skipping non-RUB sku_key={} currency={}",
-                row.get("sku_key"),
-                currency,
-            )
-            continue
-
         min_price = Decimal(str(row["min_price"]))
         product = {
             "model": row.get("model"),
@@ -846,15 +855,60 @@ def build_draft_items(
     return draft_items
 
 
+def _amount(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(Decimal(str(value)).quantize(Decimal("0.01")))
+
+
+def build_review_sources(
+    aggregated: list[dict[str, Any]],
+    draft_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Откуда взялась каждая строка черновика: канал минимума, закуп, альтернатива.
+
+    Хранится отдельно от ``items``: черновик остаётся публично-безопасным, а
+    владелец по этим данным проверяет, что выбран именно минимум между каналами.
+    """
+    pending = {item["sku_key"]: item for item in draft_items}
+    review: list[dict[str, Any]] = []
+    for row in aggregated:
+        item = pending.pop(row.get("sku_key"), None)
+        if item is None:
+            continue
+        purchase = _amount(row.get("min_price"))
+        our_price = item.get("our_price")
+        review.append(
+            {
+                "sku_key": row.get("sku_key"),
+                "title": item.get("title"),
+                "our_price": our_price,
+                "channel": _row_channel_label(
+                    row, name_key="supplier_name", username_key="price_channel_username"
+                ),
+                "purchase": purchase,
+                "alt_channel": _row_channel_label(
+                    row,
+                    name_key="alt_supplier_name",
+                    username_key="alt_price_channel_username",
+                ),
+                "alt_purchase": _amount(row.get("alt_price")),
+                "markup": (
+                    _amount(Decimal(str(our_price)) - Decimal(purchase))
+                    if our_price is not None and purchase is not None
+                    else None
+                ),
+            }
+        )
+    return review
+
+
 def build_full_history_draft_items(
     aggregated: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Manual full-history draft: supplier price as-is, no markup."""
     draft_items: list[dict[str, Any]] = []
     for row in aggregated:
-        currency = row.get("currency") or "RUB"
-        if currency != "RUB":
-            continue
         price = Decimal(str(row["min_price"])).quantize(Decimal("0.01"))
         title = format_sku_title(
             model=row.get("model"),
@@ -914,6 +968,70 @@ async def count_low_confidence_items_today(session: AsyncSession) -> int:
         )
     )
     return int(result.scalar_one())
+
+
+async def count_unbound_price_channels(session: AsyncSession) -> int:
+    """Каналы реестра парсера, не привязанные ни к одному поставщику.
+
+    Без привязки у поста нет ``supplier_id``, поэтому такие цены молча не
+    участвуют в прайсе — владельцу нужен счётчик, а не тишина.
+    """
+    try:
+        channels = await list_channels()
+    except Exception as exc:  # проба не имеет права ронять алерт вместо причины
+        logger.warning("Price channel registry probe failed: {}", exc)
+        return 0
+    result = await session.execute(
+        select(Supplier.price_channel_id).where(Supplier.price_channel_id.is_not(None))
+    )
+    bound = {int(value) for value in result.scalars().all() if value is not None}
+    return sum(
+        1
+        for ch in channels
+        if ch.is_active
+        and ch.status == "active"
+        and ch.channel_id is not None
+        and int(ch.channel_id) not in bound
+    )
+
+
+async def count_stale_bound_channels(session: AsyncSession) -> int:
+    """Привязанные каналы, откуда не было свежих постов за сегодня."""
+    day_start = _today_start_utc(get_settings().tz)
+    result = await session.execute(
+        select(func.count(Supplier.id)).where(
+            Supplier.active.is_(True),
+            Supplier.price_channel_id.is_not(None),
+            or_(
+                Supplier.last_price_sync_at.is_(None),
+                Supplier.last_price_sync_at < day_start,
+            ),
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def count_non_rub_items(
+    session: AsyncSession,
+    *,
+    raw_price_ids: list[int] | tuple[int, ...] | None = None,
+) -> int:
+    """Позиции не в RUB в окне прогона. Агрегатор их не берёт, счётчик остаётся видимым."""
+    stmt = (
+        select(func.count(ParsedItem.id))
+        .join(RawPrice, RawPrice.id == ParsedItem.raw_price_id)
+        .where(ParsedItem.currency != "RUB")
+    )
+    if raw_price_ids is not None:
+        stmt = stmt.where(RawPrice.id.in_(list(raw_price_ids)))
+    else:
+        stmt = stmt.where(RawPrice.received_at >= _today_start_utc(get_settings().tz))
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def count_non_rub_items_today(session: AsyncSession) -> int:
+    """Сегодняшние позиции не в RUB: агрегатор их отбрасывает."""
+    return await count_non_rub_items(session)
 
 
 def _product_markup_phrase(row: dict[str, Any]) -> str:
@@ -1051,6 +1169,106 @@ def format_draft_lines(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_review_sources_lines(review: list[dict[str, Any]] | None) -> str:
+    """Строка владельцу: цена плюс канал, из которого пришёл минимум, и вторая цена.
+
+    В публичный прайс закупы каналов не попадают — он идёт через
+    ``format_published_price_html``.
+    """
+    if not review:
+        return "—"
+    lines: list[str] = []
+    for row in review:
+        title = row.get("title") or row.get("sku_key") or "—"
+        line = f"{title} — {format_rub_amount(row.get('our_price') or 0)}"
+        notes: list[str] = []
+        channel = row.get("channel")
+        if channel and row.get("purchase") is not None:
+            notes.append(f"{channel}: закуп {format_rub_amount(row['purchase'])}")
+        alt = row.get("alt_channel")
+        if alt and alt != channel and row.get("alt_purchase") is not None:
+            notes.append(f"{alt} — {format_rub_amount(row['alt_purchase'])}")
+        if row.get("markup") is not None:
+            notes.append(f"+{format_rub_amount(row['markup'])}")
+        if notes:
+            line = f"{line} ({'; '.join(notes)})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+PRICE_PUBLISH_KIND = "price_publish"
+# Порядок групп публичного прайса = порядок категорий дерева наценок.
+_PUBLISH_GROUPS: tuple[tuple[str, str], ...] = tuple(
+    (code, label) for _arg, label, code in MARKUP_CATEGORIES
+)
+_PUBLISH_GROUP_CODES = frozenset(code for code, _label in _PUBLISH_GROUPS)
+
+
+def price_publish_dedupe_key(draft_id: int, chat_id: int) -> str:
+    return f"{PRICE_PUBLISH_KIND}:{draft_id}:{chat_id}"
+
+
+def _publish_group_code(title: str) -> str:
+    """Категория строки прайса — тот же normalizer, что у правил наценок."""
+    family = (extract_product_attrs(title).family or "").lower()
+    return family if family in _PUBLISH_GROUP_CODES else "other"
+
+
+def format_published_price_html(items: list[dict[str, Any]]) -> str:
+    """Публичный прайс для канала: группы по категориям и суммы «47 000 ₽».
+
+    Закуп, наценку и имя поставщика сюда не кладём (test_price_visibility_rules);
+    title приходит из текста канала, поэтому экранируется перед parse_mode=HTML.
+    """
+    grouped: dict[str, list[str]] = {}
+    for item in items:
+        title = str(item.get("title") or item.get("sku_key") or "").strip()
+        price = item.get("our_price")
+        if not title or price is None:
+            continue
+        grouped.setdefault(_publish_group_code(title), []).append(
+            f"{sanitize_telegram_html(title)} — {format_rub_amount(price)}"
+        )
+    blocks = [
+        f"<b>{label}</b>\n" + "\n".join(grouped[code])
+        for code, label in _PUBLISH_GROUPS
+        if grouped.get(code)
+    ]
+    return "\n\n".join(blocks)
+
+
+def _publish_date_label(moment: datetime, tz_name: str) -> str:
+    """Дата прайса по бизнес-дню (``settings.tz``), а не по UTC."""
+    return moment.astimezone(ZoneInfo(tz_name)).strftime("%d.%m.%Y")
+
+
+async def _enqueue_price_publish(
+    session: AsyncSession, *, draft_id: int, chat_id: int, text: str
+) -> bool:
+    """Одна строка ``telegram_outbox`` на пару (черновик, канал).
+
+    ``dedupe_key`` уникален, поэтому повторное утверждение того же черновика не
+    может поставить в очередь второе сообщение.
+    """
+    inserted = (
+        await session.execute(
+            insert(TelegramOutbox)
+            .values(
+                dedupe_key=price_publish_dedupe_key(draft_id, chat_id),
+                chat_id=chat_id,
+                request_id=None,
+                kind=PRICE_PUBLISH_KIND,
+                text=text,
+                parse_mode=TELEGRAM_HTML_PARSE_MODE,
+                status=TelegramOutboxStatus.pending.value,
+            )
+            .on_conflict_do_nothing(index_elements=["dedupe_key"])
+            .returning(TelegramOutbox.id)
+        )
+    ).scalar_one_or_none()
+    return inserted is not None
+
+
 def _new_product_markup_keyboard(rule_id: int) -> dict[str, Any]:
     return inline_keyboard(
         [
@@ -1087,6 +1305,89 @@ async def notify_unknown_markup_rules(
                 )
 
 
+async def _draft_or_alert(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    *,
+    result: dict[str, Any],
+    stats: IngestStats,
+    draft_items: list[dict[str, Any]],
+    review_sources: list[dict[str, Any]],
+    aggregated_items: int,
+    unparsed_raw: int,
+    low_confidence: int,
+    raw_price_ids: list[int] | tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    """Один финал для крона и ручной кнопки: черновик либо алерт с причиной.
+
+    Пустой прогон обязан оставить причину (no_silent_failure): без черновика
+    владелец получает `[ALERT]` с кодом, а не тишину.
+    """
+    settings = get_settings()
+    non_rub_items = await count_non_rub_items(session, raw_price_ids=raw_price_ids)
+    if non_rub_items:
+        logger.warning("non-RUB parsed items dropped count={}", non_rub_items)
+    if not draft_items:
+        reasons = diagnose_morning_price(
+            stats=stats,
+            draft_items=0,
+            aggregated_items=aggregated_items,
+            llm_configured=bool(llm_configuration_snapshot()["configured"]),
+            unparsed_raw=unparsed_raw,
+            low_confidence=low_confidence,
+            confidence_threshold=settings.confidence_threshold,
+            unbound_channels=await count_unbound_price_channels(session),
+            stale_channels=await count_stale_bound_channels(session),
+            non_rub_items=non_rub_items,
+        )
+        result["reason"] = [reason.code for reason in reasons]
+        if reasons:
+            await alert_morning_price(session, telegram, reasons)
+        # markup_prompt_rule_ids уже в result: владелец получит вопрос о наценке
+        # и без черновика (jobs.run_morning_price читает их отдельно).
+        return result
+
+    existing = await _find_identical_pending_draft(session, draft_items)
+    if existing is not None:
+        result["draft_id"] = existing.id
+        result["reused"] = True
+        # Старые снимки со статусом stored ещё никому не показывали.
+        if existing.status == "stored":
+            existing.status = "pending"
+            result["notify_draft"] = True
+        # Тот же прайс мог собраться из других каналов: происхождение обновляем.
+        existing.review_sources = review_sources
+    else:
+        draft = PriceListDraft(
+            items=draft_items, review_sources=review_sources, status="pending"
+        )
+        session.add(draft)
+        await session.flush()
+        result["draft_id"] = draft.id
+        result["reused"] = False
+        result["notify_draft"] = True
+    return result
+
+
+async def _project_channel_prices(
+    session: AsyncSession, aggregated: list[dict[str, Any]]
+) -> None:
+    """Снимок цен каналов в канонических ключах — источник оффера по заявке.
+
+    Флаг выключен → ничего не происходит. Сбой проекции не отменяет черновик:
+    savepoint откатывает только её, причина остаётся в логах.
+    """
+    if not get_settings().channel_sku_price_projection_enabled:
+        return
+    from app.services.channel_sku_price_service import rebuild_channel_sku_prices
+
+    try:
+        async with session.begin_nested():
+            await rebuild_channel_sku_prices(session, aggregated, invalidate_missing=True)
+    except Exception:
+        logger.exception("channel_sku_price_projection_failed")
+
+
 async def build_morning_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
@@ -1100,6 +1401,7 @@ async def build_morning_price(
     unknown_rules = await collect_unknown_markup_products(session, aggregated, rules)
     rules = await load_rules(session)
     draft_items = build_draft_items(aggregated, rules, settings.default_markup)
+    await _project_channel_prices(session, aggregated)
 
     result: dict[str, Any] = {
         "status": "ok",
@@ -1110,54 +1412,51 @@ async def build_morning_price(
         "markup_prompt_rule_ids": [int(rule.id) for rule in unknown_rules],
         "notify_draft": False,
     }
-
-    if not draft_items:
-        reasons = diagnose_morning_price(
-            stats=stats,
-            draft_items=0,
-            aggregated_items=len(aggregated),
-            llm_configured=bool(llm_configuration_snapshot()["configured"]),
-            unparsed_raw=await count_unparsed_raw_prices_today(session),
-            low_confidence=await count_low_confidence_items_today(session),
-            confidence_threshold=settings.confidence_threshold,
-        )
-        result["reason"] = [reason.code for reason in reasons]
-        if reasons:
-            await alert_morning_price(session, telegram, reasons)
-
-    if not draft_items and not unknown_rules:
-        return result
-
-    if draft_items:
-        existing = await _find_identical_pending_draft(session, draft_items)
-        if existing is not None:
-            result["draft_id"] = existing.id
-            result["reused"] = True
-            # Старые снимки со статусом stored ещё никому не показывали.
-            if existing.status == "stored":
-                existing.status = "pending"
-                result["notify_draft"] = True
-        else:
-            draft = PriceListDraft(items=draft_items, status="pending")
-            session.add(draft)
-            await session.flush()
-            result["draft_id"] = draft.id
-            result["reused"] = False
-            result["notify_draft"] = True
-    return result
+    return await _draft_or_alert(
+        session,
+        telegram,
+        result=result,
+        stats=stats,
+        draft_items=draft_items,
+        review_sources=build_review_sources(aggregated, draft_items),
+        aggregated_items=len(aggregated),
+        unparsed_raw=await count_unparsed_raw_prices_today(session),
+        low_confidence=await count_low_confidence_items_today(session),
+    )
 
 
 async def build_full_history_price(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
 ) -> dict[str, Any]:
-    """Manual button: last N channel posts, newest price per sku among them, no markup."""
+    """Ручная кнопка: последние N постов каждого канала, минимум по sku и наценка.
+
+    Минимум берётся между каналами; внутри канала пост уже склеен в один
+    raw_price, поэтому старая цена не перекрывает исправленную.
+    MANUAL_PRICE_USE_MARKUP=false даёт прежний вид: новейший пост и цена без наценки.
+    """
     settings = get_settings()
     ingest = await ingest_latest_channel_prices(session, latest=MANUAL_PRICE_LATEST_POSTS)
     stats = ingest.stats
     await parse_raw_prices_for_ids(session, ingest.raw_price_ids)
-    aggregated = await aggregate_from_raw_price_ids(session, ingest.raw_price_ids)
-    draft_items = build_full_history_draft_items(aggregated)
+    with_markup = settings.manual_price_use_markup
+    aggregated = await aggregate_from_raw_price_ids(
+        session,
+        ingest.raw_price_ids,
+        mode="cheapest" if with_markup else "newest",
+    )
+    unknown_rules: list[MarkupRule] = []
+    review_sources: list[dict[str, Any]] = []
+    if with_markup:
+        rules = await load_rules(session)
+        unknown_rules = await collect_unknown_markup_products(session, aggregated, rules)
+        rules = await load_rules(session)
+        draft_items = build_draft_items(aggregated, rules, settings.default_markup)
+        review_sources = build_review_sources(aggregated, draft_items)
+        # mode="cheapest": снимок совпадает с тем, что видит утренний прогон.
+        await _project_channel_prices(session, aggregated)
+    else:
+        draft_items = build_full_history_draft_items(aggregated)
 
     result: dict[str, Any] = {
         "status": "ok",
@@ -1165,40 +1464,21 @@ async def build_full_history_price(
         "items": len(draft_items),
         "raw_prices_new": stats.raw_new,
         "degraded": stats.degraded,
-        "markup_prompt_rule_ids": [],
+        "markup_prompt_rule_ids": [int(rule.id) for rule in unknown_rules],
         "notify_draft": False,
     }
-
-    if not draft_items:
-        reasons = diagnose_morning_price(
-            stats=stats,
-            draft_items=0,
-            aggregated_items=len(aggregated),
-            llm_configured=bool(llm_configuration_snapshot()["configured"]),
-            unparsed_raw=await count_unparsed_raw_prices_all(session),
-            low_confidence=await count_low_confidence_items_all(session),
-            confidence_threshold=settings.confidence_threshold,
-        )
-        result["reason"] = [reason.code for reason in reasons]
-        if reasons:
-            await alert_morning_price(session, telegram, reasons)
-        return result
-
-    existing = await _find_identical_pending_draft(session, draft_items)
-    if existing is not None:
-        result["draft_id"] = existing.id
-        result["reused"] = True
-        if existing.status == "stored":
-            existing.status = "pending"
-            result["notify_draft"] = True
-    else:
-        draft = PriceListDraft(items=draft_items, status="pending")
-        session.add(draft)
-        await session.flush()
-        result["draft_id"] = draft.id
-        result["reused"] = False
-        result["notify_draft"] = True
-    return result
+    return await _draft_or_alert(
+        session,
+        telegram,
+        result=result,
+        stats=stats,
+        draft_items=draft_items,
+        review_sources=review_sources,
+        aggregated_items=len(aggregated),
+        unparsed_raw=await count_unparsed_raw_prices_all(session),
+        low_confidence=await count_low_confidence_items_all(session),
+        raw_price_ids=ingest.raw_price_ids,
+    )
 
 
 async def notify_morning_price_draft(
@@ -1207,6 +1487,7 @@ async def notify_morning_price_draft(
     *,
     draft_id: int,
     items_block: str,
+    review_block: str | None = None,
 ) -> None:
     """Send approval chat message after the draft row is committed."""
     approval_chats = await resolve_price_draft_destinations(session)
@@ -1222,6 +1503,11 @@ async def notify_morning_price_draft(
         draft_id=draft_id,
         items_block=items_block,
     )
+    review_message = (
+        render_template("price_draft_review", draft_id=draft_id, items_block=review_block)
+        if review_block
+        else None
+    )
     markup = _price_draft_keyboard(draft_id)
     for chat_id in approval_chats:
         try:
@@ -1229,6 +1515,18 @@ async def notify_morning_price_draft(
         except TelegramSendError as exc:
             logger.warning(
                 "Failed to notify approval chat_id={} for draft_id={}: {}",
+                chat_id,
+                draft_id,
+                exc,
+            )
+            continue
+        if review_message is None:
+            continue
+        try:
+            await telegram.send_message(int(chat_id), review_message)
+        except TelegramSendError as exc:
+            logger.warning(
+                "Failed to send price provenance chat_id={} for draft_id={}: {}",
                 chat_id,
                 draft_id,
                 exc,
@@ -1244,11 +1542,22 @@ async def approve_price_draft(
     approver_telegram_id: int | None = None,
 ) -> str:
     """
-    Atomically approve pending draft and publish to configured chats.
+    Atomically approve pending draft and publish to configured channels.
 
-    Returns outcome: ``approved`` | ``approved_partial`` | ``not_found`` | ``already_processed``.
+    Channels come from the ``price_publish_channels`` registry (env seeded as
+    fallback). Returns ``approved`` | ``approved_partial`` | ``approved_queued``
+    | ``not_found`` | ``already_processed`` | ``delivery_unavailable``.
     """
     now = datetime.now(UTC)
+    settings = get_settings()
+    if settings.price_publish_via_outbox and not settings.client_price_inline_delivery:
+        from app.services.heartbeat_service import (
+            heartbeat_is_fresh,
+            latest_heartbeat_at,
+        )
+
+        if not heartbeat_is_fresh(await latest_heartbeat_at(session, "worker")):
+            return "delivery_unavailable"
     result = await session.execute(
         text(
             """
@@ -1276,31 +1585,62 @@ async def approve_price_draft(
         return "already_processed"
 
     items = row["items"] if isinstance(row["items"], list) else []
-    publish_text = render_template(
-        "price_list_published",
-        items_block=format_draft_lines(items),
-    )
     settings = get_settings()
-    failed = 0
-    for chat_id in settings.price_publish_chat_id_list:
-        try:
-            await telegram.send_message(int(chat_id), publish_text)
-        except TelegramSendError as exc:
-            logger.warning(
-                "Failed to publish approved draft_id={} chat_id={}: {}",
-                draft_id,
-                chat_id,
-                exc,
-            )
-            failed += 1
-    outcome = "approved_partial" if failed else "approved"
+    publish_text = render_template(
+        "price_list_published_html",
+        date=_publish_date_label(now, settings.tz),
+        groups_block=format_published_price_html(items),
+    )
+    targets = await resolve_publish_targets(session)
+    if not targets:
+        logger.warning("approved draft_id={} has no publish channels", draft_id)
+        from app.services.alert_service import notify_operators
+
+        await notify_operators(
+            session,
+            f"⚠️ Прайс #{draft_id} утверждён, но каналов публикации нет.\n"
+            "Добавьте их в меню «Публикация прайса».",
+            telegram=telegram,
+        )
+    if settings.price_publish_via_outbox:
+        # Доставка — за worker'ом: сбой уходит в ретрай/DLQ, а не теряется
+        # в момент нажатия (история OPS-008).
+        queued = 0
+        for chat_id in targets:
+            if await _enqueue_price_publish(
+                session, draft_id=draft_id, chat_id=int(chat_id), text=publish_text
+            ):
+                queued += 1
+        outcome = "approved_queued" if queued else "approved"
+    else:
+        failed = 0
+        for chat_id in targets:
+            try:
+                await telegram.send_message(
+                    int(chat_id),
+                    publish_text,
+                    parse_mode=TELEGRAM_HTML_PARSE_MODE,
+                )
+            except TelegramSendError as exc:
+                logger.warning(
+                    "Failed to publish approved draft_id={} chat_id={}: {}",
+                    draft_id,
+                    chat_id,
+                    exc,
+                )
+                failed += 1
+        outcome = "approved_partial" if failed else "approved"
     await record_audit(
         session,
         action="price_draft_approve",
         entity_type="price_list_draft",
         entity_id=str(draft_id),
         actor_telegram_id=approver_telegram_id,
-        new_state={"status": outcome},
+        new_state={
+            "status": outcome,
+            "channels": len(targets),
+            "via_outbox": settings.price_publish_via_outbox,
+        },
     )
     return outcome
 

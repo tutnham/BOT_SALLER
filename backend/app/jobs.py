@@ -22,6 +22,7 @@ from app.services.price_service import (
     build_full_history_price,
     build_morning_price,
     format_draft_lines,
+    format_review_sources_lines,
     notify_morning_price_draft,
     notify_unknown_markup_rules,
     resolve_price_draft_destinations,
@@ -65,11 +66,13 @@ async def run_morning_price(
     if notify_draft and draft_id is not None:
         draft = await session.get(PriceListDraft, int(draft_id))
         items = draft.items if draft is not None and isinstance(draft.items, list) else []
+        review = draft.review_sources if draft is not None else None
         await notify_morning_price_draft(
             session,
             telegram,
             draft_id=int(draft_id),
             items_block=format_draft_lines(items),
+            review_block=format_review_sources_lines(review) if review else None,
         )
     if prompt_ids:
         rules: list[MarkupRule] = []

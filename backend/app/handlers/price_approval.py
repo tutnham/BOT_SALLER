@@ -48,6 +48,12 @@ async def _apply_decision(
         )
         if outcome == "not_found":
             return outcome, render_template("price_draft_not_found", draft_id=draft_id)
+        if outcome == "delivery_unavailable":
+            return (
+                outcome,
+                "Прайс не утверждён: доставка в Telegram сейчас недоступна. "
+                "Проверьте worker и повторите.",
+            )
         if outcome == "already_processed":
             return outcome, render_template(
                 "price_draft_already_processed", draft_id=draft_id
@@ -57,6 +63,8 @@ async def _apply_decision(
                 outcome,
                 "Прайс утверждён, но публикация прошла частично. Проверьте логи отправки.",
             )
+        if outcome == "approved_queued":
+            return outcome, render_template("price_approved_queued", draft_id=draft_id)
         return outcome, render_template("price_approved", draft_id=draft_id)
 
     outcome = await reject_price_draft(

@@ -368,6 +368,15 @@ async def decline_markup_prompt(
     from app.services.markup_service import decline_unpriced_markup_rule
 
     outcome = await decline_unpriced_markup_rule(session, rule_id)
+    from app.services.audit_service import record_admin_mutation
+
+    await record_admin_mutation(
+        session,
+        action="markup_rule_declined",
+        entity_type="markup_rule",
+        entity_id=str(rule_id),
+        new_state={"outcome": outcome},
+    )
     rule = await session.get(MarkupRule, rule_id)
     label = markup_rule_label(rule) if rule is not None else str(rule_id)
     if outcome == "missing":
@@ -389,6 +398,16 @@ async def apply_markup_choice(
     message_id: int | None = None,
 ) -> None:
     updated = await update_rule_markup_by_id(session, rule_id, amount)
+    if updated is not None:
+        from app.services.audit_service import record_admin_mutation
+
+        await record_admin_mutation(
+            session,
+            action="markup_rule_updated",
+            entity_type="markup_rule",
+            entity_id=str(rule_id),
+            new_state={"markup_fixed": str(amount)},
+        )
     if updated is None:
         await telegram.send_message(
             chat_id,
@@ -443,6 +462,16 @@ async def _handle_markup_set(
         await telegram.send_message(chat_id, "Сумма не может быть отрицательной")
         return "ok"
     updated = await update_rule_markup(session, rule_key, amount)
+    if updated is not None:
+        from app.services.audit_service import record_admin_mutation
+
+        await record_admin_mutation(
+            session,
+            action="markup_rule_updated",
+            entity_type="markup_rule",
+            entity_id=rule_key,
+            new_state={"markup_fixed": str(amount)},
+        )
     if updated is None:
         await telegram.send_message(
             chat_id,

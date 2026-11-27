@@ -23,7 +23,12 @@ from app.db.models import (
     RequestStatus,
     Supplier,
 )
-from app.services import admin_service, parser_client, purge_service
+from app.services import (
+    admin_service,
+    parser_client,
+    publish_channel_service,
+    purge_service,
+)
 from app.services.deal_service import (
     RequestNotFoundError,
     RequestNotOpenError,
@@ -1077,6 +1082,127 @@ async def _dispatch_callback(
         )
         return
 
+    if action == "price_channel_bind":
+        await _send_price_channel_bind_list(
+            session,
+            telegram,
+            chat_id,
+            int(cd.arg),
+            page=cd.page,
+            message_id=message_id,
+        )
+        return
+
+    if action == "price_channel_bind_pick":
+        channel_pk = int(cd.arg)
+        supplier_id = int(cd.page)
+        try:
+            channels = await parser_client.list_channels()
+        except parser_client.ParserClientError as exc:
+            await _send_price_channels(
+                session,
+                telegram,
+                chat_id,
+                message_id=message_id,
+                notice=render_template("admin_price_channels_error", detail=str(exc)),
+            )
+            return
+        channel = next((ch for ch in channels if ch.id == channel_pk), None)
+        if (
+            channel is None
+            or channel.channel_id is None
+            or not channel.is_active
+            or channel.status != "active"
+        ):
+            await _send_price_channels(
+                session,
+                telegram,
+                chat_id,
+                message_id=message_id,
+                notice=render_template("admin_channel_not_ready"),
+            )
+            return
+        try:
+            supplier = await admin_service.bind_supplier_price_channel(
+                session,
+                supplier_id=supplier_id,
+                channel_id=int(channel.channel_id),
+                username=channel.username or channel.title,
+            )
+        except (admin_service.PriceChannelBusyError, admin_service.SupplierNotFoundError):
+            await _send_price_channels(
+                session,
+                telegram,
+                chat_id,
+                message_id=message_id,
+                notice=render_template("admin_channel_taken"),
+            )
+            return
+        await _send_price_channels(
+            session,
+            telegram,
+            chat_id,
+            message_id=message_id,
+            notice=render_template(
+                "admin_channel_bound",
+                channel_label=str(channel.title or channel.username or channel.channel_id),
+                supplier_id=supplier.id,
+            ),
+        )
+        return
+
+    if action == "publish_channels":
+        await _send_publish_channels(session, telegram, chat_id, message_id=message_id)
+        return
+
+    if action == "publish_channel_add_start":
+        await admin_service.set_dialog(
+            session,
+            telegram_id=owner_id,
+            state="await_publish_channel",
+            payload={},
+        )
+        await _send_or_edit(
+            telegram,
+            chat_id=chat_id,
+            text=render_template("admin_await_publish_channel"),
+            message_id=message_id,
+            markup=inline_keyboard([[menu_button("Отмена", "publish_channels")]]),
+        )
+        return
+
+    if action == "publish_channel_toggle":
+        row = await publish_channel_service.toggle_publish_channel(
+            session, channel_id=cd.arg, actor_telegram_id=owner_id
+        )
+        await _send_publish_channels(
+            session,
+            telegram,
+            chat_id,
+            message_id=message_id,
+            notice=None
+            if row is not None
+            else render_template("admin_publish_channel_missing"),
+        )
+        return
+
+    if action == "publish_channel_delete":
+        label = await publish_channel_service.delete_publish_channel(
+            session, channel_id=cd.arg, actor_telegram_id=owner_id
+        )
+        await _send_publish_channels(
+            session,
+            telegram,
+            chat_id,
+            message_id=message_id,
+            notice=(
+                render_template("admin_publish_channel_removed", label=label)
+                if label is not None
+                else render_template("admin_publish_channel_missing")
+            ),
+        )
+        return
+
     if action == "parser":
         await _send_parser_screen(
             session,
@@ -1245,6 +1371,7 @@ async def _send_main_menu(
         [menu_button("Клиентские беседы", "client_groups")],
         [menu_button(f"Новые чаты ({count})", "pending_chats")],
         [menu_button("Каналы прайсов", "price_channels")],
+        [menu_button("Публикация прайса", "publish_channels")],
         [menu_button("Парсер", "parser")],
         [menu_button("Business", "business_status")],
         [menu_button("Ошибки системы", "dlq")],
@@ -1837,6 +1964,14 @@ def _price_channel_label(ch: parser_client.ParserChannel) -> str:
     return f"{icon} {name}"
 
 
+async def _bound_price_channel_ids(session: AsyncSession) -> set[int]:
+    """Telegram-id каналов, уже привязанных к поставщикам."""
+    result = await session.execute(
+        select(Supplier.price_channel_id).where(Supplier.price_channel_id.is_not(None))
+    )
+    return {int(value) for value in result.scalars().all()}
+
+
 async def _send_price_channels(
     session: AsyncSession,
     telegram: TelegramClientProtocol,
@@ -1862,24 +1997,40 @@ async def _send_price_channels(
     if extra_channel is not None and all(ch.id != extra_channel.id for ch in channels):
         channels = [*channels, extra_channel]
 
+    bound_ids = await _bound_price_channel_ids(session)
     visible = [ch for ch in channels if _is_listed_price_channel(ch)]
-    lines = [_price_channel_label(ch) for ch in visible]
-    channels_block = "\n".join(lines) if lines else "Список пуст."
-
+    lines: list[str] = []
     rows: list[list[dict[str, Any]]] = []
+    unbound = 0
     for ch in visible:
         label = _price_channel_label(ch)
+        # Готовый, но не привязанный канал не участвует в прайсе: без этой строки
+        # он выглядит добавленным, и владелец не понимает, откуда пропали цены.
+        needs_binding = (
+            ch.status == "active"
+            and ch.channel_id is not None
+            and int(ch.channel_id) not in bound_ids
+        )
+        if needs_binding:
+            unbound += 1
+            label = f"{label} · ⚠️ не привязан"
+            bind_button = menu_button("Привязать", "price_channel_bind", ch.id)
+        else:
+            bind_button = None
+        lines.append(label)
         action_button = (
             menu_button("Удалить", "price_channel_delete", ch.id)
             if ch.is_active
             else menu_button("Восстановить", "price_channel_restore", ch.id)
         )
-        rows.append(
-            [
-                button(label, cd=_cb("noop", arg=ch.id)),
-                action_button,
-            ]
-        )
+        row: list[dict[str, Any]] = [button(label, cd=_cb("noop", arg=ch.id)), action_button]
+        if bind_button is not None:
+            row.append(bind_button)
+        rows.append(row)
+    if unbound:
+        lines.append(render_template("admin_price_channels_unbound_hint", count=unbound))
+    channels_block = "\n".join(lines) if lines else "Список пуст."
+
     rows.append(
         [menu_button("➕ Добавить канал", "price_channel_add_start"), menu_button("В меню", "main_menu")]
     )
@@ -1890,6 +2041,83 @@ async def _send_price_channels(
         telegram,
         chat_id=chat_id,
         text=text,
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_publish_channels(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+    notice: str | None = None,
+) -> None:
+    """Реестр каналов публикации прайса: вкл/выкл и удаление без деплоя."""
+    rows_db = await publish_channel_service.list_publish_channels(session)
+    lines: list[str] = []
+    rows: list[list[dict[str, Any]]] = []
+    for row in rows_db:
+        mark = "✅" if row.active else "⏸"
+        label = f"{mark} {row.title or row.chat_id} · {row.chat_id}"
+        if row.source == "env":
+            label = f"{label} · из env"
+        lines.append(label)
+        rows.append(
+            [
+                menu_button(
+                    "Выкл." if row.active else "Вкл.",
+                    "publish_channel_toggle",
+                    row.id,
+                ),
+                menu_button("Удалить", "publish_channel_delete", row.id),
+            ]
+        )
+    rows.append(
+        [
+            menu_button("➕ Добавить канал", "publish_channel_add_start"),
+            menu_button("В меню", "main_menu"),
+        ]
+    )
+    text = render_template("admin_publish_channels", channels_block="\n".join(lines))
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=text,
+        message_id=message_id,
+        markup=inline_keyboard(rows),
+    )
+
+
+async def _send_price_channel_bind_list(
+    session: AsyncSession,
+    telegram: TelegramClientProtocol,
+    chat_id: int,
+    channel_pk: int,
+    *,
+    page: int = 0,
+    message_id: int | None = None,
+) -> None:
+    """Выбор поставщика для канала: привязка — то же действие, что со стороны поставщика."""
+    suppliers = await admin_service.list_suppliers(session)
+    items = [
+        (s.name, _cb("price_channel_bind_pick", arg=channel_pk, page=s.id))
+        for s in suppliers
+    ]
+    rows = paginated_keyboard(
+        items,
+        page=page,
+        page_size=_PAGE_SIZE,
+        nav_callback=_cb("price_channel_bind", arg=channel_pk, page=0),
+    )
+    rows.append([menu_button("Назад", "price_channels")])
+    await _send_or_edit(
+        telegram,
+        chat_id=chat_id,
+        text=render_template("admin_price_channel_bind"),
         message_id=message_id,
         markup=inline_keyboard(rows),
     )
@@ -2228,13 +2456,32 @@ async def _run_parser_morning_price(
     message_id: int | None,
 ) -> None:
     """Сразу ответить на кнопку. Джоб идёт отдельной задачей и не держит апдейт."""
+    from app.services import price_service
+    from app.services.audit_service import record_admin_mutation
+
+    await record_admin_mutation(
+        session,
+        action="manual_price_run",
+        entity_type="price_list_draft",
+        entity_id="manual",
+        new_state={"chat_id": chat_id},
+    )
+
+    if get_settings().manual_price_use_markup:
+        how = "минимум между каналами и наценку"
+    else:
+        how = "прайс без наценки"
     await _send_parser_screen(
         session,
         telegram,
         chat_id,
         tab=tab if tab in (0, 1) else 0,
         message_id=message_id,
-        notice="Запущено. Забираю последние 3 сообщения канала, потом собираю прайс без наценки.",
+        notice=render_template(
+            "admin_parser_run_started",
+            posts=price_service.MANUAL_PRICE_LATEST_POSTS,
+            how=how,
+        ),
     )
     _schedule_manual_morning_price(chat_id)
 
@@ -2441,6 +2688,42 @@ async def _handle_dialog_text(
         await _send_price_channels(
             session, telegram, chat_id, extra_channel=created
         )
+        return "ok"
+
+    if state == "await_publish_channel":
+        raw = text.strip().replace(" ", "")
+        await admin_service.clear_dialog(session, owner_id)
+        detail = ""
+        channel_chat_id = int(raw) if raw.startswith("-") and raw[1:].isdigit() else 0
+        if channel_chat_id == 0:
+            detail = "нужен числовой ID канала вида -1001234567890"
+        else:
+            try:
+                added = await publish_channel_service.add_publish_channel(
+                    session,
+                    telegram=telegram,
+                    chat_id=channel_chat_id,
+                    created_by_telegram_id=owner_id,
+                )
+            except publish_channel_service.PublishChannelError as exc:
+                detail = str(exc)
+            else:
+                await telegram.send_message(
+                    chat_id,
+                    render_template(
+                        "admin_publish_channel_added",
+                        label=added.title or str(added.chat_id),
+                    ),
+                )
+        if detail:
+            await telegram.send_message(
+                chat_id,
+                render_template("admin_publish_channel_error", detail=detail),
+                reply_markup=inline_keyboard(
+                    [[menu_button("К публикации", "publish_channels")]]
+                ),
+            )
+        await _send_publish_channels(session, telegram, chat_id)
         return "ok"
 
     if state == "await_rename":

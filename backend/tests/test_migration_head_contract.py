@@ -30,11 +30,12 @@ def test_parent_revision_is_defined() -> None:
     assert revision.down_revision is not None
 
 
-def test_head_is_supplier_ai_decisions() -> None:
+def test_head_matches_expected_revision() -> None:
+    """head и EXPECTED_ALEMBIC_REVISION расходятся годами (проверка на 0029 молчала)."""
     from app.db.revision import EXPECTED_ALEMBIC_REVISION
 
     head = _script_dir().get_current_head()
-    assert head == "0029_jev_decision_tokens"
+    assert head == "0035_price_publish_channels"
     assert EXPECTED_ALEMBIC_REVISION == head
 
 
@@ -59,4 +60,26 @@ def test_batch_revisions_follow_0021() -> None:
         "0023_supplier_rfq_groups",
         "0022_request_batches",
         "0021_iphone_18_markup_rules",
+    ]
+
+
+def test_price_revisions_follow_0029() -> None:
+    script = _script_dir()
+    rev = script.get_revision("0035_price_publish_channels")
+    chain: list[str] = []
+    while rev is not None:
+        chain.append(rev.revision)
+        if rev.revision == "0029_jev_decision_tokens":
+            break
+        down = rev.down_revision
+        assert isinstance(down, str)
+        rev = script.get_revision(down)
+    assert chain == [
+        "0035_price_publish_channels",
+        "0034_channel_sku_prices",
+        "0033_price_draft_review_sources",
+        "0032_parsed_sku_key_slugs",
+        "0031_parsed_sku_key_canonical",
+        "0030_raw_price_post_date",
+        "0029_jev_decision_tokens",
     ]

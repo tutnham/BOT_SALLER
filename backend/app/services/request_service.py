@@ -24,6 +24,7 @@ from app.parsers.canonical_sku import (
 )
 from app.parsers.request_normalizer import parse_request_text
 from app.services.alert_service import notify_operators
+from app.services.channel_sku_price_service import offer_channel_price_safe
 from app.services.product_classifier import resolve_product_category, split_positions
 from app.services.routing_service import resolve_rfq_targets
 from app.services.supplier_delivery import deliver, is_queued, is_sent
@@ -303,6 +304,7 @@ async def create_request(
 
     for request in created:
         category = str((request.normalized_json or {}).get("category") or "unknown")
+        await offer_channel_price_safe(session, request, telegram=telegram)
         sent_count, failed_lines = await _broadcast_request(
             session,
             request=request,

@@ -49,10 +49,52 @@ _COLOR_ALIASES: dict[str, str] = {
     "серый": "серый",
     "gray": "Gray",
     "grey": "Gray",
+    "natural titanium": "Natural Titanium",
+    "desert titanium": "Desert Titanium",
+    "white titanium": "White Titanium",
+    "black titanium": "Black Titanium",
+    "space black": "Space Black",
+    "jet black": "Jet Black",
+    "ultramarine": "Ultramarine",
+    "teal": "Teal",
+    "cosmic orange": "Cosmic Orange",
     "титан": "титан",
     "titanium": "Titanium",
     "glacier": "Glacier",
     "глетчер": "Glacier",
+}
+
+# Один токен ключа на цвет, независимо от языка написания.
+_COLOR_KEY_SLUG: dict[str, str] = {
+    "чёрный": "black",
+    "черный": "black",
+    "Black": "black",
+    "белый": "white",
+    "White": "white",
+    "синий": "blue",
+    "Blue": "blue",
+    "золотой": "gold",
+    "Gold": "gold",
+    "Silver": "silver",
+    "фиолетовый": "purple",
+    "Purple": "purple",
+    "зелёный": "green",
+    "зеленый": "green",
+    "Green": "green",
+    "серый": "gray",
+    "Gray": "gray",
+    "титан": "titanium",
+    "Titanium": "titanium",
+    "Natural Titanium": "natural titanium",
+    "Desert Titanium": "desert titanium",
+    "White Titanium": "white titanium",
+    "Black Titanium": "black titanium",
+    "Space Black": "space black",
+    "Jet Black": "jet black",
+    "Ultramarine": "ultramarine",
+    "Teal": "teal",
+    "Cosmic Orange": "cosmic orange",
+    "Glacier": "glacier",
 }
 
 _STORAGE_RE = re.compile(
@@ -189,7 +231,7 @@ def _extract_storage(text: str) -> str | None:
 
 def _extract_color(text: str) -> str | None:
     lowered = text.lower()
-    for alias, canonical in _COLOR_ALIASES.items():
+    for alias, canonical in sorted(_COLOR_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
         if alias in lowered:
             return canonical
     return None
@@ -428,6 +470,94 @@ def canonicalize_catalog_fields(
     if attrs.brand != "iPhone" or not attrs.model:
         return (raw_model or None), (raw_storage or None)
     return attrs.model, (raw_storage or attrs.storage or None)
+
+
+_STORAGE_GB_TOKENS = ("32", "64", "128", "256", "512", "1024", "2048", "4096", "8192", "16384")
+_RAM_SSD_RE = re.compile(r"\b(\d{1,3})/(\d{2,4})\b")
+_BARE_STORAGE_RE = re.compile(
+    rf"(?<![\w.])(?:{'|'.join(_STORAGE_GB_TOKENS)})(?![\w.])"
+)
+_KEY_SEPARATORS_RE = re.compile(r"[\s/,;:|-]+")
+
+
+def storage_to_gb(raw: str | None) -> str | None:
+    """Объем в гигабайтах из любой записи: «512 ГБ», «1 ТБ», «512» -> «512», иначе None.
+
+    Число без единицы принимается только из списка ступеней памяти, иначе
+    «WH-1000XM4» или «A54» дали бы фантомный накопитель.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    match = _STORAGE_RE.search(text)
+    if match:
+        num = match.group(1)
+        unit = match.group(0).lower()
+        return str(int(num) * 1024) if ("tb" in unit or "тб" in unit) else num
+    if text in _STORAGE_GB_TOKENS:
+        return text
+    bare = _BARE_STORAGE_RE.search(text)
+    return bare.group(0) if bare else None
+
+
+def _key_text(value: str | None, *, canonical: str | None = None) -> str | None:
+    if canonical:
+        text = canonical.casefold()
+    else:
+        text = " ".join(_KEY_SEPARATORS_RE.split(normalize_product_text(value or "")))
+    return text.strip(" -·.") or None
+
+
+def _brand_key(model_text: str, brand: str) -> str:
+    """Один префикс бренда для любого написания: «Galaxy S25» = «Самсунг Galaxy S25»."""
+    rest = model_text
+    for alias, canonical in _BRAND_ALIASES.items():
+        if canonical != brand:
+            continue
+        rest = re.sub(rf"(?<![\w-]){re.escape(alias)}(?![\w-])", " ", rest)
+    return f"{brand.lower()} {' '.join(rest.split())}".strip()
+
+
+def sku_key_fields_strict(
+    *,
+    model: str | None,
+    storage: str | None,
+    color: str | None,
+    region: str | None,
+    sim: str | None,
+) -> dict[str, str | None]:
+    """Поля для sku_key, одинаковые для любого написания одного и того же товара.
+
+    «Galaxy S25 Ultra 512GB» и «Самсунг Galaxy S25 Ultra 512» должны сойтись в
+    один ключ, иначе минимум между двумя прайс-каналами для не-iPhone не
+    находится. Отображаемые поля (format_sku_title) не меняются: только части
+    ключа. Реестр цветов и SIM берётся из существующих алиасов, поэтому новая
+    строчка в словаре — это и новый случай слияния ключа.
+    """
+    canonical_model, canonical_storage = canonicalize_catalog_fields(model, storage)
+    model_text = normalize_product_text(canonical_model or "")
+    ram_ssd = _RAM_SSD_RE.search(model_text)
+    if ram_ssd and not _STORAGE_RE.search(canonical_storage or ""):
+        gb = ram_ssd.group(2)
+        model_text = _RAM_SSD_RE.sub(r"\1", model_text)
+        model_text = _STORAGE_RE.sub(" ", model_text)
+    else:
+        gb = storage_to_gb(canonical_storage) or storage_to_gb(model_text)
+        if gb:
+            model_text = _BARE_STORAGE_RE.sub(" ", _STORAGE_RE.sub(" ", model_text))
+    brand, _tail = _detect_brand(model_text)
+    if brand:
+        model_text = _brand_key(model_text, brand)
+    return {
+        "model": _key_text(model_text),
+        "storage": f"{gb}GB" if gb else _key_text(canonical_storage),
+        "color": _key_text(
+            color,
+            canonical=_COLOR_KEY_SLUG.get(extracted := _extract_color(color or "") or "", extracted or None),
+        ),
+        "region": (region or "").strip().upper() or None,
+        "sim": _key_text(sim, canonical=_extract_sim(sim or "")),
+    }
 
 
 def extract_product_attrs(source_text: str) -> ProductAttrs:

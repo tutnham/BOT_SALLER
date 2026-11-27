@@ -6,7 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
@@ -27,6 +27,7 @@ class PostOut(BaseModel):
     channel_id: int
     message_id: int
     post_date: datetime
+    edited_at: datetime | None = None
     content_type: str
     raw_text: str | None
     message_link: str | None
@@ -82,7 +83,9 @@ async def list_posts(
     if content_type is not None:
         stmt = stmt.where(ParserPost.content_type == content_type)
     if from_ is not None:
-        stmt = stmt.where(ParserPost.post_date >= from_)
+        stmt = stmt.where(
+            or_(ParserPost.post_date >= from_, ParserPost.edited_at >= from_)
+        )
     cursor_key: tuple[datetime, int] | None = None
     if cursor is not None:
         cursor_key = decode_cursor(cursor)

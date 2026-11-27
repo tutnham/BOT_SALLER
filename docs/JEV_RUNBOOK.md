@@ -25,7 +25,7 @@ Webhook работает асинхронно (`WEBHOOK_ASYNC_ENABLED=true`, `OU
 
 ## Стадии
 
-0. `JEV_ENABLED=false`. Код задеплоен, вызовов нет. Перед стадией 1 база должна быть на миграции не ниже `0027_supplier_ai_decisions`. Текущий head процесса — `0029_jev_decision_tokens` (`alembic upgrade head` из `backend/`). Таблица `supplier_ai_decisions` создаётся миграцией `0027`; миграция `0029` добавляет `input_tokens`, `output_tokens`, `from_cache` для учёта стоимости и cache-hit rate.
+0. `JEV_ENABLED=false`. Код задеплоен, вызовов нет. Перед стадией 1 база должна быть на миграции не ниже `0027_supplier_ai_decisions`. Текущий head процесса — `0035_price_publish_channels` (`alembic upgrade head` из `backend/`). Таблица `supplier_ai_decisions` создаётся миграцией `0027`; миграция `0029` добавляет `input_tokens`, `output_tokens`, `from_cache` для учёта стоимости и cache-hit rate.
 1. `JEV_ENABLED=true` и `JEV_SHADOW_MODE=true`. Решение пишется в `supplier_ai_decisions`, поведение продакшена не меняется.
 2. `JEV_SHADOW_MODE=false` только после разбора shadow. Автопривязка возможна при одной совместимой позиции, без конфликта атрибутов и при цене, которую принял существующий парсер.
 3. Несколько кандидатов в auto-bind — только после отдельного порога ложных привязок, который утверждает владелец. Сейчас голая цена при нескольких кандидатах всегда `multiple_candidates_bare_price`.

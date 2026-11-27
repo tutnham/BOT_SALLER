@@ -42,6 +42,18 @@ def test_storage_variants_normalize() -> None:
     assert storages == {"128", "256", "512", "1024"}
 
 
+def test_explicit_iphone_prefix_builds_key() -> None:
+    key = build_canonical_sku_key(parse_batch_line("iPhone 15 256GB Black"))
+    assert key == "v1|apple|iphone|15|256|black|*|*"
+    cyr = build_canonical_sku_key(parse_batch_line("айфон 17 про 256GB"))
+    assert cyr == "v1|apple|iphone|17-pro|256|*|*|*"
+
+
+def test_non_iphone_line_has_no_canonical_key() -> None:
+    assert build_canonical_sku_key(parse_batch_line("25 ultra 512 black")) is None
+    assert build_canonical_sku_key(parse_batch_line("13 air 256")) is None
+
+
 def test_empty_lines_ignored_by_splitter() -> None:
     from app.parsers.batch_lines import split_batch_source_text
 

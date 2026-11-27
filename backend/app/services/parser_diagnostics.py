@@ -49,6 +49,11 @@ REASONS: dict[str, str] = {
     "parser_bad_response": "парсер вернул не разобраннный ответ",
     "parser_error": "парсер вернул непредвиденную ошибку",
     "no_bound_channels": "ни один активный поставщик не привязан к каналу прайса",
+    "price_channels_unbound": (
+        "канал добавлен в парсер, но не привязан к поставщику — его цены не участвуют"
+    ),
+    "channel_data_stale": "канал привязан, но свежих постов сегодня не было",
+    "non_rub_prices_dropped": "цены каналов не в RUB — в прайс они не попадают",
     "posts_empty": "парсер не отдал ни одного поста — канал пуст или завис в pending",
     "posts_without_text": "все посты канала без текста (фото/PDF) — такой прайс не разбирается",
     "llm_not_configured": "LLM не настроен — прайс из текста канала не извлечь",
@@ -111,6 +116,9 @@ def diagnose_morning_price(
     unparsed_raw: int,
     low_confidence: int,
     confidence_threshold: float,
+    unbound_channels: int = 0,
+    stale_channels: int = 0,
+    non_rub_items: int = 0,
 ) -> list[Reason]:
     """Чистая функция: почему черновика нет."""
     if draft_items > 0:
@@ -127,12 +135,20 @@ def diagnose_morning_price(
     elif stats.posts_without_text and stats.posts_without_text == stats.posts_seen:
         reasons.append(Reason("posts_without_text", f"{stats.posts_seen} шт."))
 
+    if unbound_channels:
+        reasons.append(Reason("price_channels_unbound", f"каналов: {unbound_channels}"))
+    if stats.channels_checked and stale_channels == stats.channels_checked and not stats.faults:
+        # При сломанном заборе «нет свежих постов» — шум: причину уже назвал сбой.
+        reasons.append(Reason("channel_data_stale", f"каналов: {stale_channels}"))
+
     if not llm_configured and unparsed_raw > 0:
         reasons.append(Reason("llm_not_configured", f"ждут разбора: {unparsed_raw}"))
     if aggregated_items == 0 and low_confidence > 0:
         reasons.append(
             Reason("all_low_confidence", f"{low_confidence} строк, порог {confidence_threshold}")
         )
+    if aggregated_items == 0 and non_rub_items > 0:
+        reasons.append(Reason("non_rub_prices_dropped", f"{non_rub_items} строк не в RUB"))
     if aggregated_items > 0 and draft_items == 0:
         reasons.append(Reason("all_dropped_by_markup", f"товаров в агрегате: {aggregated_items}"))
 

@@ -76,7 +76,12 @@ async def readiness(session: AsyncSession) -> tuple[bool, dict[str, object]]:
     # A separate backend-worker is required when inline delivery is off, or when
     # WEBHOOK_ASYNC_ENABLED is on. /ready still expects a fresh worker heartbeat
     # whenever autopublish or async webhooks are enabled.
-    worker_required = settings.webhook_async_enabled or settings.auto_publish_first_valid_price
+    worker_required = (
+        settings.webhook_async_enabled
+        or settings.auto_publish_first_valid_price
+        or settings.price_publish_via_outbox
+        or settings.channel_price_offer_enabled
+    )
     if worker_required:
         worker_at = await latest_heartbeat_at(session, "worker") if db_ok else None
         worker_ok = heartbeat_is_fresh(worker_at)
@@ -134,6 +139,37 @@ def _jev_details() -> dict[str, object]:
         "model": settings.jev_model if settings.jev_enabled else None,
         **snapshot,
     }
+
+
+async def _pending_outbox_count(session: AsyncSession, kind: str) -> int:
+    return int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(TelegramOutbox)
+                .where(
+                    TelegramOutbox.kind == kind,
+                    TelegramOutbox.status.in_(("pending", "processing")),
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _oldest_outbox_age(session: AsyncSession, kind: str, now: datetime) -> int | None:
+    oldest = (
+        await session.execute(
+            select(func.min(TelegramOutbox.created_at)).where(
+                TelegramOutbox.kind == kind,
+                TelegramOutbox.status.in_(("pending", "processing")),
+            )
+        )
+    ).scalar_one_or_none()
+    if oldest is None:
+        return None
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
+    return int((now - oldest).total_seconds())
 
 
 async def health_details(session: AsyncSession) -> dict[str, object]:
@@ -214,7 +250,10 @@ async def health_details(session: AsyncSession) -> dict[str, object]:
         "oldest_pending_age_seconds": oldest_age,
         "pending_client_prices": pending_client_prices,
         "oldest_client_price_age_seconds": oldest_client_price_age,
+        "pending_price_publishes": await _pending_outbox_count(session, "price_publish"),
+        "oldest_price_publish_age_seconds": await _oldest_outbox_age(session, "price_publish", now),
         "auto_publish_first_valid_price": get_settings().auto_publish_first_valid_price,
+        "price_publish_via_outbox": get_settings().price_publish_via_outbox,
         "recent_jobs": [
             {
                 "job_name": row.job_name,
